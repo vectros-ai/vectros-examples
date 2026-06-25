@@ -1,0 +1,20 @@
+{
+  "name": "vectros-examples-mcp",
+  "version": "0.5.0",
+  "description": "Runnable examples exercising the @vectros-ai/mcp-server tools over MCP stdio.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --import tsx tests/*.spec.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.3.0"
+  }
+}
