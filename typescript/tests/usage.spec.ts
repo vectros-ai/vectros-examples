@@ -67,16 +67,16 @@ describe('usage', () => {
 
     beforeAll(async () => {
         recordType = 'smoke_usage_' + uniqueTag();
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Usage Test Schema',
             indexMode: 'HYBRID',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'note', fieldType: 'string', searchable: true }],
             lookupFields: [{ fieldName: 'note', unique: false }],
-        });
+        } });
         schemaId = schema.id!;
-        const user = await client.identity.createUser({ externalId: uniqueTag() });
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
     });
 
@@ -112,12 +112,12 @@ describe('usage', () => {
     test('document ingest increments text count by >= 1', async () => {
         const before = (await client.auth.getUsage()) as unknown as UsageReport;
         const baseline = before.documents?.ingest?.text?.count ?? 0;
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: 'Usage Probe ' + uniqueTag(),
             text: 'Short body. Usage counter probe for documentingest_text.',
             indexMode: 'TEXT',
             storeText: false,
-        });
+        } });
         try {
             // Counter ticks at ingest dispatch (before INDEXED completes) — no need
             // to wait for indexing here. If this becomes flaky, poll until INDEXED.
@@ -140,11 +140,11 @@ describe('usage', () => {
         // typeName must match the schema's typeName (set in beforeAll with a
         // unique tag) — using a literal here previously caused a 400 "typeName
         // does not match the referenced schema".
-        const rec = await client.records.createRecord({
+        const rec = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: { note: 'usage-probe-' + uniqueTag() },
-        });
+        } });
         try {
             const after = (await client.auth.getUsage()) as unknown as UsageReport;
             expect((after.records?.writes?.count ?? 0)).toBeGreaterThanOrEqual(baselineCount + 1);

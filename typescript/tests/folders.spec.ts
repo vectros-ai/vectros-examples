@@ -12,7 +12,7 @@ describe('folders', () => {
     const folderIds: string[] = [];
 
     beforeAll(async () => {
-        const user = await client.identity.createUser({ externalId: uniqueTag() });
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
     });
 
@@ -27,9 +27,9 @@ describe('folders', () => {
     });
 
     test('create folder under the default tenant root', async () => {
-        const folder = await client.folders.createFolder({
+        const folder = await client.folders.createFolder({ body: {
             name: 'Smoke Root ' + uniqueTag(),
-        });
+        } });
         folderIds.push(folder.id!);
         parentFolderId = folder.id!;
         expect(folder.id).toBeTruthy();
@@ -41,10 +41,10 @@ describe('folders', () => {
     });
 
     test('create subfolder under existing folder', async () => {
-        const sub = await client.folders.createFolder({
+        const sub = await client.folders.createFolder({ body: {
             name: 'Smoke Sub ' + uniqueTag(),
             parentFolderId,
-        });
+        } });
         folderIds.push(sub.id!);
         subFolderId = sub.id!;
         expect(sub.id).toBeTruthy();
@@ -79,10 +79,10 @@ describe('folders', () => {
     test('list folders with userId ownership filter', async () => {
         // Create a user-owned folder, then filter list by userId — must
         // include the user-owned one and exclude the unowned root.
-        const userFolder = await client.folders.createFolder({
+        const userFolder = await client.folders.createFolder({ body: {
             name: 'Smoke User-Owned ' + uniqueTag(),
             userId,
-        });
+        } });
         folderIds.push(userFolder.id!);
         userOwnedFolderId = userFolder.id!;
 
@@ -97,11 +97,11 @@ describe('folders', () => {
     test('cannot delete non-empty folder (400)', async () => {
         // Create a folder + a child folder in it. Try to delete the parent
         // while the child still exists — must reject with 400 (not 500).
-        const parent = await client.folders.createFolder({ name: 'Non-Empty Parent ' + uniqueTag() });
-        const child  = await client.folders.createFolder({
+        const parent = await client.folders.createFolder({ body: { name: 'Non-Empty Parent ' + uniqueTag() } });
+        const child  = await client.folders.createFolder({ body: {
             name: 'Non-Empty Child ' + uniqueTag(),
             parentFolderId: parent.id!,
-        });
+        } });
         // afterAll deletes folderIds in REVERSE order, so push the PARENT
         // first and the CHILD last → the child is deleted before the parent.
         // (Pushing child-first did the opposite: the reversed cleanup hit the

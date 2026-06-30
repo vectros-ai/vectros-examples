@@ -126,11 +126,11 @@ async function provisionContext(tenantId: string, label: string, created: Contex
     created.push(handle);
 
     handle.contextId = contextId(label);
-    await client.auth.createAppContext({ contextId: handle.contextId, name: `cross-context ${label}` });
+    await client.auth.createAppContext({ body: { contextId: handle.contextId, name: `cross-context ${label}` } });
 
     // A real user is required: the key binds to an AccessProfile whose
     // principalId is `usr_<userId>` for this exact user.
-    const user = await client.identity.createUser({ externalId: uniqueTag() });
+    const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
     handle.userId = user.id!;
 
     await client.auth.createAccessProfile({

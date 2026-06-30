@@ -24,7 +24,7 @@ describe('inference: /v1/rag', () => {
 
     beforeAll(async () => {
         testStartedAt = new Date().toISOString();
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: `RAG smoke test corpus ${uniqueTag()}`,
             text:
                 'This is a fictional clinical study evaluating the recommended treatment ' +
@@ -34,7 +34,7 @@ describe('inference: /v1/rag', () => {
                 'renal function is essential per the study protocol.',
             indexMode: 'HYBRID',
             storeText: true,
-        });
+        } });
         docId = doc.id!;
         // Two distinct phases, polled + reported separately:
         //   1. INDEXING — wait for the doc to reach INDEXED. A failure here
@@ -124,15 +124,15 @@ describe('inference: /v1/rag', () => {
         // scoped to that user. RAG via the scoped token must see ONLY the
         // user-owned doc — even though our corpus doc from beforeAll is
         // also present in the tenant.
-        const user = await client.identity.createUser({ externalId: 'rag-scope-' + uniqueTag() });
-        const userOwnedDoc = await client.documents.ingestDocument({
+        const user = await client.identity.createUser({ body: { externalId: 'rag-scope-' + uniqueTag() } });
+        const userOwnedDoc = await client.documents.ingestDocument({ body: {
             title: 'Scoped RAG Doc ' + uniqueTag(),
             text: 'This document is owned by a specific user and discusses ' +
                 'a unique fictional treatment called "phantom blue therapy".',
             indexMode: 'HYBRID',
             storeText: true,
             userId: user.id!,
-        });
+        } });
         try {
             await pollUntilIndexed(userOwnedDoc.id!, 'document');
 

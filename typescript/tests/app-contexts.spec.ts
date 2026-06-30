@@ -27,11 +27,11 @@ describe('app-contexts', () => {
         // 'smoke-<ts>-<rnd>' which already matches; cap at 31 chars.
         const contextId = uniqueTag().slice(0, 31);
 
-        const created = await client.auth.createAppContext({
+        const created = await client.auth.createAppContext({ body: {
             contextId,
             name: 'Smoke App Context',
             description: 'created by app-contexts.spec',
-        });
+        } });
         expect(created.contextId).toBe(contextId);
         expect(created.name).toBe('Smoke App Context');
         // Composite key shape: tenantId#contextId
@@ -69,13 +69,13 @@ describe('app-contexts', () => {
 
     test('idempotent POST returns existing context (no duplicate)', async () => {
         const contextId = uniqueTag().slice(0, 31);
-        const first = await client.auth.createAppContext({
+        const first = await client.auth.createAppContext({ body: {
             contextId, name: 'Idempotency Test',
-        });
+        } });
         try {
-            const second = await client.auth.createAppContext({
+            const second = await client.auth.createAppContext({ body: {
                 contextId, name: 'Different Name (ignored on idempotent return)',
-            });
+            } });
             expect(second.id).toBe(first.id);
             // Idempotent return → returns the EXISTING record, doesn't update.
             // The 'Different Name' from the second call is dropped on the floor.
@@ -89,9 +89,9 @@ describe('app-contexts', () => {
     test('malformed contextId rejected with 400 + friendly message', async () => {
         // The contextId format /^[a-z][a-z0-9-]{2,30}$/ is enforced. A leading
         // digit violates the "starts with lowercase letter" rule.
-        await expect(client.auth.createAppContext({
+        await expect(client.auth.createAppContext({ body: {
             contextId: '9bad-start', name: 'invalid',
-        })).rejects.toMatchObject({ statusCode: 400 });
+        } })).rejects.toMatchObject({ statusCode: 400 });
     });
 
     test('GET nonexistent context returns 404', async () => {
@@ -110,7 +110,7 @@ describe('app-contexts', () => {
         // and reaches `deleted` once the background drain completes.
         const contextId = uniqueTag().slice(0, 31);
         const roleId = ('tpl' + uniqueTag()).slice(0, 31);
-        await client.auth.createAppContext({ contextId, name: 'cascade-test' });
+        await client.auth.createAppContext({ body: { contextId, name: 'cascade-test' } });
         try {
             await client.auth.createRole({
                 contextId,

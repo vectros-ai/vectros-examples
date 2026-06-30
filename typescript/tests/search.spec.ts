@@ -26,37 +26,37 @@ describe('search', () => {
     beforeAll(async () => {
         recordType = 'smoke_search_' + uniqueTag();
         otherRecordType = 'smoke_search_other_' + uniqueTag();
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Search Test Schema',
             indexMode: 'HYBRID',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'content', fieldType: 'string', searchable: true }],
-        });
+        } });
         schemaId = schema.id!;
-        const otherSchema = await client.schemas.createSchema({
+        const otherSchema = await client.schemas.createSchema({ body: {
             typeName: otherRecordType,
             displayName: 'Search Test Other Schema',
             indexMode: 'HYBRID',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'content', fieldType: 'string', searchable: true }],
-        });
+        } });
         otherSchemaId = otherSchema.id!;
 
-        const folder = await client.folders.createFolder({
+        const folder = await client.folders.createFolder({ body: {
             name: 'Search Test Folder ' + uniqueTag(),
-        });
+        } });
         folderId = folder.id!;
 
         uniquePhrase = 'VECTROS_SMOKE_SEARCH_' + uniqueTag().replace(/-/g, '_');
         multiChunkPhrase = 'VECTROS_SMOKE_UNIQDOC_' + uniqueTag().replace(/-/g, '_');
         folderPhrase = 'VECTROS_SMOKE_FOLDER_' + uniqueTag().replace(/-/g, '_');
 
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: 'Search Test Doc',
             text: uniquePhrase + ' is a clinical term for testing purposes.',
             indexMode: 'HYBRID',
-        });
+        } });
         docId = doc.id!;
 
         // Long body for the uniqueDocuments=true test — needs to force the
@@ -73,50 +73,50 @@ describe('search', () => {
                 'modern standard of care alongside ambulatory studies.').join(' '),
             multiChunkPhrase + ' closing paragraph guaranteed in last chunk.',
         ].join('\n\n');
-        const multiChunkDoc = await client.documents.ingestDocument({
+        const multiChunkDoc = await client.documents.ingestDocument({ body: {
             title: 'Multi Chunk Doc ' + uniqueTag(),
             text: longBody,
             indexMode: 'HYBRID',
-        });
+        } });
         multiChunkDocId = multiChunkDoc.id!;
 
         // Doc inside the folder for the folderId-filter test
-        const folderedDoc = await client.documents.ingestDocument({
+        const folderedDoc = await client.documents.ingestDocument({ body: {
             title: 'Foldered Doc ' + uniqueTag(),
             text: folderPhrase + ' is the marker for the foldered doc.',
             indexMode: 'HYBRID',
             folderId,
-        });
+        } });
         folderedDocId = folderedDoc.id!;
 
-        const record = await client.records.createRecord({
+        const record = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
                 content: uniquePhrase + ' appears in structured data too.',
             },
-        });
+        } });
         recordId = record.id!;
 
-        const otherRecord = await client.records.createRecord({
+        const otherRecord = await client.records.createRecord({ body: {
             typeName: otherRecordType,
             schemaId: otherSchemaId,
             payload: {
                 content: uniquePhrase + ' appears in OTHER schema-type structured data.',
             },
-        });
+        } });
         otherRecordId = otherRecord.id!;
 
         // Create 4 extra records for the pagination test so we have 6+ total
         // results in the recordType=smoke_search_* page.
         for (let i = 0; i < 4; i++) {
-            const r = await client.records.createRecord({
+            const r = await client.records.createRecord({ body: {
                 typeName: recordType,
                 schemaId,
                 payload: {
                     content: uniquePhrase + ` pagination filler ${i}.`,
                 },
-            });
+            } });
             extraRecordIds.push(r.id!);
         }
 

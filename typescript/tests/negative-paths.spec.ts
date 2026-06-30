@@ -89,7 +89,7 @@ describe('negative paths', () => {
 
     beforeAll(async () => {
         recordType = `smoke_neg_${uniqueTag()}`.replace(/-/g, '_');
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Negative-path Schema',
             indexMode: 'NONE',
@@ -99,11 +99,11 @@ describe('negative paths', () => {
                 { fieldId: 'mrn', fieldType: 'string', required: false },
             ],
             lookupFields: [{ fieldName: 'mrn', unique: true }],
-        });
+        } });
         schemaId = schema.id!;
-        const anchor = await client.records.createRecord({
+        const anchor = await client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { name: 'Anchor', mrn: `MRN-${uniqueTag()}` },
-        });
+        } });
         anchorRecordId = anchor.id!;
     });
 
@@ -121,9 +121,9 @@ describe('negative paths', () => {
         })) as MintedToken;
         const scoped = getScopedClient(minted.token);
 
-        const { statusCode, body } = await captureError(scoped.records.createRecord({
+        const { statusCode, body } = await captureError(scoped.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { name: 'blocked' },
-        }));
+        } }));
         expect(statusCode).toBe(403);
         assertCleanErrorBody(body);
     });
@@ -198,9 +198,9 @@ describe('negative paths', () => {
     // =======================================================================
     test('400 — create with a payload missing a required field', async () => {
         // The schema declares `name` required; omit it.
-        const { statusCode, body } = await captureError(client.records.createRecord({
+        const { statusCode, body } = await captureError(client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { mrn: `MRN-${uniqueTag()}` },
-        }));
+        } }));
         expect(statusCode).toBe(400);
         assertCleanErrorBody(body);
     });
@@ -210,13 +210,13 @@ describe('negative paths', () => {
     // =======================================================================
     test('a second record with the same unique lookup value is rejected (uniqueness enforced)', async () => {
         const sharedMrn = `MRN-UNIQUE-${uniqueTag()}`;
-        const first = await client.records.createRecord({
+        const first = await client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { name: 'First', mrn: sharedMrn },
-        });
+        } });
         try {
-            const { statusCode, body } = await captureError(client.records.createRecord({
+            const { statusCode, body } = await captureError(client.records.createRecord({ body: {
                 typeName: recordType, schemaId, payload: { name: 'Second', mrn: sharedMrn },
-            }));
+            } }));
             // `mrn` is declared unique:true — the collision must be REJECTED, not
             // silently accepted (which would corrupt the uniqueness guarantee the
             // lookup endpoint relies on). The platform surfaces this as a 400

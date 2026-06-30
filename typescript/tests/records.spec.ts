@@ -34,7 +34,7 @@ describe('records', () => {
     beforeAll(async () => {
         testStartedAt = new Date().toISOString();
         recordType = `smoke_patient_${uniqueTag()}`;
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Smoke Test Patient Record',
             indexMode: 'HYBRID',
@@ -47,17 +47,17 @@ describe('records', () => {
             ],
             lookupFields: [{ fieldName: 'email', unique: true }],
             capabilities: { auditHistory: true },
-        });
+        } });
         schemaId = schema.id!;
 
-        const user = await client.identity.createUser({ externalId: uniqueTag() });
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
-        const otherUser = await client.identity.createUser({ externalId: uniqueTag() });
+        const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         otherUserId = otherUser.id!;
-        const org = await client.identity.createOrg({
+        const org = await client.identity.createOrg({ body: {
             externalId: uniqueTag(),
             name: 'Smoke Org',
-        });
+        } });
         orgId = org.id!;
     });
 
@@ -82,13 +82,13 @@ describe('records', () => {
             email: `${uniqueTag()}@test.com`,
         };
 
-        const record = await client.records.createRecord({
+        const record = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload,
             userId,
             orgId,
-        });
+        } });
         recordIds.push(record.id!);
         expect(record.indexStatus).toBe('PENDING_INDEX');
         await pollUntilIndexed(record.id!, 'record');
@@ -197,7 +197,7 @@ describe('records', () => {
     test('metadata filter — filterable field restricts results', async () => {
         // Create a second record with a different department, then filter
         // by department=cardiology — the new one should NOT surface.
-        const otherRec = await client.records.createRecord({
+        const otherRec = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
@@ -208,7 +208,7 @@ describe('records', () => {
             },
             userId,
             orgId,
-        });
+        } });
         recordIds.push(otherRec.id!);
         await pollUntilIndexed(otherRec.id!, 'record');
 
@@ -232,7 +232,7 @@ describe('records', () => {
     test('ownership filter — userId scoping restricts results', async () => {
         // Create a record owned by otherUserId — userId-filtered search should
         // exclude it.
-        const otherOwnedRec = await client.records.createRecord({
+        const otherOwnedRec = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
@@ -243,7 +243,7 @@ describe('records', () => {
             },
             userId: otherUserId,
             orgId,
-        });
+        } });
         recordIds.push(otherOwnedRec.id!);
         await pollUntilIndexed(otherOwnedRec.id!, 'record');
 
@@ -288,7 +288,7 @@ describe('records', () => {
 
     test('update record → version history includes both versions', async () => {
         // Create a record, update its notes, then read version history.
-        const rec = await client.records.createRecord({
+        const rec = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
@@ -299,7 +299,7 @@ describe('records', () => {
             },
             userId,
             orgId,
-        });
+        } });
         recordIds.push(rec.id!);
         await pollUntilIndexed(rec.id!, 'record');
 
@@ -403,7 +403,7 @@ describe('records', () => {
         })) as MintedToken;
         const scoped = getScopedClient(minted.token);
 
-        const created = await scoped.records.createRecord({
+        const created = await scoped.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
@@ -413,7 +413,7 @@ describe('records', () => {
                 email: `${uniqueTag()}@test.com`,
             },
             // intentionally NO userId — auto-assign must populate it
-        });
+        } });
         recordIds.push(created.id!);
         expect(created.userId).toBe(userId);
     });
@@ -421,7 +421,7 @@ describe('records', () => {
     test('tombstone exists after delete (capabilities.auditHistory)', async () => {
         // Create + delete + assert tombstone reachable via getRecordTombstone.
         // Schema's capabilities.auditHistory=true keeps the tombstone row.
-        const rec = await client.records.createRecord({
+        const rec = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
             payload: {
@@ -432,7 +432,7 @@ describe('records', () => {
             },
             userId,
             orgId,
-        });
+        } });
         // NOTE: this one doesn't get pushed to recordIds — we're deleting it inline.
         await pollUntilIndexed(rec.id!, 'record');
         await client.records.deleteRecord({ id: rec.id! });

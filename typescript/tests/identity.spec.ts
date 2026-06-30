@@ -101,23 +101,23 @@ describe('identity', () => {
 
     test('user CRUD + externalId idempotency', async () => {
         const externalId = uniqueTag();
-        const user = await client.identity.createUser({
+        const user = await client.identity.createUser({ body: {
             externalId,
             email: `${externalId}@test.com`,
             // Users carry a free-form `payload`, typed Record<string, unknown>.
             // No schemaId here, so the payload is unvalidated free-form — we
             // just round-trip it.
             payload: { profile: { role: 'clinician' } },
-        });
+        } });
         expect(user.externalId).toBe(externalId);
         expect(user.status).toBe('ACTIVE');
 
         try {
             // Idempotency: second create with same externalId returns same record
-            const user2 = await client.identity.createUser({
+            const user2 = await client.identity.createUser({ body: {
                 externalId,
                 email: 'different@test.com',
-            });
+            } });
             expect(user2.id).toBe(user.id);
 
             const loaded = await client.identity.getUser({ id: user.id! });
@@ -144,20 +144,20 @@ describe('identity', () => {
 
     test('org CRUD + externalId idempotency', async () => {
         const externalId = uniqueTag();
-        const org = await client.identity.createOrg({
+        const org = await client.identity.createOrg({ body: {
             externalId,
             name: 'Smoke Clinic',
             payload: { region: 'northeast' },
-        });
+        } });
         expect(org.externalId).toBe(externalId);
         expect(org.status).toBe('ACTIVE');
 
         try {
             // Idempotency — same externalId returns same record (different name ignored)
-            const org2 = await client.identity.createOrg({
+            const org2 = await client.identity.createOrg({ body: {
                 externalId,
                 name: 'Different Name (idempotent return drops this)',
-            });
+            } });
             expect(org2.id).toBe(org.id);
             expect(org2.name).toBe('Smoke Clinic');
 
@@ -180,25 +180,25 @@ describe('identity', () => {
 
     test('client CRUD + orgId association + externalId idempotency', async () => {
         // Need an org first to associate the client with.
-        const org = await client.identity.createOrg({
+        const org = await client.identity.createOrg({ body: {
             externalId: 'org-' + uniqueTag(),
             name: 'Parent Org for Client Test',
-        });
+        } });
         const externalId = uniqueTag();
-        const clientRecord = await client.identity.createClient({
+        const clientRecord = await client.identity.createClient({ body: {
             externalId,
             name: 'Jane Doe',
             orgId: org.id!,
-        });
+        } });
         expect(clientRecord.orgId).toBe(org.id);
         expect(clientRecord.status).toBe('ACTIVE');
 
         try {
             // Idempotency on the client.
-            const client2 = await client.identity.createClient({
+            const client2 = await client.identity.createClient({ body: {
                 externalId,
                 name: 'Different (idempotent return)',
-            });
+            } });
             expect(client2.id).toBe(clientRecord.id);
 
             const loaded = await client.identity.getClient({ id: clientRecord.id! });
@@ -228,36 +228,36 @@ describe('identity', () => {
         // SETUP: org + client + schema + two records, one owned by the
         // client, one tenant-only. A token scoped to clientId=[client.id]
         // should see only the client-owned record.
-        const org = await client.identity.createOrg({
+        const org = await client.identity.createOrg({ body: {
             externalId: 'org-' + uniqueTag(),
             name: 'DataScope Test Org',
-        });
-        const clientRecord = await client.identity.createClient({
+        } });
+        const clientRecord = await client.identity.createClient({ body: {
             externalId: 'cli-' + uniqueTag(),
             name: 'DataScope Test Client',
             orgId: org.id!,
-        });
+        } });
         const recordType = `smoke_clidscope_${uniqueTag()}`;
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'ClientId DataScope Schema',
             indexMode: 'TEXT',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'note', fieldType: 'string', required: true, searchable: true }],
-        });
+        } });
         const uniquePhrase = 'CLIDSCOPE_PROBE_' + uniqueTag().replace(/-/g, '_');
-        const recordForClient = await client.records.createRecord({
+        const recordForClient = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { note: uniquePhrase + ' client-owned' },
             clientId: clientRecord.id!,
             orgId: org.id!,
-        });
-        const recordTenantOnly = await client.records.createRecord({
+        } });
+        const recordTenantOnly = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { note: uniquePhrase + ' tenant-only' },
-        });
+        } });
         await pollUntilIndexed(recordForClient.id!, 'record');
         await pollUntilIndexed(recordTenantOnly.id!, 'record');
 
@@ -316,30 +316,30 @@ describe('identity', () => {
         // org-tagged record. Mirrors the clientId test's shape exactly so a
         // future reviewer can diff them and confirm the only delta is the
         // ownership dimension under test.
-        const org = await client.identity.createOrg({
+        const org = await client.identity.createOrg({ body: {
             externalId: 'org-' + uniqueTag(),
             name: 'OrgIdDataScope Test Org',
-        });
+        } });
         const recordType = `smoke_orgidscope_${uniqueTag()}`;
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'OrgId DataScope Schema',
             indexMode: 'TEXT',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'note', fieldType: 'string', required: true, searchable: true }],
-        });
+        } });
         const uniquePhrase = 'ORGIDSCOPE_PROBE_' + uniqueTag().replace(/-/g, '_');
-        const recordForOrg = await client.records.createRecord({
+        const recordForOrg = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { note: uniquePhrase + ' org-tagged' },
             orgId: org.id!,
-        });
-        const recordTenantOnly = await client.records.createRecord({
+        } });
+        const recordTenantOnly = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { note: uniquePhrase + ' tenant-only' },
-        });
+        } });
         await pollUntilIndexed(recordForOrg.id!, 'record');
         await pollUntilIndexed(recordTenantOnly.id!, 'record');
 

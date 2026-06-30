@@ -20,7 +20,7 @@ describe('inference: /v1/documents/{id}/ask', () => {
     let docId: string;
 
     beforeAll(async () => {
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: 'Ask smoke test doc ' + uniqueTag(),
             text:
                 'This document describes ACE inhibitors as a first-line treatment for ' +
@@ -28,7 +28,7 @@ describe('inference: /v1/documents/{id}/ask', () => {
                 'angiotensin II, reducing vasoconstriction.',
             indexMode: 'HYBRID',
             storeText: true,
-        });
+        } });
         docId = doc.id!;
         await pollUntilIndexed(docId, 'document');
     });
@@ -70,12 +70,12 @@ describe('inference: /v1/documents/{id}/ask', () => {
             'eiusmod tempor incididunt ut labore et dolore magna aliqua ut enim ' +
             'ad minim veniam quis nostrud exercitation ullamco laboris nisi.'
         ).join(' ');  // ~256 KB total
-        const bigDoc = await client.documents.ingestDocument({
+        const bigDoc = await client.documents.ingestDocument({ body: {
             title: 'Oversized Ask Doc ' + uniqueTag(),
             text: bigBody,
             indexMode: 'HYBRID',
             storeText: true,
-        });
+        } });
         try {
             await pollUntilIndexed(bigDoc.id!, 'document', 120_000);
             await expect(client.inference.documentAsk({
@@ -114,7 +114,7 @@ describe('inference: /v1/documents/{id}/ask', () => {
         // documentAsk must return 404 — same as cross-tenant. Critical:
         // never return 403 here (that would confirm the doc exists but is
         // forbidden, leaking info to a probing scoped-token caller).
-        const otherUser = await client.identity.createUser({ externalId: 'ask-scope-' + uniqueTag() });
+        const otherUser = await client.identity.createUser({ body: { externalId: 'ask-scope-' + uniqueTag() } });
         try {
             const minted = (await client.auth.mintToken({
                 userId: otherUser.id!,

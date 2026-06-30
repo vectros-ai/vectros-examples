@@ -92,17 +92,17 @@ describe('documents (text)', () => {
         // this as createdAfter so we only see content from this run.
         testStartedAt = new Date().toISOString();
 
-        const user = await client.identity.createUser({ externalId: uniqueTag() });
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
         // Second user for the ownership-filter test — proves the filter excludes
         // docs the caller doesn't own, not just that the matching-user filter works.
-        const otherUser = await client.identity.createUser({ externalId: uniqueTag() });
+        const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         otherUserId = otherUser.id!;
-        const org = await client.identity.createOrg({ externalId: uniqueTag() });
+        const org = await client.identity.createOrg({ body: { externalId: uniqueTag() } });
         orgId = org.id!;
-        const folder = await client.folders.createFolder({
+        const folder = await client.folders.createFolder({ body: {
             name: 'Smoke Text Docs ' + uniqueTag(),
-        });
+        } });
         folderId = folder.id!;
     });
 
@@ -118,7 +118,7 @@ describe('documents (text)', () => {
 
     // ANCHOR — ingest + RAG contextText (the key pattern this spec documents)
     test('ingest text document → INDEXED + contextText returned in HYBRID search', async () => {
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: 'Hypertension Clinical Guidelines ' + uniqueTag(),
             text: HYPERTENSION_BODY,
             indexMode: 'HYBRID',
@@ -133,7 +133,7 @@ describe('documents (text)', () => {
                 category: 'clinical-guidelines',
                 specialty: 'cardiology',
             },
-        });
+        } });
         docIds.push(doc.id!);
         expect(doc.status).toBe('PENDING_INDEX');
         await pollUntilIndexed(doc.id!, 'document');
@@ -211,7 +211,7 @@ describe('documents (text)', () => {
         // The ANCHOR doc has payload.specialty=cardiology. Create a second
         // doc with a DIFFERENT specialty, then assert the cardiology filter
         // returns only the first.
-        const otherDoc = await client.documents.ingestDocument({
+        const otherDoc = await client.documents.ingestDocument({ body: {
             title: 'Migraine Protocol ' + uniqueTag(),
             text: 'Migraine prophylaxis includes propranolol, topiramate, ' +
                 'amitriptyline, and CGRP antagonists. Acute treatment with ' +
@@ -226,7 +226,7 @@ describe('documents (text)', () => {
                 category: 'clinical-guidelines',
                 specialty: 'neurology',
             },
-        });
+        } });
         docIds.push(otherDoc.id!);
         await pollUntilIndexed(otherDoc.id!, 'document');
 
@@ -245,7 +245,7 @@ describe('documents (text)', () => {
     test('ownership filter — userId scoping restricts results', async () => {
         // Create a third doc owned by otherUserId — searches with userId
         // filter should NOT see it.
-        const otherDoc = await client.documents.ingestDocument({
+        const otherDoc = await client.documents.ingestDocument({ body: {
             title: 'Sleep Apnea Notes ' + uniqueTag(),
             text: 'Obstructive sleep apnea is screened with STOP-BANG and ' +
                 'confirmed via polysomnography. CPAP remains the first-line ' +
@@ -256,7 +256,7 @@ describe('documents (text)', () => {
             folderId,
             userId: otherUserId,
             orgId,
-        });
+        } });
         docIds.push(otherDoc.id!);
         await pollUntilIndexed(otherDoc.id!, 'document');
 
@@ -292,7 +292,7 @@ describe('documents (text)', () => {
         const oldMarker = `OLD_MARKER_${uniqueTag()}`.replace(/-/g, '_');
         const newMarker = `NEW_MARKER_${uniqueTag()}`.replace(/-/g, '_');
 
-        const doc = await client.documents.ingestDocument({
+        const doc = await client.documents.ingestDocument({ body: {
             title: 'Reindex Test ' + uniqueTag(),
             text: `This document originally contains the phrase ${oldMarker}. ` +
                 'It will be updated to replace the marker. Lorem ipsum dolor ' +
@@ -303,7 +303,7 @@ describe('documents (text)', () => {
             folderId,
             userId,
             orgId,
-        });
+        } });
         docIds.push(doc.id!);
         await pollUntilIndexed(doc.id!, 'document');
         await pollUntilSearchable(oldMarker, doc.id!, 10_000, 'TEXT', testStartedAt);

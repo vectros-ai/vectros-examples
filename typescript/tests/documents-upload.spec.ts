@@ -15,7 +15,7 @@ describe('documents (upload)', () => {
 
     beforeAll(async () => {
         testStartedAt = new Date().toISOString();
-        const user = await client.identity.createUser({ externalId: uniqueTag() });
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
     });
 

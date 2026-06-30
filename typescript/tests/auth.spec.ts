@@ -69,11 +69,11 @@ describe('auth', () => {
         // The error message is generic on purpose; the API does not reveal
         // which specific scope check failed to avoid leaking enforcement
         // shape to probing callers.
-        await expect(scoped.records.createRecord({
+        await expect(scoped.records.createRecord({ body: {
             typeName: 'smoke_unauthorized_' + uniqueTag(),
             schemaId: 'irrelevant-blocked-by-scope',
             payload: {},
-        })).rejects.toMatchObject({ statusCode: 403 });
+        } })).rejects.toMatchObject({ statusCode: 403 });
     });
 
     test('scoped token with dataScope.userId restricts list/search results to owned content', async () => {
@@ -81,7 +81,7 @@ describe('auth', () => {
         // a control record owned by NO user. The dataScope-restricted token
         // should see only the user-owned record.
         const recordType = `smoke_dscope_${uniqueTag()}`;
-        const schema = await client.schemas.createSchema({
+        const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'DataScope Test Schema',
             indexMode: 'TEXT',
@@ -89,22 +89,22 @@ describe('auth', () => {
             fields: [
                 { fieldId: 'name', fieldType: 'string', required: true, searchable: true },
             ],
-        });
-        const user = await client.identity.createUser({ externalId: 'dscope-' + uniqueTag() });
+        } });
+        const user = await client.identity.createUser({ body: { externalId: 'dscope-' + uniqueTag() } });
 
         const uniquePhrase = 'DATASCOPE_PROBE_' + uniqueTag().replace(/-/g, '_');
-        const recordForUser = await client.records.createRecord({
+        const recordForUser = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { name: uniquePhrase + ' for user' },
             userId: user.id!,
-        });
-        const recordTenantOnly = await client.records.createRecord({
+        } });
+        const recordTenantOnly = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId: schema.id!,
             payload: { name: uniquePhrase + ' tenant only' },
             // no userId — tenant-owned (ownership field is null)
-        });
+        } });
         await pollUntilIndexed(recordForUser.id!, 'record');
         await pollUntilIndexed(recordTenantOnly.id!, 'record');
 

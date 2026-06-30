@@ -22,8 +22,8 @@ describe('principal-lookup', () => {
         const ctxB = ('b' + uniqueTag()).slice(0, 31);
         const principalId = 'usr_' + uniqueTag();
 
-        await client.auth.createAppContext({ contextId: ctxA, name: 'lookup ctx A' });
-        await client.auth.createAppContext({ contextId: ctxB, name: 'lookup ctx B' });
+        await client.auth.createAppContext({ body: { contextId: ctxA, name: 'lookup ctx A' } });
+        await client.auth.createAppContext({ body: { contextId: ctxB, name: 'lookup ctx B' } });
         await client.auth.createAccessProfile({
             contextId: ctxA,
             body: { principalId, scopes: [{ allowed_actions: ['records:r'] }] },

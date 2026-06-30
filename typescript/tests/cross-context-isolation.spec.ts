@@ -149,8 +149,8 @@ describeIfTenant('cross-context data isolation', () => {
     // =======================================================================
     test('each context sees only its OWN folder, and cannot parent across the partition', async () => {
         const { ctxA, ctxB } = fx;
-        const folderA = (await ctxA.api.folders.createFolder({ name: `Folder A ${uniqueTag()}` })).id!;
-        const folderB = (await ctxB.api.folders.createFolder({ name: `Folder B ${uniqueTag()}` })).id!;
+        const folderA = (await ctxA.api.folders.createFolder({ body: { name: `Folder A ${uniqueTag()}` } })).id!;
+        const folderB = (await ctxB.api.folders.createFolder({ body: { name: `Folder B ${uniqueTag()}` } })).id!;
 
         expect((await ctxA.api.folders.getFolder({ id: folderA })).id).toBe(folderA);
         await expectStatus(ctxA.api.folders.getFolder({ id: folderB }), 404);
@@ -164,8 +164,8 @@ describeIfTenant('cross-context data isolation', () => {
 
         // Neither context can reuse the other's folder as a parent — the parent
         // resolves only within the caller's own context, so it is not found.
-        await expectStatus(ctxB.api.folders.createFolder({ name: 'Child', parentFolderId: folderA }), 400);
-        await expectStatus(ctxA.api.folders.createFolder({ name: 'Child', parentFolderId: folderB }), 400);
+        await expectStatus(ctxB.api.folders.createFolder({ body: { name: 'Child', parentFolderId: folderA } }), 400);
+        await expectStatus(ctxA.api.folders.createFolder({ body: { name: 'Child', parentFolderId: folderB } }), 400);
     }, 60_000);
 
     // =======================================================================
@@ -206,15 +206,15 @@ describeIfTenant('cross-context data isolation', () => {
 // ---------------------------------------------------------------------------
 
 async function createRecord(ctx: ContextHandle, type: string, mrn: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({
+    const schema = await ctx.api.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Record Schema',
         indexMode: 'NONE',
         allowedSurfaces: ['record'],
         fields: [{ fieldId: 'mrn', fieldType: 'string', required: true }],
         lookupFields: [{ fieldName: 'mrn', unique: true }],
-    });
-    const rec = await ctx.api.records.createRecord({ typeName: type, schemaId: schema.id!, payload: { mrn } });
+    } });
+    const rec = await ctx.api.records.createRecord({ body: { typeName: type, schemaId: schema.id!, payload: { mrn } } });
     return rec.id!;
 }
 
@@ -229,22 +229,22 @@ async function listRecordIds(ctx: ContextHandle, type: string): Promise<string[]
 }
 
 async function createDoc(ctx: ContextHandle, type: string, po: string, marker: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({
+    const schema = await ctx.api.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Document Schema',
         indexMode: 'TEXT',
         allowedSurfaces: ['document'],
         fields: [{ fieldId: 'po_number', fieldType: 'string' }],
         lookupFields: [{ fieldName: 'po_number', unique: false }],
-    });
-    const doc = await ctx.api.documents.ingestDocument({
+    } });
+    const doc = await ctx.api.documents.ingestDocument({ body: {
         title: `Cross-context Doc ${po}`,
         schemaId: schema.id!,
         text: `Confidential note ${marker} for purchase order ${po}.`,
         indexMode: 'TEXT',
         storeText: true,
         payload: { po_number: po },
-    });
+    } });
     return doc.id!;
 }
 
@@ -264,13 +264,13 @@ async function listFolderIds(ctx: ContextHandle): Promise<string[]> {
 }
 
 async function createSchema(ctx: ContextHandle, type: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({
+    const schema = await ctx.api.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Schema',
         indexMode: 'NONE',
         allowedSurfaces: ['record'],
         fields: [{ fieldId: 'name', fieldType: 'string' }],
-    });
+    } });
     return schema.id!;
 }
 

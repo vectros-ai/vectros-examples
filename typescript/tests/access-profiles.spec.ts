@@ -26,7 +26,7 @@ describe('access-profiles', () => {
 
     beforeAll(async () => {
         ctxId = uniqueTag().slice(0, 31);
-        await client.auth.createAppContext({ contextId: ctxId, name: 'access-profiles spec parent' });
+        await client.auth.createAppContext({ body: { contextId: ctxId, name: 'access-profiles spec parent' } });
     });
 
     afterAll(async () => {

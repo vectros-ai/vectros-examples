@@ -31,7 +31,7 @@ describe('PATCH (RFC-7386 merge)', () => {
 
         beforeAll(async () => {
             recordType = `smoke_patch_${uniqueTag()}`.replace(/-/g, '_');
-            const schema = await client.schemas.createSchema({
+            const schema = await client.schemas.createSchema({ body: {
                 typeName: recordType,
                 displayName: 'PATCH Test Schema',
                 indexMode: 'NONE',
@@ -41,7 +41,7 @@ describe('PATCH (RFC-7386 merge)', () => {
                     { fieldId: 'beta', fieldType: 'string', required: false },
                     { fieldId: 'gamma', fieldType: 'string', required: false },
                 ],
-            });
+            } });
             schemaId = schema.id!;
         });
 
@@ -53,7 +53,7 @@ describe('PATCH (RFC-7386 merge)', () => {
         });
 
         async function createRecord(payload: Record<string, unknown>): Promise<{ id: string; version: number }> {
-            const rec = await client.records.createRecord({ typeName: recordType, schemaId, payload });
+            const rec = await client.records.createRecord({ body: { typeName: recordType, schemaId, payload } });
             recordIds.push(rec.id!);
             return { id: rec.id!, version: rec.version! };
         }
@@ -131,12 +131,12 @@ describe('PATCH (RFC-7386 merge)', () => {
             // indexMode NONE: store-only, so no indexing wait is needed — PATCH
             // operates on the stored row directly. Read the authoritative version
             // back via GET (the create response does not echo it).
-            const doc = await client.documents.ingestDocument({
+            const doc = await client.documents.ingestDocument({ body: {
                 title: `PATCH Doc ${uniqueTag()}`,
                 text: 'Original body for PATCH testing. The quick brown fox.',
                 indexMode: 'NONE',
                 storeText: true,
-            });
+            } });
             docIds.push(doc.id!);
             const loaded = await client.documents.getDocument({ id: doc.id! });
             return { id: doc.id!, version: loaded.version! };
@@ -183,10 +183,10 @@ describe('PATCH (RFC-7386 merge)', () => {
         });
 
         async function createFolder(): Promise<{ id: string; version: number }> {
-            const f = await client.folders.createFolder({
+            const f = await client.folders.createFolder({ body: {
                 name: `PATCH Folder ${uniqueTag()}`,
                 description: 'original description',
-            });
+            } });
             folderIds.push(f.id!);
             // Read the authoritative version back (the create response omits it).
             const loaded = await client.folders.getFolder({ id: f.id! });
