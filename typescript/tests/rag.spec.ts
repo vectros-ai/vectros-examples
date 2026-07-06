@@ -33,7 +33,6 @@ describe('inference: /v1/rag', () => {
                 'inhibitors taken once daily. Regular monitoring of blood pressure and ' +
                 'renal function is essential per the study protocol.',
             indexMode: 'HYBRID',
-            storeText: true,
         } });
         docId = doc.id!;
         // Two distinct phases, polled + reported separately:
@@ -130,7 +129,6 @@ describe('inference: /v1/rag', () => {
             text: 'This document is owned by a specific user and discusses ' +
                 'a unique fictional treatment called "phantom blue therapy".',
             indexMode: 'HYBRID',
-            storeText: true,
             userId: user.id!,
         } });
         try {

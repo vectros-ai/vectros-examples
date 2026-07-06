@@ -242,7 +242,6 @@ async function createDoc(ctx: ContextHandle, type: string, po: string, marker: s
         schemaId: schema.id!,
         text: `Confidential note ${marker} for purchase order ${po}.`,
         indexMode: 'TEXT',
-        storeText: true,
         payload: { po_number: po },
     } });
     return doc.id!;
@@ -282,7 +281,9 @@ async function pollUntilIndexedIn(ctx: ContextHandle, docId: string, timeoutMs =
     const deadline = Date.now() + timeoutMs;
     let status: string | undefined;
     while (Date.now() < deadline) {
-        status = (await ctx.api.documents.getDocument({ id: docId })).status;
+        // indexStatus since the 2.4.0 status split; `status` fallback for pre-split envs.
+        const doc = await ctx.api.documents.getDocument({ id: docId });
+        status = doc.indexStatus ?? doc.status;
         if (status === 'INDEXED') return;
         if (status === 'FAILED') throw new Error(`document ${docId} reached FAILED during indexing`);
         await new Promise((r) => setTimeout(r, 2_000));

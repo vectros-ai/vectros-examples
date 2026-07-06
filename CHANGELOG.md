@@ -5,6 +5,39 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.7.0 — 2026-07-06
+
+Examples updated for **Vectros SDK 0.33.0**, adding runnable examples for the
+document behaviors introduced across 0.32–0.33. The TypeScript examples pin
+`@vectros-ai/sdk@^0.33.0` (was `^0.31.0`).
+
+### Added
+
+- **File-upload text retention (`storeText`)** — a new TypeScript example
+  (`documents-storetext`) showing an upload with `storeText: false` (the file is
+  indexed and downloadable, but its extracted text is discarded after indexing —
+  `/text` 404, `/ask` 409), the default-retain behavior, and that the choice is
+  immutable after ingest.
+- **File re-upload / re-index** — new TypeScript (`documents-reupload`) and MCP
+  (`file-reupload-reindex`) examples that replace a file document's contents by
+  re-uploading against the same external ID, re-extracting and re-indexing in place.
+- **Document archive / restore** — a new MCP example
+  (`document-archive-status`) that toggles a document's lifecycle `status`
+  (`ARCHIVED` ↔ `ACTIVE`) to soft-retract and restore it.
+
+### Changed
+
+- **TypeScript** — pinned SDK range bumped `^0.31.0 → ^0.33.0`, and the existing
+  document examples updated for the 0.33 request shape (`storeText` is no longer
+  sent on text ingest — text bodies are always retained). Python, Java, and CLI
+  examples pin their SDKs independently.
+
+### Fixed
+
+- **Cross-context example (Java, Python)** — the document-indexing wait now polls
+  the processing `indexStatus` / `index_status` instead of the lifecycle `status`,
+  so it no longer times out waiting for a value that field never reports.
+
 ## 0.6.0 — 2026-06-30
 
 Examples updated for **Vectros SDK 0.31.0**. The TypeScript examples adopt the

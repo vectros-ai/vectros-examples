@@ -135,7 +135,6 @@ describe('PATCH (RFC-7386 merge)', () => {
                 title: `PATCH Doc ${uniqueTag()}`,
                 text: 'Original body for PATCH testing. The quick brown fox.',
                 indexMode: 'NONE',
-                storeText: true,
             } });
             docIds.push(doc.id!);
             const loaded = await client.documents.getDocument({ id: doc.id! });

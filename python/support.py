@@ -83,19 +83,23 @@ def collect_stream(stream: Iterable[Any]) -> list[Any]:
 def poll_until_indexed(
     client: VectrosApi, doc_id: str, timeout_s: float = 60.0
 ) -> Any:
-    """Poll a document until status == INDEXED (or raise on FAILED / timeout)."""
+    """Poll a document until index_status == INDEXED (or raise on FAILED / timeout).
+
+    The processing axis is index_status; status is the ACTIVE/ARCHIVED lifecycle
+    and never reaches INDEXED.
+    """
     deadline = time.time() + timeout_s
     last = None
     while time.time() < deadline:
         last = client.documents.get_document(doc_id)
-        if last.status == "INDEXED":
+        if last.index_status == "INDEXED":
             return last
-        if last.status == "FAILED":
+        if last.index_status == "FAILED":
             raise AssertionError(f"document {doc_id} reached FAILED during indexing")
         time.sleep(2.0)
     raise AssertionError(
         f"document {doc_id} did not reach INDEXED within {timeout_s}s "
-        f"(last status: {getattr(last, 'status', None)})"
+        f"(last index_status: {getattr(last, 'index_status', None)})"
     )
 
 

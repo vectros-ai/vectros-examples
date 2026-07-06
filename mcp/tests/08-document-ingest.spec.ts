@@ -9,11 +9,11 @@ import { parseToolResult as parse } from './fixtures.js';
 /**
  * document_ingest smoke — exercises both modes.
  *
- * Text mode creates a small inline document, polls document_get for
- * INDEXED status, then we trust the rest of the pipeline. File mode
- * creates a tmpfile, ingests it, asserts the upload path returns
- * PENDING_INDEX. Both clean up the created doc IDs via the SDK
- * (or accept that the tenant will GC them).
+ * Text mode creates a small inline document and asserts the two status
+ * axes (lifecycle `status`, processing `indexStatus`). File mode creates
+ * a tmpfile, ingests it, asserts the upload path returns
+ * indexStatus PENDING_INDEX. Both clean up the created doc IDs via the
+ * SDK (or accept that the tenant will GC them).
  *
  * The validation-error paths (missing text/filePath, both, HTTP
  * transport gate) are unit-tested; we don't re-exercise them here.
@@ -36,17 +36,18 @@ test('document_ingest text mode creates a document', async () => {
     assert.ok(!result.isError, `document_ingest text must not error: ${JSON.stringify(result)}`);
     const body = parse(result) as Record<string, unknown>;
     assert.ok(body.id, 'created document has id');
-    // Status is PENDING_INDEX initially; INDEXED arrives async.
+    assert.equal(body.status, 'ACTIVE', 'a fresh document is ACTIVE (caller lifecycle axis)');
+    // indexStatus is PENDING_INDEX initially; INDEXED arrives async.
     assert.ok(
-      body.status === 'PENDING_INDEX' || body.status === 'INDEXED',
-      `unexpected status: ${JSON.stringify(body.status)}`,
+      body.indexStatus === 'PENDING_INDEX' || body.indexStatus === 'INDEXED',
+      `unexpected indexStatus: ${JSON.stringify(body.indexStatus)}`,
     );
   } finally {
     await close();
   }
 });
 
-test('document_ingest file mode uploads + returns PENDING_INDEX', async () => {
+test('document_ingest file mode uploads + returns indexStatus PENDING_INDEX', async () => {
   const tmpFile = join(tmpdir(), `mcp-smoke-${UNIQUE}.txt`);
   await writeFile(tmpFile, `Smoke file upload body. UID=${UNIQUE}.`);
 
@@ -67,7 +68,7 @@ test('document_ingest file mode uploads + returns PENDING_INDEX', async () => {
     assert.ok(!result.isError, `document_ingest file must not error: ${JSON.stringify(result)}`);
     const body = parse(result) as Record<string, unknown>;
     assert.ok(body.id, 'created document has id');
-    assert.equal(body.status, 'PENDING_INDEX');
+    assert.equal(body.indexStatus, 'PENDING_INDEX');
     assert.match(String(body._note), /Poll document_get/);
   } finally {
     await close();

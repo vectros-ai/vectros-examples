@@ -27,7 +27,6 @@ describe('inference: /v1/documents/{id}/ask', () => {
                 'hypertension. They work by blocking the conversion of angiotensin I to ' +
                 'angiotensin II, reducing vasoconstriction.',
             indexMode: 'HYBRID',
-            storeText: true,
         } });
         docId = doc.id!;
         await pollUntilIndexed(docId, 'document');
@@ -74,7 +73,6 @@ describe('inference: /v1/documents/{id}/ask', () => {
             title: 'Oversized Ask Doc ' + uniqueTag(),
             text: bigBody,
             indexMode: 'HYBRID',
-            storeText: true,
         } });
         try {
             await pollUntilIndexed(bigDoc.id!, 'document', 120_000);

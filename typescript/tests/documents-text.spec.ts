@@ -122,7 +122,6 @@ describe('documents (text)', () => {
             title: 'Hypertension Clinical Guidelines ' + uniqueTag(),
             text: HYPERTENSION_BODY,
             indexMode: 'HYBRID',
-            storeText: true,
             folderId,
             userId,
             orgId,
@@ -135,7 +134,7 @@ describe('documents (text)', () => {
             },
         } });
         docIds.push(doc.id!);
-        expect(doc.status).toBe('PENDING_INDEX');
+        expect(doc.indexStatus).toBe('PENDING_INDEX');
         await pollUntilIndexed(doc.id!, 'document');
         // HYBRID rides the vector lane, whose query visibility lags INDEXED
         // (eventually-consistent; see helpers' pollUntilSearchable header). 30s
@@ -218,7 +217,6 @@ describe('documents (text)', () => {
                 'triptans should be initiated at symptom onset for best efficacy. ' +
                 'Lifestyle factors include sleep hygiene and trigger avoidance.',
             indexMode: 'HYBRID',
-            storeText: true,
             folderId,
             userId,
             orgId,
@@ -252,7 +250,6 @@ describe('documents (text)', () => {
                 'therapy; mandibular advancement is an alternative for ' +
                 'mild-to-moderate disease.',
             indexMode: 'HYBRID',
-            storeText: true,
             folderId,
             userId: otherUserId,
             orgId,
@@ -299,7 +296,6 @@ describe('documents (text)', () => {
                 'sit amet consectetur adipiscing elit sed do eiusmod tempor ' +
                 'incididunt ut labore et dolore magna aliqua.',
             indexMode: 'HYBRID',
-            storeText: true,
             folderId,
             userId,
             orgId,
@@ -317,7 +313,6 @@ describe('documents (text)', () => {
                 text: `This document was updated and now contains ${newMarker}. ` +
                     'The previous marker should no longer surface in searches.',
                 indexMode: 'HYBRID',
-                storeText: true,
                 folderId,
                 userId,
                 orgId,
@@ -351,7 +346,7 @@ describe('documents (text)', () => {
     });
 
     test('retrieve stored text via GET /v1/documents/{id}/text', async () => {
-        // ANCHOR doc was ingested with storeText=true and the HYPERTENSION_BODY
+        // ANCHOR doc is text-ingested (body always retained) with the HYPERTENSION_BODY
         // payload. Round-trip via the SDK and assert a known phrase from the
         // original body survives the store + retrieve path. Confirms the SDK's
         // typed getDocumentText path returns the raw body (not a JSON envelope).

@@ -44,8 +44,7 @@ test('document_ask aggregates SSE stream into a non-empty answer', { timeout: 90
     for (let i = 0; i < 30 && !indexed; i++) {
       const g = await client.callTool({ name: 'document_get', arguments: { documentId: docId } });
       if (!g.isError) {
-        const status = parse(g).status;
-        if (status === 'INDEXED') indexed = true;
+        if (parse(g).indexStatus === 'INDEXED') indexed = true;
       }
       if (!indexed) await new Promise((r) => setTimeout(r, 2000));
     }

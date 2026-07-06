@@ -40,7 +40,7 @@ test('(i) document_get returns metadata, and stored text with includeText, for t
     assert.equal(meta.id, id, 'metadata id matches request');
     assert.equal(meta.text, undefined, 'no text when includeText:false');
 
-    // includeText — the fixture was ingested storeText:true, so text is present.
+    // includeText — the fixture is a text ingest (body always retained), so text is present.
     const withText = parse(
       await client.callTool({ name: 'document_get', arguments: { documentId: id, includeText: true } }),
     );

@@ -40,7 +40,10 @@ export async function pollUntilIndexed(
         last = kind === 'document'
             ? await client.documents.getDocument({ id })
             : await client.records.getRecord({ id });
-        const status = kind === 'document' ? last?.status : last?.indexStatus;
+        // Documents report pipeline state in `indexStatus` since the 2.4.0
+        // status split (`status` is now the ACTIVE/ARCHIVED lifecycle field);
+        // fall back to `status` for pre-split environments.
+        const status = kind === 'document' ? (last?.indexStatus ?? last?.status) : last?.indexStatus;
         if (status === 'INDEXED') return last;
         if (status === 'FAILED') {
             throw new Error(`${kind} ${id} reached terminal FAILED state during indexing`);
@@ -49,7 +52,7 @@ export async function pollUntilIndexed(
     }
     throw new Error(
         `${kind} ${id} did not reach INDEXED within ${timeoutMs}ms ` +
-        `(last status: ${kind === 'document' ? last?.status : last?.indexStatus})`
+        `(last status: ${kind === 'document' ? (last?.indexStatus ?? last?.status) : last?.indexStatus})`
     );
 }
 

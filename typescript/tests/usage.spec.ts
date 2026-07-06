@@ -116,7 +116,6 @@ describe('usage', () => {
             title: 'Usage Probe ' + uniqueTag(),
             text: 'Short body. Usage counter probe for documentingest_text.',
             indexMode: 'TEXT',
-            storeText: false,
         } });
         try {
             // Counter ticks at ingest dispatch (before INDEXED completes) — no need

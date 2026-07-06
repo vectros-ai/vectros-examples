@@ -62,7 +62,7 @@ describe('documents (upload)', () => {
         // Step 3: poll until INDEXED (text extraction adds latency → 120s timeout)
         await pollUntilIndexed(upload.id!, 'document', 120_000);
         const loaded = await client.documents.getDocument({ id: upload.id! });
-        expect(loaded.status).toBe('INDEXED');
+        expect(loaded.indexStatus).toBe('INDEXED');
         expect(loaded.fileType).toBe('application/pdf');
         expect(loaded.fileSize).toBeGreaterThan(0);
         expect(loaded.userId).toBe(userId);
@@ -175,6 +175,17 @@ describe('documents (upload)', () => {
         });
         const ids = (results.results ?? []).map((r) => r.documentId);
         expect(ids).toContain(docIds[0]);
+    });
+
+    test('extracted text of a file-backed document stays retrievable (retention gate)', async () => {
+        // File-backed docs keep BOTH the uploaded source and the extracted text
+        // permanently — /text serves the extracted text (retained by default; see documents-storetext.spec.ts for the opt-out)
+        // (which is a text-ingest concern). This is the read-contract gate for
+        // the retention regression class: a reaped blob turns this into a
+        // 404/500 long after INDEXED reported success.
+        const resp = await client.documents.getDocumentText({ id: docIds[0] });
+        expect(resp.id).toBe(docIds[0]);
+        expect(resp.text).toContain(SAMPLE_PDF_KNOWN_PHRASE);
     });
 
     test('presigned download URL — fetch returns 200', async () => {

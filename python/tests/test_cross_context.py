@@ -101,7 +101,6 @@ def _create_doc(ctx, type_name, po, marker) -> str:
         schema_id=schema.id,
         text=f"Confidential note {marker} for purchase order {po}.",
         index_mode="TEXT",
-        store_text=True,
         payload={"po_number": po},
     )
     return doc.id

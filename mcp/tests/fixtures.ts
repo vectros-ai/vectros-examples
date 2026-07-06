@@ -158,13 +158,13 @@ const SMOKE_DOC_TEXT =
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function findSmokeDocument(): Promise<{ id: string; status?: string } | undefined> {
+async function findSmokeDocument(): Promise<{ id: string; indexStatus?: string } | undefined> {
   let cursor: string | undefined;
   do {
     const q = cursor ? `?limit=100&startFrom=${encodeURIComponent(cursor)}` : '?limit=100';
     const { json } = await api('GET', `/v1/documents${q}`);
     const hit = (json?.data ?? []).find((d: { externalId?: string }) => d.externalId === SMOKE_DOC_EXTERNAL_ID);
-    if (hit) return hit as { id: string; status?: string };
+    if (hit) return hit as { id: string; indexStatus?: string };
     cursor = json?.nextCursor ?? undefined;
   } while (cursor);
   return undefined;
@@ -188,21 +188,20 @@ export async function seedSmokeDocument(): Promise<FixtureOutcome> {
       title: SMOKE_DOC_TITLE,
       externalId: SMOKE_DOC_EXTERNAL_ID,
       text: SMOKE_DOC_TEXT,
-      storeText: true,
       indexMode: 'HYBRID',
     });
     if (ingest.status === 403) return 'forbidden';
     if (ingest.status < 200 || ingest.status >= 300)
       throw new Error(`seed document failed: HTTP ${ingest.status} ${JSON.stringify(ingest.json)}`);
-    doc = ingest.json as { id: string; status?: string };
+    doc = ingest.json as { id: string; indexStatus?: string };
   }
   const id = doc.id;
-  // Documents expose their index state on `.status` (records use `.indexStatus`).
+  // The processing axis is `indexStatus` (the caller lifecycle is `status`).
   for (let i = 0; i < 30; i++) {
-    if (doc.status === 'INDEXED') break;
+    if (doc.indexStatus === 'INDEXED') break;
     await sleep(1000);
     const { json } = await api('GET', `/v1/documents/${id}`);
-    doc = json as { id: string; status?: string };
+    doc = json as { id: string; indexStatus?: string };
   }
   return 'provisioned';
 }

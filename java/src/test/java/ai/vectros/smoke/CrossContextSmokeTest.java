@@ -160,7 +160,7 @@ class CrossContextSmokeTest {
         return ctx.api.documents().ingestDocument(DocumentRequest.builder()
             .title("Cross-context Doc " + po).schemaId(schema.getId().orElseThrow())
             .text("Confidential note " + marker + " for purchase order " + po + ".")
-            .indexMode(DocumentRequestIndexMode.TEXT).storeText(true)
+            .indexMode(DocumentRequestIndexMode.TEXT)
             .payload(Map.of("po_number", po)).build())
             .getId().orElseThrow();
     }
@@ -174,8 +174,10 @@ class CrossContextSmokeTest {
     }
 
     private static void pollIndexed(CrossContext.Handle ctx, String docId) {
+        // The processing axis is indexStatus; getStatus() is the ACTIVE/ARCHIVED
+        // lifecycle and never reaches INDEXED.
         for (int i = 0; i < 30; i++) {
-            String status = ctx.api.documents().getDocument(docId).getStatus().map(Object::toString).orElse("");
+            String status = ctx.api.documents().getDocument(docId).getIndexStatus().map(Object::toString).orElse("");
             if ("INDEXED".equals(status)) return;
             if ("FAILED".equals(status)) fail("document " + docId + " reached FAILED during indexing");
             Smoke.sleep(2000);
