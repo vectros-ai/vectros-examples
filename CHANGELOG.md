@@ -5,6 +5,25 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.8.0 — 2026-07-08
+
+Adds runnable TypeScript examples of app-context teardown and exact per-operation
+billing. No SDK pin change (the TypeScript examples stay on `@vectros-ai/sdk@^0.33.0`).
+
+### Added
+
+- **App-context teardown (`app-contexts`)** — the TypeScript app-contexts example
+  now demonstrates the confirm-gated context delete end to end: it seeds a context
+  with real content (a schema, record, folder, and document), issues the delete with
+  the required `confirm` echo (and shows the `400` when it is missing or wrong), then
+  verifies the content is actually erased — each seeded item returns `404` after the
+  delete, rather than only checking that the context reports `purging`.
+- **Exact per-operation billing (`billing-exact`)** — a new TypeScript example that
+  pins the precise credit cost of an operation: it snapshots `credits.usedMilli`
+  before and after a minimal create + delete, showing the charge is exactly
+  computable from the published pricing schedule (a write base plus one index
+  charge, with deletes billed the same as writes).
+
 ## 0.7.0 — 2026-07-06
 
 Examples updated for **Vectros SDK 0.33.0**, adding runnable examples for the

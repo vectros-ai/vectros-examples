@@ -1,6 +1,6 @@
 {
   "name": "vectros-examples-typescript",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Runnable TypeScript examples for the Vectros API, built on the @vectros-ai/sdk client.",
   "license": "Apache-2.0",
   "private": true,
