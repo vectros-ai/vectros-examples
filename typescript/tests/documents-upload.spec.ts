@@ -4,9 +4,11 @@
  * (request URL → PUT bytes → poll) is the one developers get wrong most often.
  */
 import * as fs from 'fs';
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE, SAMPLE_PDF_SEMANTIC_PHRASE } from '../src/fixtures';
+
+interface MintedToken { token: string; expiresAt: number; }
 
 describe('documents (upload)', () => {
     let userId: string;
@@ -203,4 +205,106 @@ describe('documents (upload)', () => {
         const dl = await fetch(resp.downloadUrl!);
         expect(dl.status).toBe(200);
     });
+});
+
+/**
+ * documents (upload — #621 scope ownership). File uploads gained a `scopes` field
+ * (MR-1, #621) — closing a prior SDK gap where only text-ingest could declare
+ * scope ownership. This block pins parity with text-ingest: a file uploaded with
+ * `scopes` carries them on the document, and a scoped token confined to that scope
+ * sees the file in search while one confined elsewhere does not.
+ *
+ * The upload-init response (FileUploadResponse) is minted BEFORE the bytes arrive
+ * and does NOT carry `scopes` — so the echo is asserted on the document read
+ * (`GET /v1/documents/{id}`), which is where scope ownership surfaces.
+ */
+describe('documents (upload — scope ownership)', () => {
+    let inScopeOrgId: string;   // the org the file is scoped to
+    let outScopeOrgId: string;  // a different org — its token must NOT see the file
+    let testStartedAt: string;
+    const docIds: string[] = [];
+
+    beforeAll(async () => {
+        testStartedAt = new Date().toISOString();
+        const inOrg = await client.identity.createOrg({ body: { externalId: uniqueTag(), name: 'Upload Scope In' } });
+        inScopeOrgId = inOrg.id!;
+        const outOrg = await client.identity.createOrg({ body: { externalId: uniqueTag(), name: 'Upload Scope Out' } });
+        outScopeOrgId = outOrg.id!;
+    });
+
+    afterAll(async () => {
+        for (const id of docIds) {
+            await tryCleanup(`delete doc ${id}`, () => client.documents.deleteDocument({ id }));
+        }
+        await tryCleanup('delete in-org', () => client.identity.deleteOrg({ id: inScopeOrgId }));
+        await tryCleanup('delete out-org', () => client.identity.deleteOrg({ id: outScopeOrgId }));
+    });
+
+    test('uploaded file carries its scopes; in-scope token sees it in search, out-of-scope token does not', async () => {
+        const orgScope = `org:${inScopeOrgId}`;
+
+        // ── Upload with an org scope (the #621 surface) ───────────────────────
+        const upload = await client.documents.uploadDocument({
+            fileName: 'smoke-scoped-upload.pdf',
+            fileType: 'application/pdf',
+            indexMode: 'HYBRID',
+            // The scopes declaration. `org:<id>` is equivalent to the orgId field;
+            // supplying it here is the file-upload analogue of text-ingest's scopes.
+            scopes: [orgScope],
+            payload: { category: 'scoped-upload' },
+        });
+        docIds.push(upload.id!);
+
+        const body = fs.readFileSync(SAMPLE_PDF_PATH);
+        const putResp = await fetch(upload.uploadUrl!, {
+            method: 'PUT',
+            body,
+            headers: { 'Content-Type': 'application/pdf' },
+        });
+        expect(putResp.status).toBe(200);
+
+        await pollUntilIndexed(upload.id!, 'document', 120_000);
+
+        // ── The document echoes the scope ownership — the DIRECT proof that the
+        // upload `scopes` field is wired end-to-end (the #621 contract). If upload
+        // ignored `scopes`, this read-back is where it fails. ──────────────────
+        const loaded = await client.documents.getDocument({ id: upload.id! });
+        expect(loaded.scopes ?? []).toContain(orgScope);
+        // `org:` scope mirrors the orgId field — the derivation must agree.
+        expect(loaded.orgId).toBe(inScopeOrgId);
+
+        // ── In-scope token: dataScope bound to the org → SEES the file ────────
+        // Strict dataScope (no null sentinel) requires the ownership field to be
+        // carried explicitly on the search call (see auth.spec's dataScope test).
+        const inMint = (await client.auth.mintToken({
+            scope: { allowedActions: ['documents:r', 'search:r'], dataScope: { orgId: [inScopeOrgId] } },
+        })) as MintedToken;
+        const inScoped = getScopedClient(inMint.token);
+        await pollUntilSearchable(SAMPLE_PDF_KNOWN_PHRASE, upload.id!, 30_000, 'TEXT', testStartedAt);
+        const inResults = await inScoped.search.content({
+            query: SAMPLE_PDF_KNOWN_PHRASE,
+            mode: 'TEXT',
+            limit: 100,
+            createdAfter: testStartedAt,
+            orgId: inScopeOrgId,
+        });
+        expect((inResults.results ?? []).map((r) => r.documentId)).toContain(upload.id);
+
+        // ── Out-of-scope token: bound to a DIFFERENT org → does NOT see it. This
+        // is a generic scope-confinement backstop (it also holds for any org-owned
+        // doc), NOT the primary #621 proof — that is the scopes echo + the positive
+        // visibility above. ───────────────────────────────────────────────────
+        const outMint = (await client.auth.mintToken({
+            scope: { allowedActions: ['documents:r', 'search:r'], dataScope: { orgId: [outScopeOrgId] } },
+        })) as MintedToken;
+        const outScoped = getScopedClient(outMint.token);
+        const outResults = await outScoped.search.content({
+            query: SAMPLE_PDF_KNOWN_PHRASE,
+            mode: 'TEXT',
+            limit: 100,
+            createdAfter: testStartedAt,
+            orgId: outScopeOrgId,
+        });
+        expect((outResults.results ?? []).map((r) => r.documentId)).not.toContain(upload.id);
+    }, 180_000);
 });

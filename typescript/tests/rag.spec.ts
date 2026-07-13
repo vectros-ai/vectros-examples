@@ -136,8 +136,12 @@ describe('inference: /v1/rag', () => {
 
             const minted = (await client.auth.mintToken({
                 userId: user.id!,
+                // #587: RAG retrieval is enforced per row against what the token could read
+                // DIRECTLY — so grounding on documents requires `documents:r` (records would
+                // require `records:r`). `inference:r`/`search:r` alone no longer ground any
+                // corpus (see the fail-closed twin below).
                 scope: {
-                    allowedActions: ['inference:r', 'search:r'],
+                    allowedActions: ['inference:r', 'search:r', 'documents:r'],
                     dataScope: { userId: [user.id!] },
                 },
             })) as MintedToken;
@@ -168,6 +172,44 @@ describe('inference: /v1/rag', () => {
         } finally {
             await tryCleanup('delete scoped doc', () => client.documents.deleteDocument({ id: userOwnedDoc.id! }));
             await tryCleanup('delete scoped user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
+    test('#587 scoped token without a corpus-read grant fails closed (grounds on nothing)', async () => {
+        // A token with inference:r + search:r but NO documents:r / records:r cannot read any
+        // content directly, so RAG grounds on an empty corpus (no leak). This pins the
+        // behavior the docs recommendation used to violate.
+        const user = await client.identity.createUser({ body: { externalId: 'rag-noread-' + uniqueTag() } });
+        const userOwnedDoc = await client.documents.ingestDocument({ body: {
+            title: 'No-Read RAG Doc ' + uniqueTag(),
+            text: 'Content that a search:r-only token must NOT be able to ground on.',
+            indexMode: 'HYBRID',
+            userId: user.id!,
+        } });
+        try {
+            await pollUntilIndexed(userOwnedDoc.id!, 'document');
+            const minted = (await client.auth.mintToken({
+                userId: user.id!,
+                scope: {
+                    allowedActions: ['inference:r', 'search:r'],   // no documents:r / records:r
+                    dataScope: { userId: [user.id!] },
+                },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+
+            const stream = await scoped.inference.ragInference({
+                query: 'What content is available?',
+                search: { mode: 'HYBRID', limit: 10, createdAfter: testStartedAt, userId: user.id! },
+                maxTokens: 64,
+            });
+            const events = await collectStream<any>(stream);
+            const searchResults = events.find((e) => e.event === 'search_results');
+            const ids = (searchResults?.results ?? []).map((r: any) => r.documentId);
+            expect(ids).not.toContain(userOwnedDoc.id);
+            expect(ids).toHaveLength(0);
+        } finally {
+            await tryCleanup('delete no-read doc', () => client.documents.deleteDocument({ id: userOwnedDoc.id! }));
+            await tryCleanup('delete no-read user', () => client.identity.deleteUser({ id: user.id! }));
         }
     });
 

@@ -40,9 +40,9 @@ test('lookup_principal resolves a client by externalId to its Vectros id', async
         arguments: { kind: 'client', externalId: EXTERNAL_ID },
       }),
     );
-    assert.ok(Array.isArray(resolved), 'resolve returns a bare array');
+    assert.ok(Array.isArray(resolved.data), `resolve returns a {data,nextCursor} envelope: ${JSON.stringify(resolved)}`);
     assert.ok(
-      resolved.some((c: any) => c.id === seededId),
+      resolved.data.some((c: any) => c.id === seededId),
       `resolve finds the seeded client by externalId (expected id ${seededId}): ${JSON.stringify(resolved)}`,
     );
   } finally {

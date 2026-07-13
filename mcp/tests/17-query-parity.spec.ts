@@ -59,9 +59,9 @@ test('record_query lookup honors order=desc vs asc', async (t) => {
         arguments: { type: SMOKE_TYPE, field: SMOKE_RANGE_FIELD, prefix, order: 'desc', limit: 10 },
       }),
     );
-    assert.ok(Array.isArray(desc) && desc.length >= 2, `prefix lookup returned both records: ${JSON.stringify(desc)}`);
-    assert.equal(desc[0].payload?.rank, rankB, 'desc → higher rank first');
-    assert.equal(desc[1].payload?.rank, rankA, 'desc → lower rank second');
+    assert.ok(Array.isArray(desc.data) && desc.data.length >= 2, `prefix lookup returned both records: ${JSON.stringify(desc)}`);
+    assert.equal(desc.data[0].payload?.rank, rankB, 'desc → higher rank first');
+    assert.equal(desc.data[1].payload?.rank, rankA, 'desc → lower rank second');
 
     const asc = parse(
       await client.callTool({
@@ -69,7 +69,7 @@ test('record_query lookup honors order=desc vs asc', async (t) => {
         arguments: { type: SMOKE_TYPE, field: SMOKE_RANGE_FIELD, prefix, order: 'asc', limit: 10 },
       }),
     );
-    assert.equal(asc[0].payload?.rank, rankA, 'asc → lower rank first (opposite of desc)');
+    assert.equal(asc.data[0].payload?.rank, rankA, 'asc → lower rank first (opposite of desc)');
   } finally {
     await close();
     for (const id of ids) await api('DELETE', `/v1/records/${id}`).catch(() => {});

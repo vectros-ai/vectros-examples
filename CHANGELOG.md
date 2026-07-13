@@ -5,6 +5,80 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.9.0 — 2026-07-12
+
+### Added
+
+- **Record archive lifecycle (`records-archive`)** — a new example walking a record through
+  `ACTIVE → ARCHIVED → ACTIVE`: it creates a searchable record, archives it and confirms search
+  no longer returns it, then reactivates it and confirms it is searchable again — while proving the
+  record stays retrievable by id and listed by `GET /v1/records` the whole time (archive retracts
+  from search only, never from storage).
+- **Payload tiering + safe full-replacement (`records-tiering-safety`)** — shows how a large record
+  payload is stored externally so a list/lookup returns only the indexed projection (flagged with
+  `payloadPartial`), and how a `PUT` rebuilt from that projection is rejected rather than silently
+  clearing the omitted fields. Demonstrates the three safe paths: `PATCH` to preserve omitted fields,
+  `?includePayload=true` to read the full payload, and the `allowClear` confirmation to intentionally
+  replace it.
+- **Record TTL contract (`records-ttl`)** — sets an absolute `expiresAt` on a TTL-eligible schema and
+  shows the validation contract: the schema opt-in requirement, the 10-minute floor, malformed-timestamp
+  rejection, and that an upsert which only extends the expiry is applied, not treated as a no-op.
+- **Filterable payload projection (`documents-filterable-projection`)** — shows that a large free-text
+  field ingests and stays full-text searchable by body, that a schema field must be declared
+  `filterable` to be usable as a `?filters=` target (free-text fields are content, not filters), and
+  that an oversized declared-filterable value is rejected up front with a clear error.
+
+### Changed
+
+- **File-upload scopes (`documents-upload`)** — extended to show a file uploaded with `scopes`: the
+  document carries them, and a scoped token confined to that scope sees the file in search while one
+  outside it does not (parity with text ingest).
+- **Folder + owner listing (`folders`)** — extended to show `GET /v1/records?folderId=&userId=`
+  returning a record that also carries an `orgId`, and a fully-filtered folder feed resuming across
+  pages via the cursor.
+
+No SDK pin change — the new examples exercise record TTL / archive / payload-tiering and file-upload
+scope ownership, all part of the `@vectros-ai/sdk@^0.34.0` surface already pinned in 0.8.4.
+
+## 0.8.4 — 2026-07-10
+
+### Changed
+
+- **TypeScript examples SDK pin** — bumped the TypeScript examples' `@vectros-ai/sdk`
+  dependency range from `^0.33.0` to `^0.34.0` to track the current SDK release
+  (additive `scopes` read-back on record/document/folder responses, plus webhooks).
+  No example behavior changes.
+
+## 0.8.3 — 2026-07-10
+
+### Added
+
+- **Owner-scope search smoke (`search`)** — a new example proving that a scoped token whose data
+  scope opts into tenant-level content (its owner list includes the `null` sentinel alongside its
+  own id) sees **owner-less rows in both `TEXT` and `SEMANTIC` search**, together with its own rows,
+  while another owner's rows stay excluded. It seeds the three ownership shapes (owner-less,
+  self-owned, other-owned) through a root key, waits for indexing, searches through the scoped token,
+  and cleans up every seeded row. No SDK pin change.
+
+## 0.8.2 — 2026-07-09
+
+### Changed
+
+- **Models catalog smoke (`models`)** — refreshed for the current inference lineup: `GET /v1/models`
+  now lists **Claude Sonnet 5** (replacing the retired `claude-sonnet-4-6` alias) and **Amazon Nova
+  Lite**. The per-1k credit-rate assertion is now provider-aware — Anthropic models price output at
+  5× input, Amazon Nova at 4× — so the mixed-provider catalog validates. No SDK pin change.
+
+## 0.8.1 — 2026-07-09
+
+### Changed
+
+- **Scoped-token RAG example (`rag`)** — updated to the tightened search/RAG data-scope
+  enforcement (#587): retrieval now returns only content the token could read directly, so the
+  scoped-token RAG example grants `documents:r` alongside `inference:r`/`search:r`, and a new
+  case shows a token with `inference:r`/`search:r` but no read grant grounds on nothing
+  (fail-closed). No SDK pin change.
+
 ## 0.8.0 — 2026-07-08
 
 Adds runnable TypeScript examples of app-context teardown and exact per-operation

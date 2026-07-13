@@ -16,8 +16,8 @@ const KEY = process.env.VECTROS_API_KEY;
  * new arg and assert the call succeeds with the expected results shape.
  *
  * document_query mirrors record_query: list via listDocuments, equality lookup
- * via lookupDocumentsByBody (POST). Both unwrap the {data,nextCursor}
- * envelope to a bare DocumentResponse[]. We self-seed a document so the
+ * via lookupDocumentsByBody (POST). Both surface the {data,nextCursor}
+ * envelope (DocumentResponse[] in `data`). We self-seed a document so the
  * non-empty list branch is real, and clean it up.
  */
 
@@ -85,7 +85,7 @@ test('hybrid_search accepts the full launch enrichment surface', async (t) => {
   }
 });
 
-test('document_query list mode returns a bare documents array', async (t) => {
+test('document_query list mode returns the {data,nextCursor} envelope', async (t) => {
   if (!KEY) {
     t.skip('VECTROS_API_KEY not set');
     return;
@@ -113,11 +113,12 @@ test('document_query list mode returns a bare documents array', async (t) => {
     });
     assert.ok(!result.isError, `document_query (list) must not error: ${JSON.stringify(result)}`);
     const parsed = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
-    // Unwrapped to a bare documents array (NOT the {data,nextCursor} envelope).
-    assert.ok(Array.isArray(parsed), 'document_query (list) returns a bare documents array');
-    assert.ok(parsed.length >= 1, 'at least the seeded document is present');
-    assert.ok(parsed.length <= 3, 'respects the MCP limit cap');
-    assert.ok((parsed[0] as Record<string, unknown>).id, 'document has an id');
+    // The {data,nextCursor} page envelope; `data` holds the documents.
+    assert.ok(Array.isArray(parsed.data), `document_query (list) returns a {data,nextCursor} envelope: ${JSON.stringify(parsed)}`);
+    assert.ok('nextCursor' in parsed, 'envelope carries a nextCursor key');
+    assert.ok(parsed.data.length >= 1, 'at least the seeded document is present');
+    assert.ok(parsed.data.length <= 3, 'respects the MCP limit cap');
+    assert.ok((parsed.data[0] as Record<string, unknown>).id, 'document has an id');
   } finally {
     await close();
     // Best-effort teardown of the seeded document.
@@ -130,7 +131,7 @@ test('document_query list mode returns a bare documents array', async (t) => {
   }
 });
 
-test('document_query lookup mode returns a bare array (no match → empty, not error)', async (t) => {
+test('document_query lookup mode returns the {data,nextCursor} envelope (no match → empty, not error)', async (t) => {
   if (!KEY) {
     t.skip('VECTROS_API_KEY not set');
     return;
@@ -169,7 +170,7 @@ test('document_query lookup mode returns a bare array (no match → empty, not e
       return;
     }
     const parsed = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
-    assert.ok(Array.isArray(parsed), 'document_query (lookup) returns a bare array');
+    assert.ok(Array.isArray(parsed.data), `document_query (lookup) returns a {data,nextCursor} envelope: ${JSON.stringify(parsed)}`);
   } finally {
     await close();
   }

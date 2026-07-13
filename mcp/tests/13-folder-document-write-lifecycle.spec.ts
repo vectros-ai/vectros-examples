@@ -110,12 +110,12 @@ test('folder CRUD + document write lifecycle', async (t) => {
     assert.equal(conflict.isError, true, 'stale expectedVersion → conflict');
     assert.match(String((conflict as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ''), /409|conflict/i);
 
-    // QUERY documents in our folder — bare array containing our doc.
+    // QUERY documents in our folder — {data,nextCursor} envelope with our doc in `data`.
     const inFolder = parse(
       await client.callTool({ name: 'document_query', arguments: { folderId, limit: 10 } }),
     );
-    assert.ok(Array.isArray(inFolder), 'document_query list returns a bare array');
-    assert.ok(inFolder.some((d: any) => d.id === docId), 'the moved document appears in the folder listing');
+    assert.ok(Array.isArray(inFolder.data), `document_query list returns a {data,nextCursor} envelope: ${JSON.stringify(inFolder)}`);
+    assert.ok(inFolder.data.some((d: any) => d.id === docId), 'the moved document appears in the folder listing');
 
     // DELETE the document → a subsequent get must fail.
     const delDoc = parse(await client.callTool({ name: 'document_delete', arguments: { documentId: docId } }));

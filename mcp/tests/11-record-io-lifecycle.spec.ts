@@ -12,7 +12,7 @@ import { api, parseToolResult as parse, SMOKE_TYPE, SMOKE_EQUALITY_FIELD, SMOKE_
  * (`status` = equality lookup, `rank` = range lookup). This spec creates and
  * tears down its OWN record: equality lookups hit `status`, prefix/range hit
  * `rank`, and each asserts the record is actually returned (not just that the
- * call shape is a bare array).
+ * call shape is the {data,nextCursor} envelope).
  */
 
 test('record_query / get / create / update / delete lifecycle', async (t) => {
@@ -46,9 +46,9 @@ test('record_query / get / create / update / delete lifecycle', async (t) => {
     assert.equal(got.id, recordId);
     assert.equal(got.payload?.title, 'Smoke');
 
-    // QUERY list — bare array containing our record.
+    // QUERY list — {data,nextCursor} envelope with our record in `data`.
     const listed = parse(await client.callTool({ name: 'record_query', arguments: { type: SMOKE_TYPE } }));
-    assert.ok(Array.isArray(listed), 'list mode returns a bare array');
+    assert.ok(Array.isArray(listed.data), `list mode returns a {data,nextCursor} envelope: ${JSON.stringify(listed)}`);
 
     // QUERY lookup — EQUALITY / PREFIX / RANGE. These assert the record is FOUND
     // without polling: lookup rows (GSI slots + range rows) are written synchronously
@@ -62,7 +62,7 @@ test('record_query / get / create / update / delete lifecycle', async (t) => {
         arguments: { type: SMOKE_TYPE, field: SMOKE_EQUALITY_FIELD, value: 'todo', limit: 10 },
       }),
     );
-    assert.ok(Array.isArray(eq) && eq.some((r: any) => r.id === recordId), 'equality lookup finds the record');
+    assert.ok(Array.isArray(eq.data) && eq.data.some((r: any) => r.id === recordId), 'equality lookup finds the record');
 
     // QUERY lookup — PREFIX on `rank` (the range field); 'm50' starts with 'm'.
     const pre = parse(
@@ -71,7 +71,7 @@ test('record_query / get / create / update / delete lifecycle', async (t) => {
         arguments: { type: SMOKE_TYPE, field: SMOKE_RANGE_FIELD, prefix: 'm', limit: 10 },
       }),
     );
-    assert.ok(Array.isArray(pre) && pre.some((r: any) => r.id === recordId), 'prefix lookup finds the record');
+    assert.ok(Array.isArray(pre.data) && pre.data.some((r: any) => r.id === recordId), 'prefix lookup finds the record');
 
     // QUERY lookup — RANGE on `rank`; 'm50' falls within [a, z].
     const rng = parse(
@@ -80,7 +80,7 @@ test('record_query / get / create / update / delete lifecycle', async (t) => {
         arguments: { type: SMOKE_TYPE, field: SMOKE_RANGE_FIELD, from: 'a', to: 'z', limit: 10 },
       }),
     );
-    assert.ok(Array.isArray(rng) && rng.some((r: any) => r.id === recordId), 'range lookup finds the record');
+    assert.ok(Array.isArray(rng.data) && rng.data.some((r: any) => r.id === recordId), 'range lookup finds the record');
 
     // UPDATE — RFC-7386 merge-patch (title/note deep-merge-preserved, status changed);
     // expectedVersion is forwarded and the server enforces optimistic concurrency.

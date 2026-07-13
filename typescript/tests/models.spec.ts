@@ -29,9 +29,12 @@ describe('inference models', () => {
             expect(model.contextWindow).toBeGreaterThan(0);
             expect(model.inputCreditsPer1kTokens).toBeGreaterThan(0);
             expect(model.outputCreditsPer1kTokens).toBeGreaterThan(0);
-            // Output rate is 5x input rate (Anthropic pass-through pricing).
+            // Output rate is a per-model multiple of the input rate: Anthropic models are 5:1,
+            // Amazon Nova is 4:1 (its output tokens are relatively cheaper). Derive the expected
+            // ratio from the provider so the catalog can carry mixed pricing shapes.
+            const expectedOutputRatio = model.provider === 'Amazon' ? 4 : 5;
             expect(model.outputCreditsPer1kTokens)
-                .toBeCloseTo(model.inputCreditsPer1kTokens * 5, 5);
+                .toBeCloseTo(model.inputCreditsPer1kTokens * expectedOutputRatio, 5);
             // availableOn enumerates which plan tiers can call the model
             expect(Array.isArray(model.availableOn)).toBe(true);
             expect(model.availableOn.length).toBeGreaterThan(0);
@@ -87,14 +90,14 @@ describe('inference models', () => {
         expect(paidOnlyModels.length).toBeGreaterThan(0);
     });
 
-    test('catalog includes claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-8 aliases', async () => {
+    test('catalog includes claude-haiku-4-5, claude-sonnet-5, claude-opus-4-8 aliases', async () => {
         const catalog = await client.inference.listInferenceModels();
         const ids = catalog.models.map(m => m.id);
         // The current generation of aliases. Older aliases (Sonnet 4.5,
         // Opus 4.7) have been retired and must no longer appear.
         for (const expected of [
             'claude-haiku-4-5',
-            'claude-sonnet-4-6',
+            'claude-sonnet-5',
             'claude-opus-4-8',
         ]) {
             expect(ids).toContain(expected);

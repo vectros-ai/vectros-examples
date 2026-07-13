@@ -125,3 +125,140 @@ describe('folders', () => {
         expect(folders.some((f) => f.id === parentFolderId && f.parentFolderId === root!.id)).toBe(true);
     });
 });
+
+/**
+ * records folder + userId listing precedence (#622, MR-1).
+ *
+ * `GET /v1/records?folderId=F&userId=U` walks the folder-scoped index. #622 fixed a
+ * sort-key precedence bug there: a record that carries an `orgId` in ADDITION to its
+ * `folderId` + `userId` was keyed such that the combined folder+userId filter could
+ * miss it. This block pins the fix — a record owning all three dimensions is returned
+ * by the combined filter AND still carries its orgId — plus a NEGATIVE control (a
+ * same-folder record owned by a DIFFERENT user must be excluded, so the userId filter
+ * is proven load-bearing) and the pagination contract (a fully-filtered feed resumes
+ * via the cursor).
+ */
+describe('records (folder + user listing precedence)', () => {
+    let schemaId: string;
+    let recordType: string;
+    let userId: string;
+    let otherUserId: string;
+    let orgId: string;
+    let folderId: string;
+    // The three user-owned records that MUST surface under the {folderId, userId} filter.
+    const userRecordIds: string[] = [];
+    // A same-folder record owned by otherUserId — the negative control that must be EXCLUDED.
+    let foreignRecId: string;
+    // Everything created, for teardown (staging is shared).
+    const recordIds: string[] = [];
+
+    beforeAll(async () => {
+        recordType = `smoke_folder622_${uniqueTag()}`.replace(/-/g, '_');
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: recordType,
+            displayName: 'Smoke Folder-Precedence Record',
+            indexMode: 'NONE',   // store-only: this is a listing test, no search needed
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'name', fieldType: 'string', required: true }],
+        } });
+        schemaId = schema.id!;
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        userId = user.id!;
+        const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        otherUserId = otherUser.id!;
+        const org = await client.identity.createOrg({ body: { externalId: uniqueTag(), name: 'Folder622 Org' } });
+        orgId = org.id!;
+        const folder = await client.folders.createFolder({ body: { name: 'Folder622 ' + uniqueTag() } });
+        folderId = folder.id!;
+
+        // Three records, each owning ALL THREE dimensions (folder + user + org) —
+        // the exact shape the #622 precedence bug mis-keyed.
+        for (let i = 0; i < 3; i++) {
+            const rec = await client.records.createRecord({ body: {
+                typeName: recordType,
+                schemaId,
+                payload: { name: `folder622-record-${i}-${uniqueTag()}` },
+                folderId,
+                userId,
+                orgId,
+            } });
+            userRecordIds.push(rec.id!);
+            recordIds.push(rec.id!);
+        }
+
+        // Negative control: SAME folder + org, DIFFERENT user. The {folderId, userId}
+        // filter must exclude it — without this, folderId alone isolates the set and
+        // the userId filter's correctness is never actually exercised.
+        const foreign = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: { name: `folder622-foreign-${uniqueTag()}` },
+            folderId,
+            userId: otherUserId,
+            orgId,
+        } });
+        foreignRecId = foreign.id!;
+        recordIds.push(foreignRecId);
+    });
+
+    afterAll(async () => {
+        for (const id of recordIds) {
+            await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
+        }
+        await tryCleanup('delete folder', () => client.folders.deleteFolder({ id: folderId }));
+        await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
+        await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
+        await tryCleanup('delete other user', () => client.identity.deleteUser({ id: otherUserId }));
+        await tryCleanup('delete org', () => client.identity.deleteOrg({ id: orgId }));
+    });
+
+    test('folderId+userId filter returns the user\'s all-three-dimension records (carrying orgId) and excludes a foreign owner', async () => {
+        const list = await client.records.listRecords({ folderId, userId, limit: 100 });
+        const rows = list.data ?? [];
+        const listedIds = rows.map((r) => r.id);
+        // Every all-three-dimension record owned by userId must surface under the combined filter.
+        for (const id of userRecordIds) expect(listedIds).toContain(id);
+        // NEGATIVE: the same-folder record owned by otherUserId must NOT — this is what
+        // makes the userId dimension of the filter load-bearing (a regression that drops
+        // the userId filter would over-return it and fail here).
+        expect(listedIds).not.toContain(foreignRecId);
+
+        // ...and the surfaced record still carries the orgId whose sort-key precedence
+        // was the bug — proving it wasn't dropped or mis-projected.
+        const sample = rows.find((r) => r.id === userRecordIds[0]);
+        expect(sample).toBeDefined();
+        expect(sample!.orgId).toBe(orgId);
+        expect(sample!.userId).toBe(userId);
+        expect(sample!.folderId).toBe(folderId);
+    });
+
+    test('a fully-filtered folder+userId feed resumes via the cursor (and never leaks the foreign owner)', async () => {
+        // limit:1 forces pagination across the 3 user-owned records. Drain every page
+        // via nextCursor and assert the filtered feed is complete and stable — a cursor
+        // that dropped the folder+userId filter (or lost precedence) would leak the
+        // foreign-owner row, return wrong rows, or never terminate.
+        const seen = new Set<string>();
+        let cursor: string | null | undefined;
+        let pages = 0;
+        do {
+            const page = await client.records.listRecords(
+                cursor ? { folderId, userId, limit: 1, startFrom: cursor } : { folderId, userId, limit: 1 });
+            for (const r of page.data ?? []) {
+                seen.add(r.id!);
+                // Every page's rows stay correctly filtered — the foreign-owner row never appears.
+                expect(r.userId).toBe(userId);
+                expect(r.folderId).toBe(folderId);
+                expect(r.id).not.toBe(foreignRecId);
+            }
+            cursor = page.nextCursor;
+            pages++;
+            if (pages > 20) throw new Error('pagination did not terminate — cursor loop');
+        } while (cursor);
+
+        // All three user-owned records were reached across the paged feed; the foreign one was not.
+        for (const id of userRecordIds) expect(seen.has(id)).toBe(true);
+        expect(seen.has(foreignRecId)).toBe(false);
+        // Pagination actually happened (more than one page for 3 records at limit:1).
+        expect(pages).toBeGreaterThan(1);
+    });
+});
