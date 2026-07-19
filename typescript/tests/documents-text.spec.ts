@@ -82,7 +82,7 @@ const testIfSecondTenant = process.env.VECTROS_TEST_API_KEY ? test : test.skip;
 describe('documents (text)', () => {
     let userId: string;
     let otherUserId: string;
-    let orgId: string;
+    let orgEntityId: string;
     let folderId: string;
     let testStartedAt: string;
     const docIds: string[] = [];
@@ -98,8 +98,8 @@ describe('documents (text)', () => {
         // docs the caller doesn't own, not just that the matching-user filter works.
         const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         otherUserId = otherUser.id!;
-        const org = await client.identity.createOrg({ body: { externalId: uniqueTag() } });
-        orgId = org.id!;
+        const org = await client.identity.createEntity({ namespace: 'org', body: { externalId: uniqueTag() } });
+        orgEntityId = org.id!;
         const folder = await client.folders.createFolder({ body: {
             name: 'Smoke Text Docs ' + uniqueTag(),
         } });
@@ -113,7 +113,8 @@ describe('documents (text)', () => {
         await tryCleanup('delete folder', () => client.folders.deleteFolder({ id: folderId }));
         await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
         await tryCleanup('delete other user', () => client.identity.deleteUser({ id: otherUserId }));
-        await tryCleanup('delete org', () => client.identity.deleteOrg({ id: orgId }));
+        await tryCleanup('delete org', () =>
+            client.identity.deleteEntity({ namespace: 'org', id: orgEntityId }));
     });
 
     // ANCHOR — ingest + RAG contextText (the key pattern this spec documents)
@@ -124,7 +125,7 @@ describe('documents (text)', () => {
             indexMode: 'HYBRID',
             folderId,
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
             // Documents carry a free-form `payload` — a flat object, filterable
             // by key via search `filters` (exercised by the metadata-filter test
             // below).
@@ -219,7 +220,7 @@ describe('documents (text)', () => {
             indexMode: 'HYBRID',
             folderId,
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
             payload: {
                 category: 'clinical-guidelines',
                 specialty: 'neurology',
@@ -252,7 +253,7 @@ describe('documents (text)', () => {
             indexMode: 'HYBRID',
             folderId,
             userId: otherUserId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         docIds.push(otherDoc.id!);
         await pollUntilIndexed(otherDoc.id!, 'document');
@@ -298,7 +299,7 @@ describe('documents (text)', () => {
             indexMode: 'HYBRID',
             folderId,
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         docIds.push(doc.id!);
         await pollUntilIndexed(doc.id!, 'document');
@@ -315,7 +316,7 @@ describe('documents (text)', () => {
                 indexMode: 'HYBRID',
                 folderId,
                 userId,
-                orgId,
+                scopes: [`org:${orgEntityId}`],
             },
         });
         // The update queues a re-index. Poll until INDEXED again.

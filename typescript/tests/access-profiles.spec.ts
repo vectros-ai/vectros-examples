@@ -7,8 +7,8 @@
  *   - role CRUD (create / get / update / delete / list)
  *   - profile CRUD (create / get / update / delete / list)
  *   - XOR enforcement: exactly one of scopes (inline) or roleId (reference)
- *   - identityOverrides sacred-field guard: only orgId + clientId
- *     are allowed; userId is schema-rejected
+ *   - identityOverrides sacred-field guard: only scope:<namespace> keys
+ *     (e.g. scope:org, scope:client) are allowed; userId is schema-rejected
  *   - status active/suspended round-trip
  *   - idempotent POST for both role and profile
  *   - 409 on delete-role that's referenced by a profile
@@ -227,10 +227,10 @@ describe('access-profiles', () => {
             }
         });
 
-        test('identityOverrides accepts orgId + clientId', async () => {
+        test('identityOverrides accepts scope:org + scope:client', async () => {
             // The sacred fields ARE the tenant identifier and the userId —
-            // schema rejects them. orgId / clientId are the only documented
-            // mutable keys.
+            // schema rejects them. Any grammar-valid scope:<namespace> key is
+            // an allowed override (at most two scope dimensions).
             const principalId = 'usr_' + uniqueTag();
             const created = await client.auth.createAccessProfile({
                 contextId: ctxId,
@@ -238,14 +238,14 @@ describe('access-profiles', () => {
                     principalId,
                     scopes: [{ allowed_actions: ['records:r'] }],
                     identityOverrides: {
-                        orgId: { value: 'org_smoke' },
-                        clientId: { value: 'client_smoke' },
+                        'scope:org': { value: 'org_smoke' },
+                        'scope:client': { value: 'client_smoke' },
                     },
                 },
             });
             try {
-                expect(created.identityOverrides?.orgId).toBeDefined();
-                expect(created.identityOverrides?.clientId).toBeDefined();
+                expect(created.identityOverrides?.['scope:org']).toBeDefined();
+                expect(created.identityOverrides?.['scope:client']).toBeDefined();
             } finally {
                 await tryCleanup('cleanup', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));

@@ -22,8 +22,8 @@ test('lookup_principal resolves a client by externalId to its Vectros id', async
     return;
   }
 
-  // Seed a client (idempotent by externalId) via the raw API.
-  const seed = await api('POST', '/v1/clients', { externalId: EXTERNAL_ID, name: 'MCP smoke client' });
+  // Seed a client entity (idempotent by externalId) via the raw API.
+  const seed = await api('POST', '/v1/entities/client', { externalId: EXTERNAL_ID, name: 'MCP smoke client' });
   if (seed.status === 403) {
     t.skip('smoke key cannot create clients (non-root) — resolve test skipped');
     return;
@@ -47,7 +47,7 @@ test('lookup_principal resolves a client by externalId to its Vectros id', async
     );
   } finally {
     await close();
-    if (seededId) await api('DELETE', `/v1/clients/${seededId}`).catch(() => {});
+    if (seededId) await api('DELETE', `/v1/entities/client/${seededId}`).catch(() => {});
   }
 });
 

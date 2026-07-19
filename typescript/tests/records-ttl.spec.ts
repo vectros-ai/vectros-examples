@@ -1,5 +1,5 @@
 /**
- * records-ttl.spec.ts — absolute record TTL contract (#630, MR-2). CONTRACT ONLY.
+ * records-ttl.spec.ts — absolute record TTL contract. CONTRACT ONLY.
  *
  * A record can carry an absolute `expiresAt` (ISO-8601 UTC); the record is then
  * automatically deleted at (or shortly after) that time via the DynamoDB TTL
@@ -15,9 +15,9 @@
  *   - a valid expiresAt on an eligible schema → 201, response echoes it
  *   - an upsert that only changes expiresAt is a TTL extend, NOT a no-op (it writes)
  *
- * NOT covered here (call-outs, per #644): the actual ~48 h reap + its REMOVE
- * cascade (HSR cleanup / no orphan), and the storage-meter decrement gap tracked
- * in #639. Those are observation/unit concerns, not smoke-able.
+ * NOT covered here (call-outs): the actual ~48 h reap + its REMOVE
+ * cascade (search-index cleanup / no orphan), and the storage-meter decrement gap.
+ * Those are observation/unit concerns, not smoke-able.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
@@ -53,7 +53,7 @@ describe('records (TTL contract)', () => {
             indexMode: 'NONE',
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'name', fieldType: 'string', required: true }],
-            capabilities: { ttlEligible: true },   // the opt-in gate #630 requires
+            capabilities: { ttlEligible: true },   // the opt-in gate TTL requires
         } });
         ttlSchemaId = ttlSchema.id!;
 
@@ -147,7 +147,7 @@ describe('records (TTL contract)', () => {
         recordIds.push(first.id!);
         const firstExpiry = new Date(first.expiresAt!).getTime();
 
-        // Re-upsert with IDENTICAL content but a LATER expiry. #630: a present
+        // Re-upsert with IDENTICAL content but a LATER expiry: a present
         // expiresAt is a TTL set/extend, so the write must NOT be dropped as a
         // content no-op — the returned expiry advances.
         const secondTarget = Date.now() + 2 * HOUR_MS;

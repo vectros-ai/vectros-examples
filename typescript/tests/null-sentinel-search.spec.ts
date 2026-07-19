@@ -1,12 +1,12 @@
 /**
- * null-sentinel-search.spec.ts — #598: the positive parse proof for #587's
+ * null-sentinel-search.spec.ts — the positive parse proof for the
  * null-sentinel corpus-clause push, run against the DEPLOYED staging build.
  *
  * WHY THIS EXISTS
  * ---------------
- * #587 (!1275) made `/v1/search` + `/v1/rag` enforce a caller's dataScope per
- * ROW at the `HybridSearchHelper.search()` chokepoint, in two layers:
- *   - Layer 1 (authoritative, per-row): drops any HSR row the token can't read
+ * `/v1/search` + `/v1/rag` enforce a caller's dataScope per ROW at the
+ * hybrid-search chokepoint, in two layers:
+ *   - Layer 1 (authoritative, per-row): drops any result row the token can't read
  *     directly — this is what keeps a foreign owner's row out of the results.
  *   - Layer 2 (recall): compiles the resolved scope into ReadCorpusClauses
  *     pushed into BOTH search engines so entitled rows survive the engine query.
@@ -16,16 +16,15 @@
  * The trap the layers create: a MISPARSE of that owner-less clause only DEGRADES
  * RECALL — Layer 1 still enforces isolation, so nothing leaks — which makes the
  * bug INVISIBLE without an explicit POSITIVE assertion that the owner-less row
- * actually comes back on the deployed build. #587 flagged this smoke owed and it
- * was never written; this spec is that test.
+ * actually comes back on the deployed build. This spec is that test.
  *
  * WHAT IT PROVES
  * --------------
  * Seed three records that differ ONLY in ownership — owner-less (tenant-level),
  * self-owned, foreign-owned — sharing one searchable body. Mint an st_* token
  * with `dataScope { userId: [self, null] }` (the documented my-own + tenant-level
- * opt-in) and search WITHOUT a body userId filter (the exact call #587 fixed —
- * pre-#587 it returned every owner's rows). Then:
+ * opt-in) and search WITHOUT a body userId filter (the exact call this guards —
+ * without the fix it returned every owner's rows). Then:
  *   - the owner-less row IS returned in BOTH TEXT and SEMANTIC  ← the parse proof
  *     (TEXT exercises the Quickwit exists-query lane, SEMANTIC the S3-Vectors
  *     `$exists:false` lane — the two clauses parse on different engines);
@@ -34,9 +33,9 @@
  * A no-sentinel control shows the recall of the owner-less row is CAUSED by the
  * sentinel, and a RAG assertion shows the same chokepoint governs grounding.
  *
- * DEPLOY PRECONDITION: this validates the DEPLOYED staging api-services build. If
- * the owner-less assertion fails, first confirm staging carries #587 (>= a45afa76,
- * api-services Lambda SHA) before concluding a real corpus-clause parse bug.
+ * DEPLOY PRECONDITION: this validates the DEPLOYED staging build. If the
+ * owner-less assertion fails, first confirm staging carries the null-sentinel
+ * corpus-clause fix before concluding a real corpus-clause parse bug.
  *
  * Faithful + observable: exercises the real SDK the way a partner would; seeds via
  * a root key, reads via the scoped token, waits for INDEXED (never sleeps), and
@@ -54,7 +53,7 @@ async function expectStatus(p: Promise<unknown>, status: number): Promise<void> 
     await expect(p).rejects.toMatchObject({ statusCode: status });
 }
 
-describe('null-sentinel search (#598 — #587 corpus-clause parse proof)', () => {
+describe('null-sentinel search (corpus-clause parse proof)', () => {
     let schemaId: string;
     let recordType: string;
     let selfUserId: string;
@@ -101,8 +100,8 @@ describe('null-sentinel search (#598 — #587 corpus-clause parse proof)', () =>
         const body = (role: string): string =>
             `${marker} A clinical note regarding hypertension management and cardiac risk (${role} row).`;
 
-        // Owner-less / tenant-level: NO userId or orgId, so owner_id is null. This
-        // is the row #587's null-sentinel corpus clause must surface.
+        // Owner-less / tenant-level: NO userId and NO scope, so the row is
+        // owner-less. This is the row the null-sentinel corpus clause must surface.
         const ownerLess = await client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { content: body('owner-less tenant-level') },
         } });
@@ -130,8 +129,8 @@ describe('null-sentinel search (#598 — #587 corpus-clause parse proof)', () =>
         await pollUntilSearchable(marker, ownerLessId, 15_000, 'TEXT', testStartedAt);
         await pollUntilSearchable(SEMANTIC_QUERY, ownerLessId, 30_000, 'SEMANTIC', testStartedAt);
 
-        // records:r is REQUIRED, not incidental: #587 Layer 1 drops any
-        // GenericRecord row the token can't read directly (GenericRecord →
+        // records:r is REQUIRED, not incidental: Layer 1 drops any
+        // record row the token can't read directly (a record →
         // records:r:<type>). Without it EVERY record row — including self's —
         // would be dropped and the test would fail closed. search:r authorizes
         // the query; inference:r lets the same token drive the RAG assertion.
@@ -160,8 +159,8 @@ describe('null-sentinel search (#598 — #587 corpus-clause parse proof)', () =>
 
     /**
      * Search through the null-sentinel token with NO body userId filter — the
-     * scope's `[self, null]` governs the corpus. This is the exact call #587
-     * fixed: pre-#587 an omitted userId returned EVERY owner's rows; post-#587 it
+     * scope's `[self, null]` governs the corpus. This is the exact call the fix
+     * addressed: previously an omitted userId returned EVERY owner's rows; now it
      * returns my-own + owner-less and drops foreign per row. `createdAfter`
      * isolates this run from the shared smoke tenant's accumulated history.
      */
@@ -208,7 +207,7 @@ describe('null-sentinel search (#598 — #587 corpus-clause parse proof)', () =>
     });
 
     test('RAG grounds only on the permitted corpus (owner-less + self, not foreign)', async () => {
-        // RAG retrieval flows through the SAME HybridSearchHelper chokepoint, so
+        // RAG retrieval flows through the SAME hybrid-search chokepoint, so
         // the search_results event reflects the post-scope corpus. Tiny maxTokens
         // — we assert the RETRIEVAL (the corpus clause), not the generation.
         const stream = await sentinelClient.inference.ragInference({

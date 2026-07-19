@@ -7,7 +7,7 @@ import { spawnServer } from './helpers.js';
 import { parseToolResult as parse } from './fixtures.js';
 
 /**
- * File-mode RE-UPLOAD → re-extract → re-index smoke (#543/#544).
+ * File-mode RE-UPLOAD → re-extract → re-index smoke.
  *
  * The one curation surface unit tests can only MOCK: upload a file-backed
  * document, then re-upload a DIFFERENT file under the SAME externalId

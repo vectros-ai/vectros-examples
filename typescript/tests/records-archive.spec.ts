@@ -1,5 +1,5 @@
 /**
- * records-archive.spec.ts — Record ARCHIVED lifecycle (MR-1).
+ * records-archive.spec.ts — Record ARCHIVED lifecycle.
  *
  * A record's `status` is the caller-controlled lifecycle field (distinct from the
  * read-only `indexStatus` pipeline field). Setting `status=ARCHIVED` soft-retracts
@@ -32,7 +32,7 @@ describe('records (ARCHIVED lifecycle)', () => {
     let schemaId: string;
     let recordType: string;
     let userId: string;
-    let orgId: string;
+    let orgEntityId: string;
     let testStartedAt: string;
     const recordIds: string[] = [];
 
@@ -59,8 +59,8 @@ describe('records (ARCHIVED lifecycle)', () => {
 
         const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
-        const org = await client.identity.createOrg({ body: { externalId: uniqueTag(), name: 'Smoke Archive Org' } });
-        orgId = org.id!;
+        const org = await client.identity.createEntity({ namespace: 'org', body: { externalId: uniqueTag(), name: 'Smoke Archive Org' } });
+        orgEntityId = org.id!;
     });
 
     afterAll(async () => {
@@ -69,7 +69,8 @@ describe('records (ARCHIVED lifecycle)', () => {
         }
         await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
         await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
-        await tryCleanup('delete org', () => client.identity.deleteOrg({ id: orgId }));
+        await tryCleanup('delete org', () =>
+            client.identity.deleteEntity({ namespace: 'org', id: orgEntityId }));
     });
 
     // Whole lifecycle in ONE test so the phases run against a single record in a
@@ -86,7 +87,7 @@ describe('records (ARCHIVED lifecycle)', () => {
                 body: `This record carries the unique token ${marker} for search assertions.`,
             },
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(record.id!);
         const id = record.id!;
@@ -145,7 +146,7 @@ describe('records (ARCHIVED lifecycle)', () => {
             schemaId,
             payload: { title: `Listed While Archived ${uniqueTag()}`, body: 'stored, not searched' },
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(rec.id!);
         await pollUntilIndexed(rec.id!, 'record');

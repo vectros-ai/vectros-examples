@@ -136,7 +136,7 @@ describe('inference: /v1/rag', () => {
 
             const minted = (await client.auth.mintToken({
                 userId: user.id!,
-                // #587: RAG retrieval is enforced per row against what the token could read
+                // RAG retrieval is enforced per row against what the token could read
                 // DIRECTLY — so grounding on documents requires `documents:r` (records would
                 // require `records:r`). `inference:r`/`search:r` alone no longer ground any
                 // corpus (see the fail-closed twin below).
@@ -175,7 +175,7 @@ describe('inference: /v1/rag', () => {
         }
     });
 
-    test('#587 scoped token without a corpus-read grant fails closed (grounds on nothing)', async () => {
+    test('scoped token without a corpus-read grant fails closed (grounds on nothing)', async () => {
         // A token with inference:r + search:r but NO documents:r / records:r cannot read any
         // content directly, so RAG grounds on an empty corpus (no leak). This pins the
         // behavior the docs recommendation used to violate.

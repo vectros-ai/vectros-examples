@@ -127,23 +127,23 @@ describe('folders', () => {
 });
 
 /**
- * records folder + userId listing precedence (#622, MR-1).
+ * records folder + userId listing precedence.
  *
- * `GET /v1/records?folderId=F&userId=U` walks the folder-scoped index. #622 fixed a
- * sort-key precedence bug there: a record that carries an `orgId` in ADDITION to its
- * `folderId` + `userId` was keyed such that the combined folder+userId filter could
- * miss it. This block pins the fix — a record owning all three dimensions is returned
- * by the combined filter AND still carries its orgId — plus a NEGATIVE control (a
- * same-folder record owned by a DIFFERENT user must be excluded, so the userId filter
- * is proven load-bearing) and the pagination contract (a fully-filtered feed resumes
- * via the cursor).
+ * `GET /v1/records?folderId=F&userId=U` walks the folder-scoped index. A record that
+ * carries an `org:<id>` scope in ADDITION to its `folderId` + `userId` must still be
+ * keyed such that the combined folder+userId filter returns it. This block pins that
+ * contract — a record owning all three dimensions is returned by the combined filter
+ * AND still carries its `org:<id>` scope — plus a NEGATIVE control (a same-folder
+ * record owned by a DIFFERENT user must be excluded, so the userId filter is proven
+ * load-bearing) and the pagination contract (a fully-filtered feed resumes via the
+ * cursor).
  */
 describe('records (folder + user listing precedence)', () => {
     let schemaId: string;
     let recordType: string;
     let userId: string;
     let otherUserId: string;
-    let orgId: string;
+    let orgEntityId: string;
     let folderId: string;
     // The three user-owned records that MUST surface under the {folderId, userId} filter.
     const userRecordIds: string[] = [];
@@ -153,7 +153,7 @@ describe('records (folder + user listing precedence)', () => {
     const recordIds: string[] = [];
 
     beforeAll(async () => {
-        recordType = `smoke_folder622_${uniqueTag()}`.replace(/-/g, '_');
+        recordType = `smoke_folder_owner_${uniqueTag()}`.replace(/-/g, '_');
         const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Smoke Folder-Precedence Record',
@@ -166,21 +166,21 @@ describe('records (folder + user listing precedence)', () => {
         userId = user.id!;
         const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         otherUserId = otherUser.id!;
-        const org = await client.identity.createOrg({ body: { externalId: uniqueTag(), name: 'Folder622 Org' } });
-        orgId = org.id!;
-        const folder = await client.folders.createFolder({ body: { name: 'Folder622 ' + uniqueTag() } });
+        const org = await client.identity.createEntity({ namespace: 'org', body: { externalId: uniqueTag(), name: 'Folder Owner Listing Org' } });
+        orgEntityId = org.id!;
+        const folder = await client.folders.createFolder({ body: { name: 'Folder Owner Listing ' + uniqueTag() } });
         folderId = folder.id!;
 
-        // Three records, each owning ALL THREE dimensions (folder + user + org) —
-        // the exact shape the #622 precedence bug mis-keyed.
+        // Three records, each owning ALL THREE dimensions (folder + user + org scope) —
+        // the exact shape the folder+userId listing filter must key correctly.
         for (let i = 0; i < 3; i++) {
             const rec = await client.records.createRecord({ body: {
                 typeName: recordType,
                 schemaId,
-                payload: { name: `folder622-record-${i}-${uniqueTag()}` },
+                payload: { name: `folder-owner-record-${i}-${uniqueTag()}` },
                 folderId,
                 userId,
-                orgId,
+                scopes: [`org:${orgEntityId}`],
             } });
             userRecordIds.push(rec.id!);
             recordIds.push(rec.id!);
@@ -192,10 +192,10 @@ describe('records (folder + user listing precedence)', () => {
         const foreign = await client.records.createRecord({ body: {
             typeName: recordType,
             schemaId,
-            payload: { name: `folder622-foreign-${uniqueTag()}` },
+            payload: { name: `folder-owner-foreign-${uniqueTag()}` },
             folderId,
             userId: otherUserId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         foreignRecId = foreign.id!;
         recordIds.push(foreignRecId);
@@ -209,10 +209,11 @@ describe('records (folder + user listing precedence)', () => {
         await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
         await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
         await tryCleanup('delete other user', () => client.identity.deleteUser({ id: otherUserId }));
-        await tryCleanup('delete org', () => client.identity.deleteOrg({ id: orgId }));
+        await tryCleanup('delete org', () =>
+            client.identity.deleteEntity({ namespace: 'org', id: orgEntityId }));
     });
 
-    test('folderId+userId filter returns the user\'s all-three-dimension records (carrying orgId) and excludes a foreign owner', async () => {
+    test('folderId+userId filter returns the user\'s all-three-dimension records (carrying an org scope) and excludes a foreign owner', async () => {
         const list = await client.records.listRecords({ folderId, userId, limit: 100 });
         const rows = list.data ?? [];
         const listedIds = rows.map((r) => r.id);
@@ -223,11 +224,11 @@ describe('records (folder + user listing precedence)', () => {
         // the userId filter would over-return it and fail here).
         expect(listedIds).not.toContain(foreignRecId);
 
-        // ...and the surfaced record still carries the orgId whose sort-key precedence
-        // was the bug — proving it wasn't dropped or mis-projected.
+        // ...and the surfaced record still carries the `org:<id>` scope whose sort-key
+        // precedence must hold — proving it wasn't dropped or mis-projected.
         const sample = rows.find((r) => r.id === userRecordIds[0]);
         expect(sample).toBeDefined();
-        expect(sample!.orgId).toBe(orgId);
+        expect(sample!.scopes ?? []).toContain(`org:${orgEntityId}`);
         expect(sample!.userId).toBe(userId);
         expect(sample!.folderId).toBe(folderId);
     });

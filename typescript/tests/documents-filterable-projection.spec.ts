@@ -1,8 +1,8 @@
 /**
- * documents-filterable-projection.spec.ts — #626 "scalars filter, prose is content" (MR-1).
+ * documents-filterable-projection.spec.ts — "scalars filter, prose is content".
  *
- * #626 reshaped which schema-bound payload fields become `?filters=` targets and
- * added a fail-loud edge backstop. The rule ("declaration wins"): a schema field
+ * This spec pins which schema-bound payload fields become `?filters=` targets and
+ * exercises a fail-loud edge backstop. The rule ("declaration wins"): a schema field
  * is a filter target IFF it is declared `filterable` (and non-sensitive). A large
  * free-text field declared `searchable` (or an undeclared >256 B string) is CONTENT,
  * not a filter — so it is NEVER projected into the S3-Vectors filterable metadata,
@@ -10,16 +10,16 @@
  *
  * The core promise this pins (all previously UNCOVERED by smoke):
  *   1. A large free-text field ingests to INDEXED — NO silent async FAILED — and the
- *      document stays full-text searchable by its body. (Pre-#626 this large field
+ *      document stays full-text searchable by its body. (Previously such a large field
  *      was projected filterable-by-default and blew the 2048 B cap → async FAILED.)
  *   2. A declared-`filterable` field IS a `?filters=` target; a declared free-text
  *      (searchable, non-filterable) field is NOT.
  *   3. A declared-`filterable` VALUE over the 2048 B budget is rejected with a clean
  *      400 at ingest (the edge backstop) — not a silent FAILED downstream.
  *
- * (Chose a dedicated spec over inlining into documents-upload/search per #644's
- * suggestion — this is a self-contained feature with its own schema fixtures, and a
- * per-feature file matches the suite's one-spec-per-feature convention.)
+ * (Chose a dedicated spec over inlining into documents-upload/search — this is a
+ * self-contained feature with its own schema fixtures, and a per-feature file matches
+ * the suite's one-spec-per-feature convention.)
  */
 import { client } from '../src/client';
 import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup } from '../src/helpers';
@@ -78,7 +78,7 @@ describe('documents (filterable projection + edge backstop)', () => {
     });
 
     test('large free-text field ingests to INDEXED (no silent FAILED) + stays searchable by body', async () => {
-        const marker = `docfilter626_${uniqueTag()}`.replace(/-/g, '_');
+        const marker = `docfilter_${uniqueTag()}`.replace(/-/g, '_');
         const doc = await client.documents.ingestDocument({ body: {
             title: 'Filterable Projection ' + uniqueTag(),
             text: `Encounter note containing the unique token ${marker} for search assertions.`,
@@ -92,7 +92,7 @@ describe('documents (filterable projection + edge backstop)', () => {
 
         // Reaching INDEXED IS the assertion: pollUntilIndexed throws on a terminal
         // FAILED, so a green poll proves the large free-text field did NOT trigger the
-        // pre-#626 silent async FAILED.
+        // previous silent async FAILED.
         const indexed = await pollUntilIndexed(doc.id!, 'document') as { indexStatus?: string };
         expect(indexed.indexStatus).toBe('INDEXED');
 
@@ -105,7 +105,7 @@ describe('documents (filterable projection + edge backstop)', () => {
     }, 120_000);
 
     test('declared-filterable field IS a ?filters= target; free-text field is NOT', async () => {
-        const marker = `docfilter626b_${uniqueTag()}`.replace(/-/g, '_');
+        const marker = `docfilterb_${uniqueTag()}`.replace(/-/g, '_');
         const catVal = `cat_${uniqueTag()}`.replace(/-/g, '_');
         const notesVal = `freetext_${uniqueTag()}`.replace(/-/g, '_');
         const doc = await client.documents.ingestDocument({ body: {
@@ -129,7 +129,7 @@ describe('documents (filterable projection + edge backstop)', () => {
         // NEGATIVE: notes is declared searchable-but-NOT-filterable → it is never
         // projected as filter metadata, so filtering by its exact value excludes the
         // doc (the value lives in content, not in the filterable set). "Declaration
-        // wins: suppress if non-filterable" — the #626 rule.
+        // wins: suppress if non-filterable" — the rule.
         const byNotes = await client.search.content({
             query: marker, mode: 'TEXT', limit: 100, createdAfter: testStartedAt,
             filters: { notes: notesVal },
@@ -139,8 +139,8 @@ describe('documents (filterable projection + edge backstop)', () => {
 
     test('declared-filterable value over the 2048 B budget → 400 at ingest (edge backstop)', async () => {
         // `bigfilt` is declared filterable, so a large value DOES count against the
-        // filterable-metadata budget. #626 backstops it with a loud 400 at ingest
-        // rather than a silent FAILED when the async vector write hits the cap.
+        // filterable-metadata budget. The edge backstop catches it with a loud 400 at
+        // ingest rather than a silent FAILED when the async vector write hits the cap.
         const { statusCode, body } = await captureError(client.documents.ingestDocument({ body: {
             title: 'Over Budget ' + uniqueTag(),
             text: 'A document whose declared-filterable field overflows the vector budget.',

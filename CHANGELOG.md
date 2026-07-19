@@ -5,6 +5,39 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.10.0 — 2026-07-18
+
+### Added
+
+- **Type fidelity (`type-fidelity`)** — a new example proving that a schema's declared field types
+  survive the full round-trip across records, identity entities, and documents: a `number` reads back
+  as a number (not `"30"`) and a `boolean` as a boolean on the create response, a GET, and a list page;
+  a resource stays updatable after create (a partial update never fails validation against an untouched
+  typed field, and that field keeps its type); an identical no-op upsert cuts no new version; and a
+  large payload field is preserved intact across a partial update.
+
+### Changed
+
+- **Identity examples migrated to the generic entities API** — the identity examples now use the
+  namespaced `POST /v1/entities/{namespace}` surface. The previous `/v1/orgs` and `/v1/clients`
+  routes and their `orgId`/`clientId` fields are retired: `org` and `client` are now two built-in
+  namespaces of a single generic entity type. `identity` creates, reads, updates, lists, and deletes
+  entities via `createEntity`/`getEntity`/`updateEntity`/`listEntities`/`deleteEntity` (with
+  `namespace: 'org'` or `'client'`), expresses a client's parent org as a `scopes: ['org:<id>']`
+  edge, and lists an org's clients with `?scope=org:<id>`.
+- **Ownership is authored through `scopes` everywhere** — the record, document, and folder examples
+  (`records`, `records-archive`, `documents-text`, `documents-upload`, `folders`) now set ownership
+  with a `scopes: ['org:<id>']` array instead of the retired `orgId` field, and read it back from the
+  response `scopes` list. Owner-narrowed listing and search use `?scope=namespace:value`, and a
+  scoped token's data scope is keyed by `scope:<namespace>` — for example
+  `dataScope: { 'scope:org': ['<id>'] }`.
+- **Access-profile identity overrides (`access-profiles`)** — `identityOverrides` are now keyed by
+  `scope:<namespace>` (`scope:org`, `scope:client`, or any namespace you register) rather than the
+  retired `orgId`/`clientId` keys.
+- **TypeScript examples SDK pin** — bumped `@vectros-ai/sdk` from `^0.34.0` to `^0.35.0` to track the
+  release that introduces the generic identity-entity surface. This is a breaking API change: the
+  older identity routes and fields are no longer available.
+
 ## 0.9.0 — 2026-07-12
 
 ### Added

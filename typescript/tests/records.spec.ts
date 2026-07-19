@@ -27,7 +27,7 @@ describe('records', () => {
     let recordType: string;
     let userId: string;
     let otherUserId: string;
-    let orgId: string;
+    let orgEntityId: string;
     let testStartedAt: string;
     const recordIds: string[] = [];
 
@@ -54,11 +54,11 @@ describe('records', () => {
         userId = user.id!;
         const otherUser = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         otherUserId = otherUser.id!;
-        const org = await client.identity.createOrg({ body: {
+        const org = await client.identity.createEntity({ namespace: 'org', body: {
             externalId: uniqueTag(),
             name: 'Smoke Org',
         } });
-        orgId = org.id!;
+        orgEntityId = org.id!;
     });
 
     afterAll(async () => {
@@ -68,12 +68,13 @@ describe('records', () => {
         await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
         await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
         await tryCleanup('delete other user', () => client.identity.deleteUser({ id: otherUserId }));
-        await tryCleanup('delete org', () => client.identity.deleteOrg({ id: orgId }));
+        await tryCleanup('delete org', () =>
+            client.identity.deleteEntity({ namespace: 'org', id: orgEntityId }));
     });
 
     // ANCHOR — create + poll + verify INDEXED. Demonstrates the
-    // explicit-ownership pattern (userId/orgId in body) that supports
-    // scoped-token dataScope filtering.
+    // explicit-ownership pattern (userId in the body plus an `org:<id>` scope
+    // entry) that supports scoped-token dataScope filtering.
     test('create record → INDEXED', async () => {
         const payload = {
             name: 'Jane Doe',
@@ -87,7 +88,7 @@ describe('records', () => {
             schemaId,
             payload,
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(record.id!);
         expect(record.indexStatus).toBe('PENDING_INDEX');
@@ -95,7 +96,7 @@ describe('records', () => {
         const loaded = await client.records.getRecord({ id: record.id! });
         expect(loaded.indexStatus).toBe('INDEXED');
         expect(loaded.userId).toBe(userId);
-        expect(loaded.orgId).toBe(orgId);
+        expect(loaded.scopes ?? []).toContain(`org:${orgEntityId}`);
     });
 
     test('schema CRUD — get, update, list', async () => {
@@ -207,7 +208,7 @@ describe('records', () => {
                 email: `${uniqueTag()}@test.com`,
             },
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(otherRec.id!);
         await pollUntilIndexed(otherRec.id!, 'record');
@@ -242,7 +243,7 @@ describe('records', () => {
                 email: `${uniqueTag()}@test.com`,
             },
             userId: otherUserId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(otherOwnedRec.id!);
         await pollUntilIndexed(otherOwnedRec.id!, 'record');
@@ -298,7 +299,7 @@ describe('records', () => {
                 email: `${uniqueTag()}@test.com`,
             },
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         recordIds.push(rec.id!);
         await pollUntilIndexed(rec.id!, 'record');
@@ -318,7 +319,7 @@ describe('records', () => {
                     email: recPayload?.email,
                 },
                 userId,
-                orgId,
+                scopes: [`org:${orgEntityId}`],
             },
         });
 
@@ -361,7 +362,7 @@ describe('records', () => {
         expect(livePayload?.notes).toBe('updated note');
     });
 
-    test('list records with userId and orgId filters', async () => {
+    test('list records with userId and org scope filters', async () => {
         // userId-filter list — must include the ANCHOR (owned by userId)
         // and exclude the otherUserId record from the ownership-filter test.
         const list = await client.records.listRecords({
@@ -371,11 +372,11 @@ describe('records', () => {
         });
         const ids = (list.data ?? []).map((r) => r.id);
         expect(ids).toContain(recordIds[0]);
-        // Also check orgId filter sanity: ANCHOR has orgId — querying by orgId
-        // should also find it.
+        // Also check org scope filter sanity: the ANCHOR carries an `org:<id>`
+        // scope — querying by that scope should also find it.
         const byOrg = await client.records.listRecords({
             type: recordType,
-            orgId,
+            scope: `org:${orgEntityId}`,
             limit: 100,
         });
         expect((byOrg.data ?? []).map((r) => r.id)).toContain(recordIds[0]);
@@ -431,7 +432,7 @@ describe('records', () => {
                 email: `${uniqueTag()}@test.com`,
             },
             userId,
-            orgId,
+            scopes: [`org:${orgEntityId}`],
         } });
         // NOTE: this one doesn't get pushed to recordIds — we're deleting it inline.
         await pollUntilIndexed(rec.id!, 'record');

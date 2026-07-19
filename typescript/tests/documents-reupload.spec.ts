@@ -1,5 +1,5 @@
 /**
- * documents-reupload.spec.ts — #557 regression gate: a file RE-upload
+ * documents-reupload.spec.ts — regression gate: a file RE-upload
  * (re-initiating an upload with an existing externalId) must succeed WITHOUT
  * re-sending `indexMode` — the existing document already carries one and the
  * re-upload inherits it.
@@ -10,7 +10,7 @@
  * bug — its `document_ingest` client-side-defaults untyped docs to HYBRID, so
  * it always sends `indexMode` and masks the omission. Hence this SDK-level
  * spec is the regression gate. (The `upsert:true` variant of the same inherit
- * is unit-covered in PartnerDocumentHandlerTest.)
+ * is covered by the backend unit tests.)
  */
 import { client } from '../src/client';
 import {
@@ -22,7 +22,7 @@ import {
     tryCleanup,
 } from '../src/helpers';
 
-describe('documents (re-upload inherits indexMode) — #557', () => {
+describe('documents (re-upload inherits indexMode)', () => {
     let testStartedAt: string;
     const docIds: string[] = [];
 
@@ -66,7 +66,7 @@ describe('documents (re-upload inherits indexMode) — #557', () => {
         await pollUntilSearchable(OLD_MARKER, first.id!, 30_000, 'TEXT', testStartedAt);
 
         // ---- 2) RE-UPLOAD: the app's replace-file call, byte-for-byte — ONLY
-        // fileName/fileType/externalId (no indexMode, no upsert). #557 regression
+        // fileName/fileType/externalId (no indexMode, no upsert). Regression
         // point: the backend must inherit the existing document's stored indexMode,
         // not reject with "'indexMode' is required".
         const second = await client.documents.uploadDocument({

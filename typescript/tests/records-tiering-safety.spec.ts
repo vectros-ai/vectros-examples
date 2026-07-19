@@ -1,5 +1,5 @@
 /**
- * records-tiering-safety.spec.ts — payload tiering + the #631 PUT truncation guard (MR-2).
+ * records-tiering-safety.spec.ts — payload tiering + the PUT truncation guard.
  *
  * THE SILENT-DATA-LOSS SURFACE. When a record's payload is externalized to S3
  * (STANDARD profile at/above ~4 KB, or always under the LARGE_PAYLOAD profile),
@@ -7,7 +7,7 @@
  * lookup + filterable fields — and omit the bulk fields, flagging the response
  * with `payloadPartial=true`. A caller who reads that projection, then builds a
  * `PUT` from it, would REPLACE the whole payload and silently clear the omitted
- * bulk fields. The #631 guard makes that fail closed:
+ * bulk fields. The guard makes that fail closed:
  *
  *   externalized record
  *     → GET list  →  payloadPartial=true, bulk field omitted, filterable field kept
@@ -21,7 +21,7 @@
  * has to size a payload against the 4 KB threshold or wait on indexing (indexMode
  * NONE — tiering is a storage concern, independent of the search pipeline).
  *
- * ?allowClear (#645): the guard opt-in is a typed OpenAPI `@Parameter` on the update
+ * ?allowClear: the guard opt-in is a typed OpenAPI `@Parameter` on the update
  * operation, so the SDK exposes it as a first-class `allowClear` argument on the
  * request (a sibling of `id`/`body`) — used directly below.
  */
@@ -173,7 +173,7 @@ describe('records (payload tiering + PUT truncation guard)', () => {
         expect(item).toBeDefined();
 
         // Same projected-body PUT as the guard test — but the caller confirms the
-        // full replacement with the typed `allowClear` argument (#645).
+        // full replacement with the typed `allowClear` argument.
         const updated = await client.records.updateRecord({
             id,
             allowClear: true,
