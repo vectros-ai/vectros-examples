@@ -5,6 +5,54 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.11.0 — 2026-07-22
+
+Examples updated for **Vectros SDK 0.36.0**. The TypeScript examples pin
+`@vectros-ai/sdk@^0.36.0` (was `^0.35.0`); Python, Java, and CLI pin their SDKs
+independently. This release adapts the examples to the behavior 0.36.0 changed
+and adds coverage for its new fields.
+
+### Added
+
+- **Large whole numbers as strings (`type-fidelity`)** — a new case shows that a value
+  near 2^63 is stored byte-exact when sent to a `string` field. This is the pattern to
+  use now that every number must fall within the signed 64-bit range: an out-of-range
+  value in a `number` field is refused with a `400`, and a large whole number kept as a
+  string stores exactly and supports exact-match lookup.
+- **Activity-log `requestId` and `errorCode` (`logs`)** — the log-viewer example now reads
+  the per-call `requestId` (the id to quote to support, the same one returned in an error
+  body) and, on a failure rejected with a typed reason, branches on `errorCode` rather than
+  matching the message text.
+- **Identity surface in the log `resource` filter (`logs`)** — a new case seeds an
+  identity-entity create and filters `GET /v1/admin/logs` by `resource: 'entities'` — the
+  identity surface, now documented alongside `namespaces`. The legacy `orgs`/`clients`
+  filters remain accepted for rows written before those surfaces were folded into `entities`.
+- **Scoped-token idempotent create-or-get (`identity`)** — two new cases mint a real scoped
+  token instead of using the root key: one shows a `users:c`+`users:r` token completing an
+  idempotent create-retry, the other shows a `users:c`-only token correctly receiving an
+  "already in use" error rather than the existing user's data, since being handed back an
+  existing item on a collision is a read of that item and needs the paired read scope.
+
+### Changed
+
+- **Access-profile identity overrides reference real entities (`access-profiles`)** — override
+  values are now authorized like scopes. The example seeds real `org`/`client` entities and
+  overrides to their ids; a companion case shows that an override to a nonexistent entity is
+  refused with a `400`.
+- **Structured index failures (`indexFailure`)** — the record/document index-poll helpers now
+  surface `indexFailure.code` (a stable, branchable reason such as `VECTOR_LIMIT_EXCEEDED` or
+  `EMBEDDING_FAILED`) instead of a bare "failed" message when indexing fails.
+
+## 0.10.1 — 2026-07-20
+
+### Fixed
+
+- **TypeScript examples README** — the `identity` row described the example as covering
+  "Clients, organizations, and users". The example itself moved to the namespaced
+  identity-entity surface in 0.10.0; the description had not. It now reads "Users and
+  namespaced identity entities (`org`/`client`); parent ownership via `scopes`", matching
+  what the example demonstrates.
+
 ## 0.10.0 — 2026-07-18
 
 ### Added

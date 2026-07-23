@@ -227,29 +227,72 @@ describe('access-profiles', () => {
             }
         });
 
-        test('identityOverrides accepts scope:org + scope:client', async () => {
+        test('identityOverrides accepts scope:org + scope:client (values must reference real entities)', async () => {
             // The sacred fields ARE the tenant identifier and the userId —
             // schema rejects them. Any grammar-valid scope:<namespace> key is
             // an allowed override (at most two scope dimensions).
+            //
+            // Since 0.36.0 the override VALUES are authorized like scopes: a root
+            // key's override must reference an entity that EXISTS in the account
+            // (a 400 naming the value otherwise). So we seed real org/client
+            // entities and override to their ids — not arbitrary literals.
             const principalId = 'usr_' + uniqueTag();
-            const created = await client.auth.createAccessProfile({
+            let orgId: string | undefined;
+            let clientId: string | undefined;
+            try {
+                const org = await client.identity.createEntity({ namespace: 'org', body: {
+                    externalId: 'ap-ovr-org-' + uniqueTag(), name: 'Override Org',
+                } });
+                orgId = org.id ?? undefined;
+                const clientEnt = await client.identity.createEntity({ namespace: 'client', body: {
+                    externalId: 'ap-ovr-client-' + uniqueTag(), name: 'Override Client',
+                    scopes: [`org:${org.id}`],
+                } });
+                clientId = clientEnt.id ?? undefined;
+                const created = await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: {
+                        principalId,
+                        scopes: [{ allowed_actions: ['records:r'] }],
+                        // An override value is the entity's Vectros id — a bare
+                        // string keyed by scope:<namespace>, not a wrapper object.
+                        identityOverrides: {
+                            'scope:org': org.id!,
+                            'scope:client': clientEnt.id!,
+                        },
+                    },
+                });
+                // The override echoes back the exact entity ids we set — assert the
+                // VALUE round-trips, not merely that the key is present. The SDK
+                // types an override value as an opaque object, so narrow at the
+                // boundary (as elsewhere in these specs).
+                const orgOverride = created.identityOverrides?.['scope:org'] as string | undefined;
+                const clientOverride = created.identityOverrides?.['scope:client'] as string | undefined;
+                expect(orgOverride).toBe(org.id);
+                expect(clientOverride).toBe(clientEnt.id);
+            } finally {
+                await tryCleanup('cleanup profile', () =>
+                    client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                if (clientId) await tryCleanup('cleanup client entity', () =>
+                    client.identity.deleteEntity({ namespace: 'client', id: clientId! }));
+                if (orgId) await tryCleanup('cleanup org entity', () =>
+                    client.identity.deleteEntity({ namespace: 'org', id: orgId! }));
+            }
+        });
+
+        test('identityOverrides REJECTS a value referencing a nonexistent entity with 400', async () => {
+            // The 0.36.0 fail-closed half: a root key cannot override to an
+            // identity value that does not exist — the request is refused with a
+            // 400 naming the value, rather than minting a dangling reference.
+            const principalId = 'usr_' + uniqueTag();
+            await expect(client.auth.createAccessProfile({
                 contextId: ctxId,
                 body: {
                     principalId,
                     scopes: [{ allowed_actions: ['records:r'] }],
-                    identityOverrides: {
-                        'scope:org': { value: 'org_smoke' },
-                        'scope:client': { value: 'client_smoke' },
-                    },
+                    identityOverrides: { 'scope:org': 'org-does-not-exist-' + uniqueTag() },
                 },
-            });
-            try {
-                expect(created.identityOverrides?.['scope:org']).toBeDefined();
-                expect(created.identityOverrides?.['scope:client']).toBeDefined();
-            } finally {
-                await tryCleanup('cleanup', () =>
-                    client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
-            }
+            })).rejects.toMatchObject({ statusCode: 400 });
         });
 
         test('identityOverrides REJECTS userId (sacred field) with 400', async () => {

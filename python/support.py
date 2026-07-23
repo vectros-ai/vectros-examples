@@ -95,7 +95,11 @@ def poll_until_indexed(
         if last.index_status == "INDEXED":
             return last
         if last.index_status == "FAILED":
-            raise AssertionError(f"document {doc_id} reached FAILED during indexing")
+            # Since 0.36.0 a FAILED response carries a structured index_failure —
+            # branch on its stable `code`, not the human `message`.
+            failure = getattr(last, "index_failure", None)
+            detail = f" — {failure.code}: {failure.message}" if failure else ""
+            raise AssertionError(f"document {doc_id} reached FAILED during indexing{detail}")
         time.sleep(2.0)
     raise AssertionError(
         f"document {doc_id} did not reach INDEXED within {timeout_s}s "

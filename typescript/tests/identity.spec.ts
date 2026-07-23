@@ -104,6 +104,68 @@ describe('identity', () => {
         expect(body.principalLabel).toBeUndefined();
     });
 
+    test('a runtime-minted scope-bound ssk_* reports its identity in ping dataScope', async () => {
+        // With the root key you can mint a scoped API key (ssk_*) at runtime, bound
+        // to an access profile in a context. Its /v1/ping reflects the identity the
+        // key is "speaking as": the bound user in `dataScope.userId`, and every
+        // namespace ownership the profile stamps (via `identityOverrides`) in
+        // `dataScope.scopes`. This exercises the scoped-key mint path end to end.
+        const tenantId = process.env.VECTROS_LIVE_TENANT_ID!;
+        expect(tenantId).toBeTruthy();
+        const ctxId = ('sk' + uniqueTag()).slice(0, 31);
+        let orgId: string | undefined;
+        let userId: string | undefined;
+        let keyId: string | undefined;
+        let ctxCreated = false;
+        try {
+            const org = await client.identity.createEntity({ namespace: 'org', body: {
+                externalId: 'ssk-org-' + uniqueTag(), name: 'Scoped Key Org',
+            } });
+            orgId = org.id ?? undefined;
+            const user = await client.identity.createUser({ body: { externalId: 'ssk-user-' + uniqueTag() } });
+            userId = user.id ?? undefined;
+            await client.auth.createAppContext({ body: { contextId: ctxId, name: 'scoped-key ping spec' } });
+            ctxCreated = true;
+            // A root key's identityOverride must reference a real entity (0.36.0);
+            // `org` was just created, so the profile binds this principal to it.
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: {
+                    principalId: `usr_${user.id}`,
+                    scopes: [{ allowed_actions: ['records:r'] }],
+                    identityOverrides: { 'scope:org': org.id! },
+                },
+            });
+            const key = await client.auth.createScopedKey({
+                keyName: 'ssk-scope-' + uniqueTag(),
+                tenantId,
+                contextId: ctxId,
+                userId: user.id!,
+            });
+            keyId = key.keyId ?? undefined;
+            expect(key.rawKey).toMatch(/^ssk_/);
+
+            const scoped = getScopedClient(key.rawKey!);
+            const body = (await scoped.auth.ping()) as unknown as PingIdentity;
+            expect(body.principalType).toBe('scoped_key');
+            // The bound user and the stamped org scope both round-trip on ping —
+            // `dataScope.scopes` is the identity read-back of a namespace-scoped
+            // principal: the stamped ownership the scoped key speaks as.
+            expect(body.dataScope?.userId).toBe(user.id);
+            expect(body.dataScope?.scopes).toContain(`org:${org.id}`);
+        } finally {
+            // Order: revoke the key, drop the profile (it references the org via
+            // identityOverride), then the context, user, and org last.
+            if (keyId) await tryCleanup('scoped key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+            if (userId) await tryCleanup('scoped-key profile', () =>
+                client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${userId}` }));
+            if (ctxCreated) await tryCleanup('scoped-key ctx', () =>
+                client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            if (userId) await tryCleanup('scoped-key user', () => client.identity.deleteUser({ id: userId! }));
+            if (orgId) await tryCleanup('scoped-key org', () => client.identity.deleteEntity({ namespace: 'org', id: orgId! }));
+        }
+    });
+
     test('user CRUD + externalId idempotency', async () => {
         const externalId = uniqueTag();
         const user = await client.identity.createUser({ body: {
@@ -142,6 +204,62 @@ describe('identity', () => {
             // the shape we set on updateUser above.
             const meta = updated.payload as { profile?: { role?: string } } | undefined;
             expect(meta?.profile?.role).toBe('admin');
+        } finally {
+            await tryCleanup('delete user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
+    // The two tests above/below exercise idempotent create-or-get over a root
+    // sk_* key, which is never scope-enforced — it can't see a regression that
+    // depends on the auth path. These two mint real scoped tokens instead, so
+    // the idempotency contract is pinned against the credential shape scoped
+    // callers actually use.
+    test('scoped token holding users:c + users:r receives the idempotent create-or-get echo', async () => {
+        const externalId = uniqueTag();
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: ['users:c', 'users:r'] },
+        })) as MintedToken;
+        const scoped = getScopedClient(minted.token);
+
+        const user = await scoped.identity.createUser({ body: { externalId } });
+        expect(user.externalId).toBe(externalId);
+
+        try {
+            const user2 = await scoped.identity.createUser({
+                body: { externalId, email: 'different@test.com' },
+            });
+            expect(user2.id).toBe(user.id);
+        } finally {
+            await tryCleanup('delete user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
+    test('a users:c-only scoped token cannot receive the idempotent create-or-get echo', async () => {
+        const externalId = uniqueTag();
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: ['users:c'] },
+        })) as MintedToken;
+        const scoped = getScopedClient(minted.token);
+
+        const user = await scoped.identity.createUser({ body: { externalId } });
+        expect(user.externalId).toBe(externalId);
+
+        try {
+            // Being handed the existing user on a collision is a read of that
+            // user's data — it requires users:r in addition to the users:c that
+            // authorized the create. A create-only credential gets a clean
+            // "already exists" error instead of the record — assert the error
+            // body doesn't carry the existing user's id, not just the status
+            // code, so this is a disclosure check and not merely a rejection check.
+            let caught: { statusCode?: number; body?: unknown } | undefined;
+            try {
+                await scoped.identity.createUser({ body: { externalId } });
+            } catch (e) {
+                caught = e as { statusCode?: number; body?: unknown };
+            }
+            expect(caught).toBeDefined();
+            expect(caught!.statusCode).toBe(400);
+            expect(JSON.stringify(caught!.body ?? '')).not.toContain(user.id);
         } finally {
             await tryCleanup('delete user', () => client.identity.deleteUser({ id: user.id! }));
         }

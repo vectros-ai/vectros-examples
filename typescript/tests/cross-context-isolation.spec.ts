@@ -285,7 +285,13 @@ async function pollUntilIndexedIn(ctx: ContextHandle, docId: string, timeoutMs =
         const doc = await ctx.api.documents.getDocument({ id: docId });
         status = doc.indexStatus ?? doc.status;
         if (status === 'INDEXED') return;
-        if (status === 'FAILED') throw new Error(`document ${docId} reached FAILED during indexing`);
+        if (status === 'FAILED') {
+            // 0.36.0: a FAILED response carries a structured `indexFailure` —
+            // branch on its stable `code`, not the human message.
+            const f = doc.indexFailure;
+            throw new Error(`document ${docId} reached FAILED during indexing` +
+                (f ? ` — ${f.code}: ${f.message}` : ''));
+        }
         await new Promise((r) => setTimeout(r, 2_000));
     }
     throw new Error(`document ${docId} did not reach INDEXED within ${timeoutMs}ms (last: ${status})`);

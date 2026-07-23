@@ -46,7 +46,16 @@ export async function pollUntilIndexed(
         const status = kind === 'document' ? (last?.indexStatus ?? last?.status) : last?.indexStatus;
         if (status === 'INDEXED') return last;
         if (status === 'FAILED') {
-            throw new Error(`${kind} ${id} reached terminal FAILED state during indexing`);
+            // Since 0.36.0 a FAILED record/document response carries a structured
+            // `indexFailure` — branch on its stable `code` (SOURCE_UNAVAILABLE,
+            // TEXT_INDEX_FAILED, EMBEDDING_FAILED, INDEXING_FAILED,
+            // VECTOR_LIMIT_EXCEEDED, INTERNAL), not the human `message`, whose
+            // wording may change between releases.
+            const f = last?.indexFailure;
+            throw new Error(
+                `${kind} ${id} reached terminal FAILED state during indexing` +
+                (f ? ` — ${f.code}: ${f.message}` : '')
+            );
         }
         await sleep(2_000);
     }

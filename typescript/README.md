@@ -27,7 +27,7 @@ Requires Node.js ≥ 20.
 | `documents-text` / `documents-upload` | Text ingest and the presigned-URL upload handshake. |
 | `documents-ask` | Streaming single-document Q&A. |
 | `folders` | Folder hierarchy and protection rules. |
-| `identity` | Clients, organizations, and users; `externalId` idempotency. |
+| `identity` | Users and namespaced identity entities (`org`/`client`); parent ownership via `scopes`; `externalId` idempotency. |
 | `search` | Cross-content hybrid search, pagination, unique-document dedup. |
 | `chat` / `rag` | Streaming inference and grounded RAG over your corpus. |
 | `usage` | Usage counters after real operations. |

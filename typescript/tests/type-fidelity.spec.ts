@@ -81,6 +81,36 @@ describe('type fidelity', () => {
             expect((hit!.payload as { priority?: unknown }).priority).toBe(30);
         });
 
+        test('a large whole-number identifier is stored exactly when sent as a string', async () => {
+            // Since 0.36.0 every number must fall within the signed 64-bit range,
+            // and an out-of-range value is refused with a 400. JS itself cannot
+            // represent such a value exactly either — 2^63 rounds as a double. The
+            // pattern for a large whole-number identifier is therefore a STRING
+            // field: it stores the digits byte-exact and supports exact-match
+            // lookup, where a `number` field would round or reject.
+            const bigId = '9223372036854775000';   // near 2^63 — exact only as a string
+            const created = await client.records.createRecord({ body: {
+                typeName: recordType, schemaId,
+                payload: { priority: 1, note: bigId },
+            } });
+            recordIds.push(created.id!);
+
+            const got = await client.records.getRecord({ id: created.id! });
+            const gp = got.payload as { note?: unknown };
+            expect(typeof gp.note).toBe('string');
+            expect(gp.note).toBe(bigId);   // no float rounding — the digits survive exactly
+        });
+
+        test('a number field outside the signed 64-bit range is refused with 400', async () => {
+            // The fail-closed half of the rule the previous test's guidance names:
+            // a `number` field (here `priority`) holding a value beyond the signed
+            // 64-bit range is rejected up front, rather than silently rounded.
+            await expect(client.records.createRecord({ body: {
+                typeName: recordType, schemaId,
+                payload: { priority: 1e19 },   // > 2^63 (~9.22e18) — out of range
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
         test('a record stays updatable — a partial update never trips a type error on an untouched field', async () => {
             const created = await client.records.createRecord({ body: {
                 typeName: recordType, schemaId,

@@ -11,7 +11,7 @@
  */
 import { VectrosClient } from '@vectros-ai/sdk';
 import { client } from '../src/client';
-import { uniqueTag, sleep } from '../src/helpers';
+import { uniqueTag, sleep, tryCleanup } from '../src/helpers';
 
 // getAdminLogs returns Record<string, unknown> in the SDK; this local
 // interface narrows the response shape for assertions.
@@ -24,6 +24,8 @@ interface AdminLogsResponse {
         keyId?: string;
         durationMs?: number;
         path?: string;
+        requestId?: string;   // 0.36.0: the single-call id, echoed in error bodies — quote it to support
+        errorCode?: string;   // 0.36.0: present on a failure rejected with a typed code
     }>;
     truncated: boolean;
     queryDurationMs: number;
@@ -62,6 +64,9 @@ async function pollLogs(
 describe('admin logs', () => {
     let liveTenantId: string;
     let seedSearchMarker: string;
+    let seededEntityId: string | undefined;
+    let seededSchemaId: string | undefined;
+    let seededRecordId: string | undefined;
 
     beforeAll(async () => {
         liveTenantId = process.env.VECTROS_LIVE_TENANT_ID!;
@@ -71,13 +76,52 @@ describe('admin logs', () => {
         //  - a search call            → resource='search'
         //  - a GET (ping)             → method='GET'
         //  - a deliberate 404 (GET)   → errorsOnly + method='GET'
-        // All three auth with the smoke key, so each produces a keyId-bearing
-        // entry for the keyId-filter test too.
+        //  - an identity-entity create → resource='entities'
+        // All auth with the smoke key, so each produces a keyId-bearing entry
+        // for the keyId-filter test too. The entity create is what lets the
+        // `resource: 'entities'` filter test assert a NON-EMPTY, correctly-tagged
+        // result: without seeding traffic on the identity surface, that filter
+        // would pass vacuously and a regression in the identity-route log
+        // mapping would go unnoticed.
         seedSearchMarker = `logs-seed-${uniqueTag()}`;
         await client.search.content({ query: seedSearchMarker, mode: 'TEXT', limit: 1 });
         await client.auth.ping();
         await client.records.getRecord({ id: '55555555-5555-5555-5555-555555555555' })
             .catch(() => { /* expected 404 — seeds an error entry */ });
+        const entity = await client.identity.createEntity({ namespace: 'org', body: {
+            externalId: `logs-seed-${uniqueTag()}`,
+            name: 'Logs Seed Org',
+        } });
+        seededEntityId = entity.id ?? undefined;
+
+        // Seed a CODED failure so the errorCode assertion is non-vacuous: a PATCH
+        // with a stale expectedVersion is refused 409 with errorCode
+        // VERSION_CONFLICT (an uncoded failure — the seeded 404 — carries none).
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: `logs_seed_${uniqueTag()}`.replace(/-/g, '_'),
+            displayName: 'Logs Seed', indexMode: 'TEXT', allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'n', fieldType: 'number', required: false }],
+        } });
+        seededSchemaId = schema.id ?? undefined;
+        const rec = await client.records.createRecord({ body: {
+            typeName: schema.typeName!, schemaId: schema.id!, payload: { n: 1 },
+        } });
+        seededRecordId = rec.id ?? undefined;
+        await client.records.patchRecord({ id: rec.id!, body: { payload: { n: 2 }, expectedVersion: 999 } })
+            .catch(() => { /* expected 409 VERSION_CONFLICT — seeds a coded error entry */ });
+    });
+
+    afterAll(async () => {
+        if (seededEntityId) {
+            await tryCleanup('logs seed entity', () =>
+                client.identity.deleteEntity({ namespace: 'org', id: seededEntityId! }));
+        }
+        if (seededRecordId) {
+            await tryCleanup('logs seed record', () => client.records.deleteRecord({ id: seededRecordId! }));
+        }
+        if (seededSchemaId) {
+            await tryCleanup('logs seed schema', () => client.schemas.deleteSchema({ id: seededSchemaId! }));
+        }
     });
 
     // ANCHOR — query recent logs for the smoke tenant. The whole run hits the
@@ -101,10 +145,33 @@ describe('admin logs', () => {
     test('errorsOnly=true returns a non-empty set, all status >= 400', async () => {
         // Seeded by the deliberate 404 in beforeAll — so the result is required
         // to be non-empty (no vacuous pass), and every entry must be an error.
-        const response = await pollLogs({ errorsOnly: true, limit: 50 });
+        // Wait until the seeded CODED failure (a VERSION_CONFLICT) is queryable,
+        // so the errorCode assertion below can never pass vacuously.
+        const response = await pollLogs(
+            { errorsOnly: true, limit: 50 },
+            (r) => r.entries.some((e) => e.errorCode != null),
+        );
         expect(response.entries.length).toBeGreaterThan(0);
+        const CODED_REASONS = [
+            'RATE_LIMITED', 'SUBSCRIPTION_LIMIT_EXCEEDED', 'INSUFFICIENT_BALANCE',
+            'RESOURCE_IN_USE', 'VERSION_CONFLICT', 'SESSION_REFRESH_REQUIRED',
+        ];
         for (const entry of response.entries) {
             expect(entry.status).toBeGreaterThanOrEqual(400);
+        }
+        // Every call carries a single-call `requestId` (0.36.0) — the id to quote
+        // to support. Assert it is actually PRESENT on the seeded traffic, not
+        // merely valid-when-present: a regression that stopped emitting it must
+        // turn this red.
+        expect(response.entries.some((e) => typeof e.requestId === 'string' && e.requestId.length > 0)).toBe(true);
+        // A failure rejected with a typed reason carries `errorCode` (branch on it,
+        // not the message). A coded failure was seeded, so at least one entry must
+        // carry a typed errorCode, and every errorCode present must be a known code.
+        expect(response.entries.some((e) => e.errorCode != null)).toBe(true);
+        for (const entry of response.entries) {
+            if (entry.errorCode != null) {
+                expect(CODED_REASONS).toContain(entry.errorCode);
+            }
         }
     }, 120_000);
 
@@ -133,6 +200,20 @@ describe('admin logs', () => {
         expect(response.entries.length).toBeGreaterThan(0);
         for (const entry of response.entries) {
             expect(entry.resource).toBe('search');
+        }
+    }, 120_000);
+
+    test('resource filter accepts the identity surface (non-empty, all entities)', async () => {
+        // Seeded by the identity-entity create in beforeAll. `entities` and
+        // `namespaces` are documented resource-filter values as of 0.36.0 (the
+        // `org`/`client` surfaces were folded into a single generic entity type,
+        // so their traffic logs under `entities`; the legacy `orgs`/`clients`
+        // filters remain accepted for older rows). Seeding real identity traffic
+        // is what makes this assertion non-vacuous.
+        const response = await pollLogs({ resource: 'entities', limit: 50 });
+        expect(response.entries.length).toBeGreaterThan(0);
+        for (const entry of response.entries) {
+            expect(entry.resource).toBe('entities');
         }
     }, 120_000);
 

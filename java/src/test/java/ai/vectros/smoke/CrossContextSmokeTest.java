@@ -177,9 +177,18 @@ class CrossContextSmokeTest {
         // The processing axis is indexStatus; getStatus() is the ACTIVE/ARCHIVED
         // lifecycle and never reaches INDEXED.
         for (int i = 0; i < 30; i++) {
-            String status = ctx.api.documents().getDocument(docId).getIndexStatus().map(Object::toString).orElse("");
+            var doc = ctx.api.documents().getDocument(docId);
+            String status = doc.getIndexStatus().map(Object::toString).orElse("");
             if ("INDEXED".equals(status)) return;
-            if ("FAILED".equals(status)) fail("document " + docId + " reached FAILED during indexing");
+            if ("FAILED".equals(status)) {
+                // 0.36.0: a FAILED response carries a structured indexFailure —
+                // branch on its stable code, not the human message.
+                String detail = doc.getIndexFailure()
+                    .map(f -> " — " + f.getCode().map(Object::toString).orElse("?")
+                        + ": " + f.getMessage().orElse(""))
+                    .orElse("");
+                fail("document " + docId + " reached FAILED during indexing" + detail);
+            }
             Smoke.sleep(2000);
         }
         fail("document " + docId + " did not reach INDEXED in time");
