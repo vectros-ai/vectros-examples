@@ -1,6 +1,6 @@
 {
   "name": "vectros-examples-mcp",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Runnable examples exercising the @vectros-ai/mcp-server tools over MCP stdio.",
   "license": "Apache-2.0",
   "private": true,

@@ -28,14 +28,16 @@ Requires Node.js ≥ 20.
 | `documents-ask` | Streaming single-document Q&A. |
 | `folders` | Folder hierarchy and protection rules. |
 | `identity` | Users and namespaced identity entities (`org`/`client`); parent ownership via `scopes`; `externalId` idempotency. |
-| `search` | Cross-content hybrid search, pagination, unique-document dedup. |
+| `search` | Cross-content hybrid search, pagination (`hasMore`, the full 1–100 `limit` range), unique-document dedup, `externalId` on hits, and `textScore` in `TEXT` mode. |
 | `chat` / `rag` | Streaming inference and grounded RAG over your corpus. |
 | `usage` | Usage counters after real operations. |
 | `models` | Model catalog, plan gating, per-region pricing. |
 | `patch` | RFC-7386 merge-PATCH: partial update, optimistic-lock conflicts. |
 | `residency` | Data-residency confinement (fail-closed). |
 | `negative-paths` / `error-contract` | The error contract — asserting error *bodies*, not just status codes. |
+| `app-contexts` | App-context CRUD, the confirm-gated destroy cascade that drains a context's data, and minting a root-key token targeted at a non-default context via `contextId`. |
 | `cross-context-isolation` | An object in one app context is invisible to a sibling context, on every read path. |
+| `schema-lineage` | `basedOn` schema customization (a shared base + owner-specific variants), `specificityRank` namespace tie-breaks, and the `userId`/`scope` selectors on schema and document-lookup resolution. |
 
 ## Credentials
 

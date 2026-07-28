@@ -33,6 +33,8 @@ import { VectrosClient } from '@vectros-ai/sdk';
 import { client, getScopedClient } from './client';
 import { uniqueTag, tryCleanup } from './helpers';
 
+interface MintedToken { token: string; expiresAt: number; }
+
 /**
  * The scope granted to each context's confined key. Broad enough to create and
  * read records/documents/folders/schemas and run search WITHIN the context;
@@ -62,6 +64,15 @@ export interface ContextHandle {
     keyId: string;
     /** A VectrosClient whose every call is confined to {@link contextId}. */
     api: VectrosClient;
+    /**
+     * An identity-less client, also confined to {@link contextId}, used ONLY
+     * to create the first (ownerless) schema of a type in this context. A
+     * schema's very first create under a `typeName` must have no owner — the
+     * confined {@link api} client above is always bound to a user, so it can
+     * never make that create itself. Minted by requesting `contextId` on the
+     * token with no `identity`: confined to the context, stamps no owner.
+     */
+    ownerlessApi: VectrosClient;
 }
 
 /** Two sibling contexts (A, B) in one tenant, each with a confined client. */
@@ -122,11 +133,21 @@ async function teardownHandle(h: ContextHandle): Promise<void> {
  * the shared tenant).
  */
 async function provisionContext(tenantId: string, label: string, created: ContextHandle[]): Promise<ContextHandle> {
-    const handle: ContextHandle = { contextId: '', userId: '', keyId: '', api: client };
+    const handle: ContextHandle = { contextId: '', userId: '', keyId: '', api: client, ownerlessApi: client };
     created.push(handle);
 
     handle.contextId = contextId(label);
     await client.auth.createAppContext({ body: { contextId: handle.contextId, name: `cross-context ${label}` } });
+
+    // Identity-less client confined to this context — the ONLY caller shape
+    // that can create the first (ownerless) schema of a type here. Requesting
+    // `contextId` with no `identity` mints a token that is context-confined
+    // but stamps no owner on what it creates.
+    const bootstrap = (await client.auth.mintToken({
+        contextId: handle.contextId,
+        scope: { allowedActions: ['schemas:c', 'schemas:r'] },
+    })) as MintedToken;
+    handle.ownerlessApi = getScopedClient(bootstrap.token);
 
     // A real user is required: the key binds to an AccessProfile whose
     // principalId is `usr_<userId>` for this exact user.

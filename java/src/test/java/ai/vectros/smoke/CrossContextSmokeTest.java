@@ -127,7 +127,8 @@ class CrossContextSmokeTest {
 
     // ---- helpers (operate through a context's confined client) ----
     private static String createRecord(CrossContext.Handle ctx, String type, String mrn) {
-        var schema = ctx.api.schemas().createSchema(SchemaRequest.builder()
+        // The lineage BASE for type — must be created ownerless.
+        var schema = ctx.ownerlessApi.schemas().createSchema(SchemaRequest.builder()
             .typeName(type).displayName("Cross-context Record Schema")
             .indexMode(SchemaRequestIndexMode.NONE)
             .allowedSurfaces(List.of(SchemaRequestAllowedSurfacesItem.RECORD))
@@ -150,7 +151,8 @@ class CrossContextSmokeTest {
     }
 
     private static String createDoc(CrossContext.Handle ctx, String type, String po, String marker) {
-        var schema = ctx.api.schemas().createSchema(SchemaRequest.builder()
+        // The lineage BASE for type — must be created ownerless.
+        var schema = ctx.ownerlessApi.schemas().createSchema(SchemaRequest.builder()
             .typeName(type).displayName("Cross-context Document Schema")
             .indexMode(SchemaRequestIndexMode.TEXT)
             .allowedSurfaces(List.of(SchemaRequestAllowedSurfacesItem.DOCUMENT))

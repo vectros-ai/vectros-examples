@@ -30,7 +30,8 @@ def _expect_status(fn, status: int):
 
 
 def _create_record(ctx, type_name: str, mrn: str) -> str:
-    schema = ctx.api.schemas.create_schema(
+    # The lineage BASE for type_name — must be created ownerless.
+    schema = ctx.ownerless_api.schemas.create_schema(
         type_name=type_name,
         display_name="Cross-context Record Schema",
         index_mode="NONE",
@@ -88,7 +89,8 @@ def test_records_each_context_sees_only_its_own(two_contexts):
 
 
 def _create_doc(ctx, type_name, po, marker) -> str:
-    schema = ctx.api.schemas.create_schema(
+    # The lineage BASE for type_name — must be created ownerless.
+    schema = ctx.ownerless_api.schemas.create_schema(
         type_name=type_name,
         display_name="Cross-context Document Schema",
         index_mode="TEXT",

@@ -23,6 +23,8 @@ import { client, getScopedClient } from '../src/client';
 import type { VectrosClient } from '@vectros-ai/sdk';
 import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
 
+interface MintedToken { token: string; expiresAt: number; }
+
 /** Base API URL with any trailing slash trimmed (matches src/client env). */
 function baseUrl(): string {
     const u = process.env.VECTROS_API_BASE_URL;
@@ -101,6 +103,16 @@ interface ConfinedContext {
     keyId: string;
     /** Client whose every call is confined to `contextId` — used to SEED data. */
     api: VectrosClient;
+    /**
+     * An identity-less client pinned to `contextId` — used ONLY to create the
+     * first (ownerless) schema of a type in this context. A schema's very
+     * first create under a `typeName` must have no owner; a context-confined
+     * `ssk_*` is always bound to a user, so it can never make that first
+     * create itself. Root mints this from a `contextId` on the token request
+     * with no `identity` — the token is confined to the context but stamps no
+     * owner. See `../src/cross-context.ts` for the same pattern.
+     */
+    ownerlessApi: VectrosClient;
 }
 
 /**
@@ -119,6 +131,13 @@ async function provisionConfinedContext(tenantId: string): Promise<ConfinedConte
     let keyId = '';
     try {
         await client.auth.createAppContext({ body: { contextId, name: 'destroy-smoke' } });
+
+        const bootstrap = (await client.auth.mintToken({
+            contextId,
+            scope: { allowedActions: ['schemas:c', 'schemas:r'] },
+        })) as MintedToken;
+        const ownerlessApi = getScopedClient(bootstrap.token);
+
         const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
         userId = user.id!;
         await client.auth.createAccessProfile({
@@ -139,7 +158,7 @@ async function provisionConfinedContext(tenantId: string): Promise<ConfinedConte
             throw new Error('createScopedKey returned no rawKey — cannot build a confined client to seed data');
         }
         keyId = minted.keyId!;
-        return { contextId, userId, keyId, api: getScopedClient(minted.rawKey) };
+        return { contextId, userId, keyId, api: getScopedClient(minted.rawKey), ownerlessApi };
     } catch (err) {
         // Tear down whatever this partial provisioning created so a mid-way
         // failure (e.g. a cap or transient error) doesn't leak a context / user
@@ -252,12 +271,16 @@ describe('app-contexts', () => {
         async () => {
         const rootKey = process.env.VECTROS_API_KEY!;
         const ctx = await provisionConfinedContext(liveTenantId!);
-        const { contextId, api } = ctx;
+        const { contextId, api, ownerlessApi } = ctx;
         let tornDown = false;
         try {
             // ── Seed the context-scoped data-plane content teardown must erase.
+            // The schema is the lineage BASE for its typeName, so it must be
+            // created ownerless — via the identity-less context-pinned token,
+            // not the user-bound confined client (which can never make an
+            // ownerless create).
             const typeName = ('t' + uniqueTag()).replace(/-/g, '').slice(0, 20);
-            const schema = await api.schemas.createSchema({ body: {
+            const schema = await ownerlessApi.schemas.createSchema({ body: {
                 typeName, displayName: 'destroy-smoke', indexMode: 'TEXT',
                 allowedSurfaces: ['record', 'document'],
                 fields: [{ fieldId: 'name', fieldType: 'string', required: false, searchable: true }],

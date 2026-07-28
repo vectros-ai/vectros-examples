@@ -163,6 +163,18 @@ describe('search', () => {
         expect(recordHit?.sourceType).toBe('GenericRecord');
     });
 
+    test('TEXT-mode hits carry a real, non-zero textScore', async () => {
+        const results = await client.search.content({
+            query: uniquePhrase,
+            mode: 'TEXT',
+        });
+        const hits = results.results ?? [];
+        expect(hits.length).toBeGreaterThan(0);
+        for (const hit of hits) {
+            expect(hit.textScore).toBeGreaterThan(0);
+        }
+    });
+
     test('contentTypes=["documents"] narrows to docs only', async () => {
         const results = await client.search.content({
             query: uniquePhrase,
@@ -274,6 +286,29 @@ describe('search', () => {
         expect(overlap).toHaveLength(0);
     });
 
+    test('hasMore signals whether another page is available', async () => {
+        // Same 6-record corpus as the pagination test above. A short page
+        // leaves results behind (hasMore: true); a page wide enough to cover
+        // every match does not (hasMore: false).
+        const shortPage = await client.search.content({
+            query: uniquePhrase,
+            mode: 'TEXT',
+            limit: 2,
+            offset: 0,
+            contentTypes: ['records'],
+        });
+        expect(shortPage.hasMore).toBe(true);
+
+        const fullPage = await client.search.content({
+            query: uniquePhrase,
+            mode: 'TEXT',
+            limit: 100,
+            offset: 0,
+            contentTypes: ['records'],
+        });
+        expect(fullPage.hasMore).toBe(false);
+    });
+
     test('empty results for nonsense query', async () => {
         // Random string highly unlikely to match anything. The API returns
         // an empty result set (not 404, not error) for misses.
@@ -287,6 +322,67 @@ describe('search', () => {
         // searchTimeMs is still reported — the query executed, it just hit nothing.
         expect(results.searchTimeMs).toBeGreaterThanOrEqual(0);
     });
+
+    test('search hits carry the source item\'s externalId', async () => {
+        const marker = 'VECTROS_SMOKE_EXTID_' + uniqueTag().replace(/-/g, '_');
+        const externalId = 'smoke-extid-' + uniqueTag();
+        const doc = await client.documents.ingestDocument({ body: {
+            title: 'External ID Search Doc',
+            text: marker + ' is the marker for the externalId search case.',
+            indexMode: 'TEXT',
+            externalId,
+        } });
+        try {
+            await pollUntilSearchable(marker, doc.id!, 10_000, 'TEXT');
+            const results = await client.search.content({ query: marker, mode: 'TEXT' });
+            const hit = (results.results ?? []).find((r) => r.documentId === doc.id);
+            expect(hit?.externalId).toBe(externalId);
+        } finally {
+            await tryCleanup('delete externalId doc', () => client.documents.deleteDocument({ id: doc.id! }));
+        }
+    });
+
+    test('limit above 50 returns more than 50 results when enough match', async () => {
+        // Before this release, a `limit` above 50 was silently capped to 50
+        // even though the documented maximum was always 100. This corpus has
+        // 55 matches so the fix is observable: a limit of 75 must return more
+        // than 50 of them.
+        const marker = 'VECTROS_SMOKE_WIDELIMIT_' + uniqueTag().replace(/-/g, '_');
+        const wideSchema = await client.schemas.createSchema({ body: {
+            typeName: `smoke_widelimit_${uniqueTag()}`,
+            displayName: 'Wide Limit Test Schema',
+            indexMode: 'TEXT',
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'content', fieldType: 'string', searchable: true }],
+        } });
+        const wideRecordIds: string[] = [];
+        try {
+            // Track each id as its OWN create resolves — not derived from the
+            // aggregate Promise.all result — so a mid-batch rejection still
+            // leaves every already-created record in wideRecordIds for cleanup.
+            await Promise.all(
+                Array.from({ length: 55 }, (_, i) => client.records.createRecord({ body: {
+                    typeName: wideSchema.typeName!,
+                    schemaId: wideSchema.id!,
+                    payload: { content: marker + ` item ${i}` },
+                } }).then((r) => { wideRecordIds.push(r.id!); }))
+            );
+            await Promise.all(wideRecordIds.map((id) => pollUntilIndexed(id, 'record')));
+
+            const results = await client.search.content({
+                query: marker,
+                mode: 'TEXT',
+                limit: 75,
+                contentTypes: ['records'],
+            });
+            expect((results.results ?? []).length).toBeGreaterThan(50);
+        } finally {
+            for (const id of wideRecordIds) {
+                await tryCleanup(`delete wide-limit record ${id}`, () => client.records.deleteRecord({ id }));
+            }
+            await tryCleanup('delete wide-limit schema', () => client.schemas.deleteSchema({ id: wideSchema.id! }));
+        }
+    }, 60_000);
 
     // Use sleep to satisfy linter that import wasn't dead in the no-todo era
     // (this is a no-op; kept as a guard against accidental future removal).

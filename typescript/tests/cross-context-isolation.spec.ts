@@ -206,7 +206,8 @@ describeIfTenant('cross-context data isolation', () => {
 // ---------------------------------------------------------------------------
 
 async function createRecord(ctx: ContextHandle, type: string, mrn: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({ body: {
+    // The lineage BASE for `type` — must be created ownerless.
+    const schema = await ctx.ownerlessApi.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Record Schema',
         indexMode: 'NONE',
@@ -229,7 +230,8 @@ async function listRecordIds(ctx: ContextHandle, type: string): Promise<string[]
 }
 
 async function createDoc(ctx: ContextHandle, type: string, po: string, marker: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({ body: {
+    // The lineage BASE for `type` — must be created ownerless.
+    const schema = await ctx.ownerlessApi.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Document Schema',
         indexMode: 'TEXT',
@@ -263,7 +265,11 @@ async function listFolderIds(ctx: ContextHandle): Promise<string[]> {
 }
 
 async function createSchema(ctx: ContextHandle, type: string): Promise<string> {
-    const schema = await ctx.api.schemas.createSchema({ body: {
+    // The lineage BASE for `type` — must be created ownerless. Ownerless
+    // schemas are still readable by any in-context caller (including the
+    // regular confined `ctx.api`), so this doesn't affect the read-isolation
+    // assertions below.
+    const schema = await ctx.ownerlessApi.schemas.createSchema({ body: {
         typeName: type,
         displayName: 'Cross-context Schema',
         indexMode: 'NONE',

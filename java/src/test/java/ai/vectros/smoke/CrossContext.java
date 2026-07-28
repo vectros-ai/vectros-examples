@@ -4,12 +4,15 @@ import ai.vectros.VectrosApiClient;
 import ai.vectros.types.AccessProfileRequest;
 import ai.vectros.types.AccessProfileRequestStatus;
 import ai.vectros.types.AppContextRequest;
+import ai.vectros.types.MintTokenResponse;
 import ai.vectros.types.ScopeClause;
+import ai.vectros.types.ScopeRequest;
 import ai.vectros.types.ScopedKeyResponse;
 import ai.vectros.types.UserResponse;
 import ai.vectros.resources.auth.requests.CreateAccessProfileRequest;
 import ai.vectros.resources.auth.requests.CreateScopedKeyRequest;
 import ai.vectros.resources.auth.requests.DeleteAppContextRequest;
+import ai.vectros.resources.auth.requests.TokenRequest;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +40,16 @@ final class CrossContext {
     static final class Handle {
         String contextId = "", userId = "", keyId = "";
         VectrosApiClient api;
+        /**
+         * An identity-less client, also confined to contextId, used ONLY to
+         * create the first (ownerless) schema of a type in this context. A
+         * schema's very first create under a typeName must have no owner —
+         * the confined {@code api} above is always bound to a user, so it
+         * can never make that create itself. Minted by requesting contextId
+         * on the token with no identity: confined to the context, stamps no
+         * owner.
+         */
+        VectrosApiClient ownerlessApi;
     }
 
     static final class Fixture {
@@ -73,6 +86,12 @@ final class CrossContext {
 
         h.contextId = contextId(label);
         root.auth().createAppContext(AppContextRequest.builder().contextId(h.contextId).name("cross-context " + label).build());
+
+        MintTokenResponse bootstrap = root.auth().mintToken(TokenRequest.builder()
+            .scope(ScopeRequest.builder().allowedActions(List.of("schemas:c", "schemas:r")).build())
+            .contextId(h.contextId)
+            .build());
+        h.ownerlessApi = Smoke.client(bootstrap.getToken());
 
         UserResponse user = root.identity().createUser(ai.vectros.types.UserRequest.builder().externalId(Smoke.uniqueTag()).build());
         h.userId = user.getId().orElseThrow();

@@ -173,6 +173,13 @@ class ContextHandle:
     user_id: str = ""
     key_id: str = ""
     api: Optional[VectrosApi] = None
+    # An identity-less client, also confined to context_id, used ONLY to
+    # create the first (ownerless) schema of a type in this context. A
+    # schema's very first create under a type_name must have no owner — the
+    # confined `api` above is always bound to a user, so it can never make
+    # that create itself. Minted by requesting context_id on the token with
+    # no identity: confined to the context, stamps no owner.
+    ownerless_api: Optional[VectrosApi] = None
 
 
 @dataclass
@@ -201,6 +208,12 @@ def _provision_context(root: VectrosApi, tenant_id: str, label: str, created: li
 
     h.context_id = _context_id(label)
     root.auth.create_app_context(context_id=h.context_id, name=f"cross-context {label}")
+
+    bootstrap = root.auth.mint_token(
+        context_id=h.context_id,
+        scope=vectros.ScopeRequest(allowed_actions=["schemas:c", "schemas:r"]),
+    )
+    h.ownerless_api = make_client(bootstrap.token)
 
     # A real user is required: the key binds to an AccessProfile whose
     # principal_id is `usr_<user_id>`.

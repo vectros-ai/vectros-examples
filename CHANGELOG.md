@@ -5,6 +5,46 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.12.0 — 2026-07-26
+
+Examples updated for **Vectros SDK 0.37.0**. The TypeScript examples pin
+`@vectros-ai/sdk@^0.37.0` (was `^0.36.0`); Python, Java, and CLI pin their SDKs
+independently. This release adds coverage for `basedOn` schema customization
+and its supporting fields, and rounds out the search response fields 0.37.0
+completes.
+
+### Added
+
+- **`basedOn` schema customization (`schema-lineage`)** — a new example shows the full
+  lifecycle: the first schema under a type name has no `basedOn` and becomes that name's
+  shared base; a second schema of the same name is rejected unless it declares `basedOn`
+  against the base; a schema that does declare it becomes a customization owned by a user
+  or a scope. `GET /v1/schemas?recordType=` and creating a record by type name alone both
+  resolve to the caller's own customization when one exists, otherwise the shared base.
+- **`specificityRank` on scope namespaces (`schema-lineage`)** — a new case registers a
+  custom namespace with an explicit `specificityRank` (required on every custom namespace
+  now) and shows the tie-break it exists for: when a caller holds two scope dimensions at
+  once, the higher-ranked one's customization wins.
+- **`userId`/`scope` selectors on document lookup (`schema-lineage`)** — a new case shows a
+  root API key resolving a lookup field as a specific user would, reaching a customization
+  that declares a field the shared base doesn't.
+- **Context-targeted token minting (`cross-context-isolation`, `app-contexts`)** — the
+  cross-context examples now show how a root API key seeds the first schema of a type in a
+  context other than its own: mint a token targeting that context with no bound user, then
+  create the schema with it.
+- **`externalId` and `hasMore` on search hits (`search`)** — new cases show a search result
+  carrying the matched item's `externalId`, and the explicit `hasMore` flag that tells you
+  whether another page of results is available.
+
+### Changed
+
+- **Search `limit` now reaches its full 1–100 range (`search`)** — a new case with more
+  than 50 matching records confirms a `limit` above 50 now returns them all, instead of
+  silently capping at 50.
+- **TEXT-mode search hits carry a real `textScore` (`search`)** — a new assertion confirms
+  keyword-mode results are ranked (`textScore > 0`), not the placeholder `0` every hit
+  previously carried.
+
 ## 0.11.0 — 2026-07-22
 
 Examples updated for **Vectros SDK 0.36.0**. The TypeScript examples pin
