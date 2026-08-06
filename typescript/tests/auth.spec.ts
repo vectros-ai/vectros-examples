@@ -147,4 +147,178 @@ describe('auth', () => {
             await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
         }
     });
+
+    // -------------------------------------------------------------------------
+    // 0.38.0 — placement matchers in data_scope. The two tests below are
+    // illustrative, not exhaustive: they show the SHAPE a customer authoring
+    // a data_scope needs to know, not a proof of every matcher combination.
+    // -------------------------------------------------------------------------
+
+    test('dataScope placement matcher ${{ under.self.scope.<namespace> }} — work with entities under your own without enumerating them', async () => {
+        // identity supplies the credential's OWN org value; the clause below
+        // names the CLIENT dimension as "whatever is one level under my own
+        // org" — so this token can read any client entity under `org`,
+        // present or future, without ever naming that client's id.
+        const recordType = `smoke_dscope_under_${uniqueTag()}`;
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: recordType,
+            displayName: 'DataScope Placement Matcher Test Schema',
+            indexMode: 'TEXT',
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'name', fieldType: 'string', required: true, searchable: true }],
+        } });
+
+        const org = await client.identity.createEntity({ namespace: 'org', body: {
+            externalId: 'under-org-' + uniqueTag(), name: 'Under-Matcher Org',
+        } });
+        // childClient's own scopes name org as its parent — that is what
+        // "immediate parent is your own" resolves against.
+        const childClient = await client.identity.createEntity({ namespace: 'client', body: {
+            externalId: 'under-child-' + uniqueTag(), name: 'Child Client', scopes: [`org:${org.id}`],
+        } });
+        const otherOrg = await client.identity.createEntity({ namespace: 'org', body: {
+            externalId: 'under-other-org-' + uniqueTag(), name: 'Other Org',
+        } });
+        const unrelatedClient = await client.identity.createEntity({ namespace: 'client', body: {
+            externalId: 'under-unrelated-' + uniqueTag(), name: 'Unrelated Client', scopes: [`org:${otherOrg.id}`],
+        } });
+
+        const recordForChild = await client.records.createRecord({ body: {
+            typeName: recordType, schemaId: schema.id!, payload: { name: 'child record' },
+            scopes: [`client:${childClient.id}`],
+        } });
+        const recordForUnrelated = await client.records.createRecord({ body: {
+            typeName: recordType, schemaId: schema.id!, payload: { name: 'unrelated record' },
+            scopes: [`client:${unrelatedClient.id}`],
+        } });
+        await pollUntilIndexed(recordForChild.id!, 'record');
+        await pollUntilIndexed(recordForUnrelated.id!, 'record');
+
+        try {
+            const minted = (await client.auth.mintToken({
+                scope: {
+                    allowedActions: ['records:r'],
+                    identity: { 'scope:org': org.id! },
+                    dataScope: { 'scope:client': ['${{ under.self.scope.org }}'] },
+                },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+
+            const childResult = await scoped.records.listRecords({
+                type: recordType, scope: `client:${childClient.id}`,
+            });
+            expect((childResult.data ?? []).map((r) => r.id)).toContain(recordForChild.id);
+
+            // unrelatedClient's parent is otherOrg, not org — the matcher is
+            // one level, not a full ancestor walk, and otherOrg isn't `org` —
+            // so an explicit ask for it is refused outright (the upfront
+            // list-params gate), not merely filtered to an empty page.
+            await expect(scoped.records.listRecords({
+                type: recordType, scope: `client:${unrelatedClient.id}`,
+            })).rejects.toMatchObject({ statusCode: 403 });
+        } finally {
+            await tryCleanup('record (child)', () => client.records.deleteRecord({ id: recordForChild.id! }));
+            await tryCleanup('record (unrelated)', () => client.records.deleteRecord({ id: recordForUnrelated.id! }));
+            await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schema.id! }));
+            await tryCleanup('child client entity', () =>
+                client.identity.deleteEntity({ namespace: 'client', id: childClient.id! }));
+            await tryCleanup('unrelated client entity', () =>
+                client.identity.deleteEntity({ namespace: 'client', id: unrelatedClient.id! }));
+            await tryCleanup('org entity', () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
+            await tryCleanup('other org entity', () => client.identity.deleteEntity({ namespace: 'org', id: otherOrg.id! }));
+        }
+    });
+
+    test('dataScope "*" wildcard — one clause covers every ownership dimension without enumerating them', async () => {
+        // "*" states a rule for every dimension a clause does not name
+        // explicitly. This clause names none, so it applies to all of
+        // them — one entry grants read across userId AND every scope
+        // namespace at once, instead of listing "userId", "scope:org",
+        // "scope:client", ... one by one.
+        const recordType = `smoke_dscope_wildcard_${uniqueTag()}`;
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: recordType,
+            displayName: 'DataScope Wildcard Test Schema',
+            indexMode: 'TEXT',
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'name', fieldType: 'string', required: true, searchable: true }],
+        } });
+        const user = await client.identity.createUser({ body: { externalId: 'wc-' + uniqueTag() } });
+        const org = await client.identity.createEntity({ namespace: 'org', body: {
+            externalId: 'wc-org-' + uniqueTag(), name: 'Wildcard Org',
+        } });
+        const otherOrg = await client.identity.createEntity({ namespace: 'org', body: {
+            externalId: 'wc-other-org-' + uniqueTag(), name: 'Wildcard Other Org',
+        } });
+
+        const recordForUser = await client.records.createRecord({ body: {
+            typeName: recordType, schemaId: schema.id!, payload: { name: 'owned by user' }, userId: user.id!,
+        } });
+        const recordForOrg = await client.records.createRecord({ body: {
+            typeName: recordType, schemaId: schema.id!, payload: { name: 'scoped to org' }, scopes: [`org:${org.id}`],
+        } });
+        const recordForOtherOrg = await client.records.createRecord({ body: {
+            typeName: recordType, schemaId: schema.id!, payload: { name: 'scoped to another org' },
+            scopes: [`org:${otherOrg.id}`],
+        } });
+        await pollUntilIndexed(recordForUser.id!, 'record');
+        await pollUntilIndexed(recordForOrg.id!, 'record');
+        await pollUntilIndexed(recordForOtherOrg.id!, 'record');
+
+        try {
+            const minted = (await client.auth.mintToken({
+                scope: {
+                    allowedActions: ['records:r'],
+                    // The SDK types a dataScope array as string[]; null is a
+                    // documented sentinel value at the wire level (matches
+                    // the established idiom in null-sentinel-search.spec.ts).
+                    dataScope: { '*': ['${{ any }}', null as unknown as string] },
+                },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+
+            const byUser = await scoped.records.listRecords({ type: recordType, userId: user.id! });
+            expect((byUser.data ?? []).map((r) => r.id)).toContain(recordForUser.id);
+
+            const byOrg = await scoped.records.listRecords({ type: recordType, scope: `org:${org.id}` });
+            expect((byOrg.data ?? []).map((r) => r.id)).toContain(recordForOrg.id);
+
+            // The boundary a customer copying "*" needs to know: a NAMED
+            // dimension always takes precedence over it, even where "*" alone
+            // would have admitted the row. Combine the wildcard with an
+            // explicit `scope:org` naming only THIS org — the wildcard no
+            // longer covers `org` at all once it's named; every other org is
+            // refused outright rather than falling back to the wildcard.
+            const mintedNarrowed = (await client.auth.mintToken({
+                scope: {
+                    allowedActions: ['records:r'],
+                    dataScope: {
+                        '*': ['${{ any }}', null as unknown as string],
+                        'scope:org': [org.id!],
+                    },
+                },
+            })) as MintedToken;
+            const scopedNarrowed = getScopedClient(mintedNarrowed.token);
+
+            // The named org is still admitted...
+            const narrowedByOrg = await scopedNarrowed.records.listRecords({
+                type: recordType, scope: `org:${org.id}`,
+            });
+            expect((narrowedByOrg.data ?? []).map((r) => r.id)).toContain(recordForOrg.id);
+            // ...but the OTHER org is refused outright, even though "*" alone
+            // would have admitted it — naming `org` took the wildcard's place
+            // for that one dimension, rather than adding to it.
+            await expect(scopedNarrowed.records.listRecords({
+                type: recordType, scope: `org:${otherOrg.id}`,
+            })).rejects.toMatchObject({ statusCode: 403 });
+        } finally {
+            await tryCleanup('record (user)', () => client.records.deleteRecord({ id: recordForUser.id! }));
+            await tryCleanup('record (org)', () => client.records.deleteRecord({ id: recordForOrg.id! }));
+            await tryCleanup('record (other org)', () => client.records.deleteRecord({ id: recordForOtherOrg.id! }));
+            await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schema.id! }));
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            await tryCleanup('other org entity', () => client.identity.deleteEntity({ namespace: 'org', id: otherOrg.id! }));
+            await tryCleanup('org entity', () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
+        }
+    });
 });

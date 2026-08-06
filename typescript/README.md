@@ -22,8 +22,11 @@ Requires Node.js ≥ 20.
 
 | Example | Demonstrates |
 |---|---|
-| `auth` | Health check + scoped-token mint and enforcement. |
+| `auth` | Health check + scoped-token mint and enforcement, including the `data_scope` placement matchers (`${{ under.self.scope.<namespace> }}`, the `"*"` dimension wildcard). |
 | `records` | Full record lifecycle, the three search modes, lookup fields, version history. |
+| `composite-lookup` | A lookup declared over several fields at once (`fieldNames` + the `field=a,b` / `values` query form), including the partial-tuple grouping behavior, the `sortFrom`/`sortTo` sort-key window, and the array-typed `values` parameter's encoding. |
+| `records-update-consistency` | An update makes the new content searchable and the old content stops surfacing — no window where search shows stale or missing content. |
+| `vectros-version-header` | The `Vectros-Version` request header — sent explicitly, echoed back on a supported version, and rejected with `400` on an unrecognized one. |
 | `documents-text` / `documents-upload` | Text ingest and the presigned-URL upload handshake. |
 | `documents-ask` | Streaming single-document Q&A. |
 | `folders` | Folder hierarchy and protection rules. |

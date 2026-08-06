@@ -5,6 +5,48 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.13.0 — 2026-08-05
+
+Examples updated for **Vectros SDK 0.38.0**. The TypeScript examples pin
+`@vectros-ai/sdk@^0.38.0` (was `^0.37.0`); the Python range moves to
+`vectros>=0.38.0,<0.39.0`; the Java example now pins `ai.vectros:vectros-sdk:0.38.0`.
+This release adds coverage for composite lookups — 0.38.0's headline feature — the
+new `data_scope` placement matchers, the `sortFrom`/`sortTo` lookup window, and the
+`Vectros-Version` request header, plus a search-consistency example for record
+updates.
+
+### Fixed
+
+- **The Java quickstart's published Maven coordinate had drifted from the SDK its
+  own source was tested against.** The public coordinate stayed pinned at
+  `ai.vectros:vectros-sdk:0.29.9` while the internal harness this example is
+  generated from moved forward to `0.33.0` and then `0.34.0` — a gap of four to
+  five minor versions across every release from `examples-v0.7.0` through
+  `v0.12.0`. The coordinate now tracks the SDK the example is actually written
+  and verified against.
+
+### Added
+
+- **Composite lookups (`composite-lookup`, TypeScript; `CompositeLookupSmokeTest`,
+  Java)** — a schema declares a lookup over two fields at once (`fieldNames` in
+  place of `fieldName`), queried with `field=status,area` plus the new `values`
+  parameter. Covers a fully-specified match, a partial tuple (fewer values than
+  declared, grouped by the field(s) left unspecified), the POST body form, the
+  `sortFrom`/`sortTo` sort-key window on a fully-specified tuple, and the
+  array-typed `values` parameter's wire encoding — verified with a value that
+  itself contains a comma.
+- **`data_scope` placement matchers (`auth`)** — two new cases mint a scoped token
+  using `${{ under.self.scope.<namespace> }}` (work with entities one level under
+  your own without enumerating them) and the `"*"` dimension wildcard (one clause
+  covering every ownership dimension at once).
+- **`Vectros-Version` request header (`vectros-version-header`)** — a new example
+  sends the header explicitly (the SDKs don't send it themselves yet), confirms it
+  is echoed back on a supported version, and that an unrecognized version is
+  rejected with `400 UNSUPPORTED_WIRE_VERSION`.
+- **`records-update-consistency`** — an update makes the new content searchable
+  and the old content stops surfacing, with no window where search shows stale or
+  missing content.
+
 ## 0.12.0 — 2026-07-26
 
 Examples updated for **Vectros SDK 0.37.0**. The TypeScript examples pin
@@ -195,7 +237,7 @@ scope ownership, all part of the `@vectros-ai/sdk@^0.34.0` surface already pinne
 ### Changed
 
 - **Scoped-token RAG example (`rag`)** — updated to the tightened search/RAG data-scope
-  enforcement (#587): retrieval now returns only content the token could read directly, so the
+  enforcement: retrieval now returns only content the token could read directly, so the
   scoped-token RAG example grants `documents:r` alongside `inference:r`/`search:r`, and a new
   case shows a token with `inference:r`/`search:r` but no read grant grounds on nothing
   (fail-closed). No SDK pin change.

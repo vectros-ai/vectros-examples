@@ -22,6 +22,7 @@ needed — and resolves the SDK from Maven Central. Requires a JDK 21+ on
 |---|---|
 | `AuthSmokeTest` | Health check + scoped-token mint and enforcement. |
 | `ChatSmokeTest` | Streaming inference — the SSE event sequence. |
+| `CompositeLookupSmokeTest` | A lookup declared over several fields at once (`fieldNames` + the array-typed `values` parameter), including a value containing a comma to prove it survives as one leg rather than being split. |
 | `EnvelopeSmokeTest` | The uniform `{ data, nextCursor }` list envelope and cursor paging. |
 | `ErrorContractSmokeTest` | The error contract — asserting structured error bodies. |
 | `CrossContextSmokeTest` | App-context data isolation within a tenant. |

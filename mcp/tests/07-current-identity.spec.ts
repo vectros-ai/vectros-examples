@@ -63,3 +63,34 @@ test('current_identity surfaces extended fields when backend ships them', async 
     await close();
   }
 });
+
+/**
+ * mcpServerVersion / sdkVersion — always client-derived (build-info.ts), so
+ * unlike the extended-ping fields above these are unconditional: present on
+ * every call, backend rollout status notwithstanding.
+ *
+ * No cross-check against a local manifest file here on purpose: this spec
+ * ships verbatim into the public `examples` distribution, where a
+ * repo-relative manifest path wouldn't exist, and a public example has no
+ * business reading an internal workspace's manifest anyway. The exact-version
+ * cross-check against the real build lives in the package's own internal
+ * integration test suite instead, which is never bundled into examples.
+ */
+test('current_identity reports mcpServerVersion + sdkVersion on the running build', async () => {
+  const { client, close } = await spawnServer();
+  try {
+    const result = await client.callTool({
+      name: 'current_identity',
+      arguments: {},
+    });
+    assert.ok(!result.isError);
+    const body = parse(result) as Record<string, unknown>;
+
+    assert.equal(typeof body.mcpServerVersion, 'string', 'mcpServerVersion present');
+    assert.equal(typeof body.sdkVersion, 'string', 'sdkVersion present');
+    assert.notEqual(body.mcpServerVersion, 'dev', 'must be a real build, not the no-define fallback');
+    assert.notEqual(body.sdkVersion, 'dev', 'must be a real build, not the no-define fallback');
+  } finally {
+    await close();
+  }
+});

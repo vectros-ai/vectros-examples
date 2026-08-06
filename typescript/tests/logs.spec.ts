@@ -155,6 +155,10 @@ describe('admin logs', () => {
         const CODED_REASONS = [
             'RATE_LIMITED', 'SUBSCRIPTION_LIMIT_EXCEEDED', 'INSUFFICIENT_BALANCE',
             'RESOURCE_IN_USE', 'VERSION_CONFLICT', 'SESSION_REFRESH_REQUIRED',
+            'WRITE_FROZEN',
+            // 0.38.0: an unrecognized Vectros-Version request header (see
+            // vectros-version-header.spec.ts).
+            'UNSUPPORTED_WIRE_VERSION',
         ];
         for (const entry of response.entries) {
             expect(entry.status).toBeGreaterThanOrEqual(400);

@@ -24,6 +24,7 @@ const KEY = process.env.VECTROS_API_KEY;
 export const SMOKE_TYPE = 'mcp_smoke_record';
 export const SMOKE_EQUALITY_FIELD = 'status'; // equality lookup (GSI slot)
 export const SMOKE_RANGE_FIELD = 'rank'; // range + prefix lookup (range row, rangeEnabled)
+export const SMOKE_COMPOSITE_FIELD_2 = 'area'; // second leg of the composite (status,area) lookup
 
 export const SMOKE_SCHEMA = {
   typeName: SMOKE_TYPE,
@@ -34,11 +35,15 @@ export const SMOKE_SCHEMA = {
     { fieldId: 'title', fieldType: 'string', required: true, searchable: true },
     { fieldId: SMOKE_EQUALITY_FIELD, fieldType: 'string', filterable: true },
     { fieldId: SMOKE_RANGE_FIELD, fieldType: 'string' },
+    { fieldId: SMOKE_COMPOSITE_FIELD_2, fieldType: 'string' },
     { fieldId: 'note', fieldType: 'string' },
   ],
   lookupFields: [
     { fieldName: SMOKE_EQUALITY_FIELD }, // equality
     { fieldName: SMOKE_RANGE_FIELD, rangeEnabled: true }, // range + prefix
+    // Composite (SDK 0.38): a separate, independently-indexed lookup over BOTH fields
+    // together — declared alongside, not instead of, the single-field one above.
+    { fieldNames: [SMOKE_EQUALITY_FIELD, SMOKE_COMPOSITE_FIELD_2] },
   ],
 };
 
@@ -134,7 +139,7 @@ export async function recreateSmokeSchema(): Promise<FixtureOutcome> {
   const seed = await api('POST', '/v1/records', {
     typeName: SMOKE_TYPE,
     externalId: 'mcp-smoke-seed',
-    payload: { title: 'Seed', status: 'open', rank: 'm50', note: 'seed' },
+    payload: { title: 'Seed', status: 'open', rank: 'm50', area: 'general', note: 'seed' },
   });
   if (seed.status < 200 || seed.status >= 300)
     throw new Error(`seed record failed: HTTP ${seed.status} ${JSON.stringify(seed.json)}`);

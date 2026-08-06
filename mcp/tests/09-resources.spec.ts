@@ -42,6 +42,10 @@ test('identity resource reads at least the minimal degraded shape', async () => 
       ['root_key', 'scoped_key', 'token'].includes(parsed.principalType as string),
       `principalType derived: ${JSON.stringify(parsed.principalType)}`,
     );
+    // Same shared resolveIdentity() as current_identity — mcpServerVersion/sdkVersion
+    // are unconditional (see the tool's dedicated version-cross-check smoke spec).
+    assert.equal(typeof parsed.mcpServerVersion, 'string', 'mcpServerVersion present');
+    assert.equal(typeof parsed.sdkVersion, 'string', 'sdkVersion present');
   } finally {
     await close();
   }
