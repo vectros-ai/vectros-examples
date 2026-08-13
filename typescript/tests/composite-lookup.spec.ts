@@ -225,4 +225,97 @@ describe('composite lookup (fieldNames + values)', () => {
         const ids = (results.data ?? []).map((r) => r.id);
         expect(ids).toEqual([r5open_commaArea]);
     });
+
+    // -----------------------------------------------------------------------
+    // The composite-lookup declare-time refusals. Each case here attempts
+    // createSchema and expects a clean 400; none needs cleanup since creation
+    // itself fails.
+    // -----------------------------------------------------------------------
+    describe('composite-lookup declare-time refusals', () => {
+        const baseFields = [
+            { fieldId: 'status', fieldType: 'string' as const, filterable: true },
+            { fieldId: 'area', fieldType: 'string' as const, filterable: true },
+            { fieldId: 'tags', fieldType: 'array' as const },
+            { fieldId: 'meta', fieldType: 'object' as const },
+            {
+                fieldId: 'owners', fieldType: 'reference' as const, cardinality: 'many',
+                targetTypeName: recordType, targetSurface: 'record',
+            },
+        ];
+
+        test('unique:true on a composite entry is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'area'], unique: true }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('rangeEnabled:true on a composite entry is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'area'], rangeEnabled: true }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('non-record allowedSurfaces is rejected on a schema declaring a composite lookup', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record', 'document'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'area'] }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a leg declared array is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'tags'] }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a leg declared object is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'meta'] }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a leg that is a many-cardinality reference is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'owners'] }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a leg that is itself declared rangeEnabled is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [
+                    { fieldName: 'area', rangeEnabled: true },
+                    { fieldNames: ['status', 'area'] },
+                ],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a leg that is also the sortBy target is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'area'], sortBy: 'area' }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('a repeated leg is rejected', async () => {
+            await expect(client.schemas.createSchema({ body: {
+                typeName: `smoke_bad_${uniqueTag()}`, displayName: 'bad', indexMode: 'NONE',
+                allowedSurfaces: ['record'], fields: baseFields,
+                lookupFields: [{ fieldNames: ['status', 'status'] }],
+            } })).rejects.toMatchObject({ statusCode: 400 });
+        });
+    });
 });

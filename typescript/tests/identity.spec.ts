@@ -102,6 +102,43 @@ describe('identity', () => {
         expect(body.allowedActions).toBeUndefined();
         expect(body.dataScope).toBeUndefined();
         expect(body.principalLabel).toBeUndefined();
+
+        // principalKeyId is the token's own jti — unique per mint, even for the
+        // same scope. A second token minted here must report a DIFFERENT value;
+        // if it echoed the bound identity instead (the pre-0.39.0 behavior this
+        // field's doc comment used to contradict), two tokens for the same
+        // caller would report the SAME principalKeyId, and this would not catch
+        // a regression back to that.
+        const minted2 = (await client.auth.mintToken({
+            scope: { allowedActions: ['records:r'] },
+        })) as MintedToken;
+        const scoped2 = getScopedClient(minted2.token);
+        const body2 = (await scoped2.auth.ping()) as unknown as PingIdentity;
+        expect(body2.principalKeyId).not.toBe(body.principalKeyId);
+    });
+
+    test('mintToken rejects an expiresInSeconds above the 1-hour cap', async () => {
+        // 0.39.0 lowered the max from 86400 (24h) to 3600 (1h) — the exact
+        // boundary matters, so assert both sides of it rather than just "a
+        // large value fails". 3600 itself must still succeed (it's also the
+        // default); 3601 must be rejected.
+        const atCap = (await client.auth.mintToken({
+            scope: { allowedActions: ['records:r'] },
+            expiresInSeconds: 3600,
+        })) as MintedToken;
+        expect(atCap.token).toBeTruthy();
+
+        let caught: { statusCode?: number } | undefined;
+        try {
+            await client.auth.mintToken({
+                scope: { allowedActions: ['records:r'] },
+                expiresInSeconds: 3601,
+            });
+        } catch (e) {
+            caught = e as { statusCode?: number };
+        }
+        expect(caught).toBeDefined();
+        expect(caught!.statusCode).toBe(400);
     });
 
     test('a runtime-minted scope-bound ssk_* reports its identity in ping dataScope', async () => {
@@ -526,6 +563,84 @@ describe('identity', () => {
             await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schema.id! }));
             await tryCleanup('org', () =>
                 client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // GET /v1/users/exists-by-email + AccessProfileResponse.email
+    // -----------------------------------------------------------------------
+
+    test('exists-by-email: true for a member of the context, false for a stranger and for the wrong context', async () => {
+        const ctxId = ('ex' + uniqueTag()).slice(0, 31);
+        const email = `${uniqueTag()}@test.com`;
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag(), email } });
+        await client.auth.createAppContext({ body: { contextId: ctxId, name: 'exists-by-email spec' } });
+        try {
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId: `usr_${user.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+
+            const found = await client.identity.userExistsByEmail({ email, contextId: ctxId });
+            expect(found.exists).toBe(true);
+            expect(found.userId).toBe(user.id);
+            expect(found.status).toBe('ACTIVE');
+
+            const strangerEmail = `${uniqueTag()}-nobody@test.com`;
+            const notFound = await client.identity.userExistsByEmail({ email: strangerEmail, contextId: ctxId });
+            expect(notFound.exists).toBe(false);
+            expect(notFound.userId).toBeUndefined();
+
+            // Same email, a DIFFERENT (real) context the user has no profile in — exists is scoped
+            // per-context, not tenant-wide.
+            const otherCtxId = ('ex2' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'exists-by-email spec 2' } });
+            try {
+                const wrongContext = await client.identity.userExistsByEmail({ email, contextId: otherCtxId });
+                expect(wrongContext.exists).toBe(false);
+            } finally {
+                await tryCleanup('other context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
+            }
+        } finally {
+            await tryCleanup('profile', () =>
+                client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+            await tryCleanup('context', () =>
+                client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
+    test('AccessProfileResponse.email is present with users:r, absent without it', async () => {
+        const ctxId = ('em' + uniqueTag()).slice(0, 31);
+        const email = `${uniqueTag()}@test.com`;
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag(), email } });
+        await client.auth.createAppContext({ body: { contextId: ctxId, name: 'profile-email spec' } });
+        try {
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId: `usr_${user.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+
+            // The root key holds every scope implicitly, including users:r — email present.
+            const asRoot = await client.auth.getAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` });
+            expect(asRoot.email).toBe(email);
+
+            // A scoped token holding profiles:r but NOT users:r — email must be absent (gated the
+            // same as GET /v1/users, per the field's own documented rule), not merely null-if-missing.
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId,
+                scope: { allowedActions: ['profiles:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            const asScoped = await scoped.auth.getAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` });
+            expect(asScoped.email).toBeUndefined();
+        } finally {
+            await tryCleanup('profile', () =>
+                client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+            await tryCleanup('context', () =>
+                client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
         }
     });
 });

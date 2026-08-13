@@ -372,5 +372,17 @@ describe('access-profiles', () => {
             await expect(client.auth.listAccessProfiles({ contextId: missing }))
                 .rejects.toMatchObject({ statusCode: 404 });
         });
+
+        // 0.39.0: create_own_scoped_key was removed as a working literal (it was never wired to any
+        // enforcement path) and now fails author-time validation with 400, same as any other
+        // unrecognized colon-less string.
+        test("the retired 'create_own_scoped_key' literal is rejected at author time, same as any other unrecognized bare literal", async () => {
+            const principalId = 'usr_' + uniqueTag().replace(/-/g, '');
+            await expect(client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId, scopes: [{ allowed_actions: ['create_own_scoped_key'] }] },
+            })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
     });
 });

@@ -321,4 +321,19 @@ describe('auth', () => {
             await tryCleanup('org entity', () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
         }
     });
+
+    // Any ${{ … }}-shaped dataScope value other than the exact recognised spellings
+    // (${{ self.* }}, ${{ any }}, ${{ under.self.userId }}, ${{ under.self.scope.<ns> }}) must be
+    // rejected at mint time — guarding against a near-miss spelling silently storing as an inert,
+    // always-false literal.
+    test.each([
+        ['wrong case', '${{ Any }}'],
+        ['unrecognized bare word', '${{ nonsense }}'],
+        ['unrecognized under. sub-form', '${{ under.self.foo }}'],
+        ['near-miss on the shipped self form', '${{ self }}'],
+    ])('a malformed placement-matcher spelling (%s) is rejected at mint time', async (_label, value) => {
+        await expect(client.auth.mintToken({
+            scope: { allowedActions: ['records:r'], dataScope: { 'scope:org': [value] } },
+        })).rejects.toMatchObject({ statusCode: 400 });
+    });
 });

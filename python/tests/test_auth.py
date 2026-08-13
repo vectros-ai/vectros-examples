@@ -42,6 +42,35 @@ def test_mint_scoped_token_returns_token_and_expiry(client):
     assert minted.expires_at > time.time()
 
 
+def test_scoped_token_principal_key_id_is_unique_per_mint(client):
+    """principalKeyId for an st_* token is the token's own jti (unique per
+    mint), not the bound identity — two tokens minted for the same scope must
+    report different values on ping. Asserting only "is a string" would not
+    catch a regression back to the old (pre-0.39.0) behavior, which echoed the
+    bound user/key id and would be IDENTICAL across mints."""
+    scope = vectros.ScopeRequest(allowed_actions=["records:r"])
+    minted1 = client.auth.mint_token(scope=scope)
+    minted2 = client.auth.mint_token(scope=scope)
+
+    body1 = support.make_client(minted1.token).auth.ping()
+    body2 = support.make_client(minted2.token).auth.ping()
+    assert body1.principal_type == "token"
+    assert body1.principal_key_id != body2.principal_key_id
+
+
+def test_mint_token_rejects_expires_in_seconds_above_the_1hour_cap(client):
+    """0.39.0 lowered the max from 86400 (24h) to 3600 (1h). Assert both
+    sides of the exact boundary: 3600 still succeeds (it's also the
+    default), 3601 is rejected."""
+    scope = vectros.ScopeRequest(allowed_actions=["records:r"])
+    at_cap = client.auth.mint_token(scope=scope, expires_in_seconds=3600)
+    assert at_cap.token.startswith("st_")
+
+    with pytest.raises(vectros.core.api_error.ApiError) as exc:
+        client.auth.mint_token(scope=scope, expires_in_seconds=3601)
+    assert support.status_of(exc.value) == 400
+
+
 def test_scoped_token_records_r_allows_list_blocks_create(client):
     """Action-letter enforcement: 'r' allows GET/list, blocks create with a
     uniform 403 (the API does not reveal which scope check failed)."""

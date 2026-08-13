@@ -5,6 +5,32 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.14.0 — 2026-08-12
+
+Examples repinned to **Vectros SDK 0.39.0**. The TypeScript examples pin
+`@vectros-ai/sdk@^0.39.0` (was `^0.38.0`); the Python range moves to
+`vectros>=0.39.0,<0.40.0`; the Java example now pins `ai.vectros:vectros-sdk:0.39.0`.
+
+### Added
+
+- **`AuthSmokeTest` (Java), `test_auth.py` (Python), and the TypeScript identity
+  example now cover 0.39.0's scoped-token TTL cap and credential-id semantics** —
+  minting a token with `expiresInSeconds` above 3600 (1 hour) is rejected, and
+  a token's reported `principalKeyId` is unique per mint (it's the token's own
+  JWT id, not the identity it's bound to).
+
+- **New coverage across all three languages for the trusted BYO-IdP issuer
+  registry and RFC 8693 token exchange** — the full issuer-registry CRUD
+  contract, every request-validation and routing rejection `exchange()` can
+  produce, and a real 401 against a genuine public JWKS with an unverifiable
+  signature.
+
+- **New coverage for user-invitation validation** (email frozen while an
+  invite is outstanding; an access-profile `roleId` must name an existing
+  role), **composite-lookup declare-time refusals** (the schema-authoring
+  rules a composite lookup must satisfy), and **`exists-by-email` +
+  `AccessProfileResponse.email`**.
+
 ## 0.13.0 — 2026-08-05
 
 Examples updated for **Vectros SDK 0.38.0**. The TypeScript examples pin
