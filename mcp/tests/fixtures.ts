@@ -113,6 +113,68 @@ async function deleteAllSmokeRecords(): Promise<void> {
 
 export type FixtureOutcome = 'provisioned' | 'forbidden';
 
+/** 403 -> 'forbidden'; outside [200,300) -> throw a formatted error naming `what`; otherwise undefined (caller proceeds). */
+function assertCreated(result: ApiResult, what: string): FixtureOutcome | undefined {
+  if (result.status === 403) return 'forbidden';
+  if (result.status < 200 || result.status >= 300)
+    throw new Error(`${what} failed: HTTP ${result.status} ${JSON.stringify(result.json)}`);
+  return undefined;
+}
+
+// ── Namespace fixture ────────────────────────────────────────────────────────
+// API 0.40.0: `org`/`client` lost their special-cased auto-provisioning — every namespace,
+// `org`/`client` included, now needs an explicit `POST /v1/namespaces` registration (choosing
+// `entityBacked`) before `POST /v1/entities/{namespace}` will accept a create. Pre-0.40.0 this
+// fixture didn't exist because it didn't need to.
+const SMOKE_ENTITY_NAMESPACE = 'client';
+// Any value in [0, 1_000_000] unused by this tenant works; 2000 is what a real account-creation
+// auto-provision picks for `client` today, so reusing it here can never collide with one landing
+// later — registering an already-registered namespace is a no-op there, whoever registered it.
+// `specificityRank` IS unique tenant-wide across every namespace though, so an unrelated one on
+// this shared tenant could still collide on this exact value — see the 400 branch below for how
+// that surfaces.
+const SMOKE_ENTITY_NAMESPACE_RANK = 2000;
+
+/**
+ * Register `client` as entity-backed if it isn't already (idempotent: a repeat `POST` on an
+ * already-registered namespace 400s, so check first — same find-then-skip-if-found shape as
+ * `seedSmokeDocument`, not `recreateSmokeSchema`, which unconditionally recreates regardless of
+ * what it finds). Returns 'forbidden' if the key can't register namespaces.
+ */
+export async function ensureSmokeEntityNamespace(): Promise<FixtureOutcome> {
+  const existing = await api('GET', `/v1/namespaces/${SMOKE_ENTITY_NAMESPACE}`);
+  if (existing.status === 200) return 'provisioned';
+  if (existing.status !== 404)
+    throw new Error(`GET namespace '${SMOKE_ENTITY_NAMESPACE}' failed: HTTP ${existing.status} ${JSON.stringify(existing.json)}`);
+
+  const create = await api('POST', '/v1/namespaces', {
+    namespace: SMOKE_ENTITY_NAMESPACE,
+    entityBacked: true,
+    specificityRank: SMOKE_ENTITY_NAMESPACE_RANK,
+  });
+  if (create.status === 400) {
+    // Two known causes, both handled here rather than left as an opaque crash:
+    //  - TOCTOU: a concurrent run registered `client` between our GET and this POST (this file has
+    //    no locking against a shared tenant — same accepted risk shape as recreateSmokeSchema's own
+    //    find-then-write below). Re-check rather than assume; if it's there now, the race resolved
+    //    itself and this isn't a real failure.
+    //  - A genuine specificityRank collision: SMOKE_ENTITY_NAMESPACE_RANK reuses the platform's own
+    //    default rank for `client` precisely so it can't collide with a REAL auto-provision landing
+    //    later, but the rank is unique tenant-wide, so an unrelated namespace already at 2000 on this
+    //    shared tenant would still 400 here. Re-check stays 404 in that case; surface the likely cause
+    //    explicitly instead of leaving the reader to decode the raw JSON body.
+    const recheck = await api('GET', `/v1/namespaces/${SMOKE_ENTITY_NAMESPACE}`);
+    if (recheck.status === 200) return 'provisioned';
+    throw new Error(
+      `register namespace '${SMOKE_ENTITY_NAMESPACE}' failed: HTTP 400 ${JSON.stringify(create.json)} — ` +
+        `if this names 'specificityRank', another namespace on this tenant already holds rank ` +
+        `${SMOKE_ENTITY_NAMESPACE_RANK}; pick a different SMOKE_ENTITY_NAMESPACE_RANK.`,
+    );
+  }
+  const outcome = assertCreated(create, `register namespace '${SMOKE_ENTITY_NAMESPACE}'`);
+  return outcome ?? 'provisioned';
+}
+
 /**
  * Recreate the smoke schema from scratch — drain its (throwaway) records → deleteSchema →
  * create fresh with the intended shape → seed one record. Deterministic shape every run,
@@ -130,9 +192,8 @@ export async function recreateSmokeSchema(): Promise<FixtureOutcome> {
       throw new Error(`deleteSchema failed: HTTP ${del.status} ${JSON.stringify(del.json)}`);
   }
   const create = await api('POST', '/v1/schemas', SMOKE_SCHEMA);
-  if (create.status === 403) return 'forbidden';
-  if (create.status < 200 || create.status >= 300)
-    throw new Error(`createSchema failed: HTTP ${create.status} ${JSON.stringify(create.json)}`);
+  const createOutcome = assertCreated(create, 'createSchema');
+  if (createOutcome) return createOutcome;
   // Seed one record so record_query list/lookup specs assert against real data (record
   // reads are immediate; hybrid_search indexing is async, but the search spec tolerates
   // an empty result, so we don't block on INDEXED here).
@@ -195,9 +256,8 @@ export async function seedSmokeDocument(): Promise<FixtureOutcome> {
       text: SMOKE_DOC_TEXT,
       indexMode: 'HYBRID',
     });
-    if (ingest.status === 403) return 'forbidden';
-    if (ingest.status < 200 || ingest.status >= 300)
-      throw new Error(`seed document failed: HTTP ${ingest.status} ${JSON.stringify(ingest.json)}`);
+    const ingestOutcome = assertCreated(ingest, 'seed document');
+    if (ingestOutcome) return ingestOutcome;
     doc = ingest.json as { id: string; indexStatus?: string };
   }
   const id = doc.id;

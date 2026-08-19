@@ -23,6 +23,18 @@ def test_ping_ok_with_valid_key(client):
     assert resp.environment is not None
 
 
+def test_root_key_principal_key_id_is_stable_across_calls(client):
+    """principalKeyId for a root sk_* key identifies the KEY, not the call --
+    unlike an st_* token's per-mint jti (see
+    test_scoped_token_principal_key_id_is_unique_per_mint), two pings with the
+    SAME key must report the SAME value. Asserting only "is a string" would
+    not catch a regression that started minting a fresh id per call."""
+    body1 = client.auth.ping()
+    body2 = client.auth.ping()
+    assert body1.principal_key_id
+    assert body1.principal_key_id == body2.principal_key_id
+
+
 def test_ping_403_with_invalid_key():
     bad = support.make_client("sk_live_invalid_for_smoke_test")
     with pytest.raises(vectros.core.api_error.ApiError) as exc:

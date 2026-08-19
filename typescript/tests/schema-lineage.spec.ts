@@ -208,8 +208,8 @@ describe('schema lineage (basedOn / specificityRank)', () => {
         // below is what lets this negative test express the omitted-field case
         // at all, not a workaround for a missing type.
         const { statusCode } = await captureError(client.identity.registerNamespace({
-            namespace,
-        } as any));
+            body: { namespace } as any,
+        }));
         expect(statusCode).toBe(400);
     });
 
@@ -237,9 +237,11 @@ describe('schema lineage (basedOn / specificityRank)', () => {
         let teamVariant;
         try {
             await client.identity.registerNamespace({
-                namespace,
-                specificityRank: 999_000, // more specific than the built-in namespaces
-                entityBacked: false,
+                body: {
+                    namespace,
+                    specificityRank: 999_000, // more specific than the built-in namespaces
+                    entityBacked: false,
+                },
             });
 
             orgVariant = await client.schemas.createSchema({ body: {

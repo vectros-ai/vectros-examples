@@ -75,15 +75,24 @@ describe('invite validation', () => {
         });
 
         test('access profile create rejects a roleId naming no role in the context', async () => {
-            const principalId = 'usr_' + uniqueTag().replace(/-/g, '');
-            await expect(client.auth.createAccessProfile({
-                contextId: ctxId,
-                body: { principalId, roleId: 'no-such-role-' + uniqueTag() },
-            })).rejects.toMatchObject({ statusCode: 400 });
+            // 0.40.0: principalId must name a real user — use one so this 400 is genuinely
+            // the dangling-roleId rejection under test, not a principalId 400 for a different
+            // reason that happens to share the status code.
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const principalId = `usr_${user.id}`;
+            try {
+                await expect(client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId, roleId: 'no-such-role-' + uniqueTag() },
+                })).rejects.toMatchObject({ statusCode: 400 });
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            }
         });
 
         test('access profile upsert rejects a roleId naming no role in the context', async () => {
-            const principalId = 'usr_' + uniqueTag().replace(/-/g, '');
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const principalId = `usr_${user.id}`;
             // Create with a valid inline scope first, so the upsert is genuinely
             // updating an existing row rather than creating a fresh one.
             await client.auth.createAccessProfile({
@@ -98,6 +107,7 @@ describe('invite validation', () => {
             } finally {
                 await tryCleanup('profile', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
             }
         });
 

@@ -69,6 +69,12 @@ describe('identity', () => {
             expect(typeof body.principalLabel).toBe('string');
             expect(body.principalLabel.length).toBeGreaterThan(0);
         }
+
+        // principalKeyId for a root sk_* key identifies the KEY, not the call —
+        // unlike an st_* token's per-mint jti (see the token test below), a
+        // second ping with the SAME key must report the SAME value.
+        const body2 = (await client.auth.ping()) as unknown as PingIdentity;
+        expect(body2.principalKeyId).toBe(body.principalKeyId);
     });
 
     test('ping returns token identity (with tokenExpiresAt) for a st_* scoped token', async () => {
@@ -190,6 +196,14 @@ describe('identity', () => {
             // principal: the stamped ownership the scoped key speaks as.
             expect(body.dataScope?.userId).toBe(user.id);
             expect(body.dataScope?.scopes).toContain(`org:${org.id}`);
+
+            // principalKeyId for an ssk_* key identifies the KEY, not the call — same rule as a
+            // root sk_* key (see the ping identity-binding tests above) and distinct from an st_*
+            // token's per-mint jti. This runs against a freshly-minted key so it exercises the
+            // rule in this suite's normal (staging) lane, not only the internal, production-only
+            // scoped-key spec, which asserts the identical rule against a pre-provisioned key.
+            const body2 = (await scoped.auth.ping()) as unknown as PingIdentity;
+            expect(body2.principalKeyId).toBe(body.principalKeyId);
         } finally {
             // Order: revoke the key, drop the profile (it references the org via
             // identityOverride), then the context, user, and org last.
@@ -262,11 +276,23 @@ describe('identity', () => {
         expect(user.externalId).toBe(externalId);
 
         try {
+            // The plain idempotent-echo branch is confined: the caller needs users:r AND its own
+            // bound context must hold an access profile naming the colliding user — users:r alone
+            // is not sufficient. A mintToken call with no explicit contextId confines a
+            // root-minted token to the 'default' context server-side, so bind the victim there
+            // before retrying.
+            await client.auth.createAccessProfile({
+                contextId: 'default',
+                body: { principalId: `usr_${user.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+
             const user2 = await scoped.identity.createUser({
                 body: { externalId, email: 'different@test.com' },
             });
             expect(user2.id).toBe(user.id);
         } finally {
+            await tryCleanup('profile', () =>
+                client.auth.deleteAccessProfile({ contextId: 'default', principalId: `usr_${user.id}` }));
             await tryCleanup('delete user', () => client.identity.deleteUser({ id: user.id! }));
         }
     });
@@ -641,6 +667,61 @@ describe('identity', () => {
             await tryCleanup('context', () =>
                 client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
             await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
+    // GET .../profiles (the LIST endpoint) resolves email via a separate, batched code path from
+    // getAccessProfile's single-row resolve above. Two distinct users/profiles so a mis-keyed
+    // batch (e.g. rows swapped, or the whole page resolved from ONE row's email) would be caught,
+    // not just "email is present somewhere".
+    test('listAccessProfiles resolves email per-row (batched), present with users:r, absent without it', async () => {
+        const ctxId = ('lem' + uniqueTag()).slice(0, 31);
+        const emailA = `${uniqueTag()}-a@test.com`;
+        const emailB = `${uniqueTag()}-b@test.com`;
+        const userA = await client.identity.createUser({ body: { externalId: uniqueTag(), email: emailA } });
+        const userB = await client.identity.createUser({ body: { externalId: uniqueTag(), email: emailB } });
+        await client.auth.createAppContext({ body: { contextId: ctxId, name: 'list-profile-email spec' } });
+        try {
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId: `usr_${userA.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId: `usr_${userB.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+
+            // Root key holds users:r implicitly — email present, and correctly per-row (not a
+            // single email echoed onto every row, and not swapped between rows).
+            const asRoot = await client.auth.listAccessProfiles({ contextId: ctxId });
+            const rows = asRoot.data as unknown as { principalId?: string; email?: string }[];
+            const rowA = rows.find((p) => p.principalId === `usr_${userA.id}`);
+            const rowB = rows.find((p) => p.principalId === `usr_${userB.id}`);
+            expect(rowA?.email).toBe(emailA);
+            expect(rowB?.email).toBe(emailB);
+
+            // A scoped token holding profiles:r but NOT users:r — email must be absent on EVERY
+            // row, same gating rule as the singular endpoint.
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId,
+                scope: { allowedActions: ['profiles:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            const asScoped = await scoped.auth.listAccessProfiles({ contextId: ctxId });
+            const scopedRows = asScoped.data as unknown as { principalId?: string; email?: string }[];
+            expect(scopedRows.length).toBeGreaterThanOrEqual(2);
+            for (const row of scopedRows) {
+                expect(row.email).toBeUndefined();
+            }
+        } finally {
+            await tryCleanup('profile A', () =>
+                client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${userA.id}` }));
+            await tryCleanup('profile B', () =>
+                client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${userB.id}` }));
+            await tryCleanup('context', () =>
+                client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            await tryCleanup('user A', () => client.identity.deleteUser({ id: userA.id! }));
+            await tryCleanup('user B', () => client.identity.deleteUser({ id: userB.id! }));
         }
     });
 });

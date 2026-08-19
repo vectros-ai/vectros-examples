@@ -17,8 +17,20 @@
  * One shared parent context is created in beforeAll + torn down in afterAll
  * so individual tests don't burn time on context lifecycle.
  */
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
+
+/**
+ * 0.40.0: `POST /v1/app-contexts/{contextId}/profiles` now requires a `usr_` principalId to name a
+ * REAL user in the tenant — a synthetic, never-created id (the pattern this file used throughout
+ * before 0.40.0) now 400s ("... does not name a user in this tenant") instead of silently creating an
+ * inert profile. Every access-profile test needs a real backing user; this helper creates one and
+ * returns both the profile-ready principalId and the raw user id for cleanup.
+ */
+async function realPrincipal(): Promise<{ principalId: string; userId: string }> {
+    const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+    return { principalId: `usr_${user.id}`, userId: user.id! };
+}
 
 describe('access-profiles', () => {
     // Shared parent context for all tests in this file.
@@ -108,7 +120,7 @@ describe('access-profiles', () => {
 
         test('DELETE blocks with 409 when role is referenced by a profile', async () => {
             const roleId = ('t' + uniqueTag()).slice(0, 31);
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             await client.auth.createRole({
                 contextId: ctxId,
                 body: {
@@ -134,6 +146,8 @@ describe('access-profiles', () => {
                 await tryCleanup('role', () =>
                     client.auth.deleteRole({ contextId: ctxId, roleId }));
                 throw err;
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
@@ -150,7 +164,7 @@ describe('access-profiles', () => {
 
     describe('profiles', () => {
         test('CRUD with inline scopes: create → get → update → list → delete', async () => {
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             const created = await client.auth.createAccessProfile({
                 contextId: ctxId,
                 body: {
@@ -184,12 +198,13 @@ describe('access-profiles', () => {
             } finally {
                 await tryCleanup('delete profile', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
         test('CRUD with roleId reference (XOR with scopes)', async () => {
             const roleId = ('t' + uniqueTag()).slice(0, 31);
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             await client.auth.createRole({
                 contextId: ctxId,
                 body: {
@@ -224,6 +239,7 @@ describe('access-profiles', () => {
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
                 await tryCleanup('role', () =>
                     client.auth.deleteRole({ contextId: ctxId, roleId }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
@@ -236,7 +252,7 @@ describe('access-profiles', () => {
             // key's override must reference an entity that EXISTS in the account
             // (a 400 naming the value otherwise). So we seed real org/client
             // entities and override to their ids — not arbitrary literals.
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             let orgId: string | undefined;
             let clientId: string | undefined;
             try {
@@ -277,6 +293,7 @@ describe('access-profiles', () => {
                     client.identity.deleteEntity({ namespace: 'client', id: clientId! }));
                 if (orgId) await tryCleanup('cleanup org entity', () =>
                     client.identity.deleteEntity({ namespace: 'org', id: orgId! }));
+                await tryCleanup('cleanup user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
@@ -284,31 +301,42 @@ describe('access-profiles', () => {
             // The 0.36.0 fail-closed half: a root key cannot override to an
             // identity value that does not exist — the request is refused with a
             // 400 naming the value, rather than minting a dangling reference.
-            const principalId = 'usr_' + uniqueTag();
-            await expect(client.auth.createAccessProfile({
-                contextId: ctxId,
-                body: {
-                    principalId,
-                    scopes: [{ allowed_actions: ['records:r'] }],
-                    identityOverrides: { 'scope:org': 'org-does-not-exist-' + uniqueTag() },
-                },
-            })).rejects.toMatchObject({ statusCode: 400 });
+            // A REAL backing principal (0.40.0) so this 400 is genuinely the
+            // identityOverrides rejection under test, not a principalId 400
+            // that happens to carry the same status code for a different reason.
+            const { principalId, userId } = await realPrincipal();
+            try {
+                await expect(client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: {
+                        principalId,
+                        scopes: [{ allowed_actions: ['records:r'] }],
+                        identityOverrides: { 'scope:org': 'org-does-not-exist-' + uniqueTag() },
+                    },
+                })).rejects.toMatchObject({ statusCode: 400 });
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
+            }
         });
 
         test('identityOverrides REJECTS userId (sacred field) with 400', async () => {
-            const principalId = 'usr_' + uniqueTag();
-            await expect(client.auth.createAccessProfile({
-                contextId: ctxId,
-                body: {
-                    principalId,
-                    scopes: [{ allowed_actions: ['records:r'] }],
-                    identityOverrides: { userId: { value: 'attacker-user-id' } },
-                },
-            })).rejects.toMatchObject({ statusCode: 400 });
+            const { principalId, userId } = await realPrincipal();
+            try {
+                await expect(client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: {
+                        principalId,
+                        scopes: [{ allowed_actions: ['records:r'] }],
+                        identityOverrides: { userId: { value: 'attacker-user-id' } },
+                    },
+                })).rejects.toMatchObject({ statusCode: 400 });
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
+            }
         });
 
         test('idempotent POST returns existing profile', async () => {
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             const first = await client.auth.createAccessProfile({
                 contextId: ctxId,
                 body: {
@@ -329,11 +357,12 @@ describe('access-profiles', () => {
             } finally {
                 await tryCleanup('cleanup', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
         test('status active ↔ suspended round-trip', async () => {
-            const principalId = 'usr_' + uniqueTag();
+            const { principalId, userId } = await realPrincipal();
             const created = await client.auth.createAccessProfile({
                 contextId: ctxId,
                 body: {
@@ -353,6 +382,7 @@ describe('access-profiles', () => {
             } finally {
                 await tryCleanup('cleanup', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
             }
         });
 
@@ -373,15 +403,177 @@ describe('access-profiles', () => {
                 .rejects.toMatchObject({ statusCode: 404 });
         });
 
+        // -------------------------------------------------------------------
+        // profiles:c/u/d qualifier confining WHICH principal
+        // -------------------------------------------------------------------
+        describe('profiles:c/u/d qualifier — WHICH principal (literal usr_<id> or the self sentinel)', () => {
+            test("profiles:u:self can update the caller's OWN profile, but not another principal's", async () => {
+                const { principalId: ownPrincipal, userId: ownUserId } = await realPrincipal();
+                const { principalId: otherPrincipal, userId: otherUserId } = await realPrincipal();
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: ownPrincipal, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: otherPrincipal, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                try {
+                    // The caller's token must be a SUPERSET of what it authors onto another
+                    // profile (a pre-existing rule, separate from and checked in addition to the
+                    // qualifier grammar under test here) — so the minted scope also carries
+                    // records:r/search:r, the actions this test writes.
+                    //
+                    // The `self` qualifier resolves against the caller's own identity, which comes
+                    // from `scope.identity` — a field distinct from the top-level mint `userId`
+                    // (which only binds token ownership/audit metadata). Without
+                    // `scope.identity.userId` here, the server has no known "self" to compare
+                    // against, so `self` can never match.
+                    const minted = (await client.auth.mintToken({
+                        userId: ownUserId,
+                        contextId: ctxId,
+                        scope: {
+                            allowedActions: ['profiles:u:self', 'records:r', 'search:r'],
+                            identity: { userId: ownUserId },
+                        },
+                    })) as { token: string };
+                    const scoped = getScopedClient(minted.token);
+
+                    const updated = await scoped.auth.updateAccessProfile({
+                        contextId: ctxId, principalId: ownPrincipal,
+                        body: { principalId: ownPrincipal, scopes: [{ allowed_actions: ['records:r', 'search:r'] }] },
+                    });
+                    expect(updated.scopes?.[0]?.allowed_actions).toContain('search:r');
+
+                    await expect(scoped.auth.updateAccessProfile({
+                        contextId: ctxId, principalId: otherPrincipal,
+                        body: { principalId: otherPrincipal, scopes: [{ allowed_actions: ['search:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 403 });
+                } finally {
+                    await tryCleanup('own profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: ownPrincipal }));
+                    await tryCleanup('other profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: otherPrincipal }));
+                    await tryCleanup('own user', () => client.identity.deleteUser({ id: ownUserId }));
+                    await tryCleanup('other user', () => client.identity.deleteUser({ id: otherUserId }));
+                }
+            });
+
+            test('profiles:u:<literal usr_id> confines to exactly that principal, no other', async () => {
+                const { principalId: targetPrincipal, userId: targetUserId } = await realPrincipal();
+                const { principalId: otherPrincipal, userId: otherUserId } = await realPrincipal();
+                const { principalId: callerPrincipal, userId: callerUserId } = await realPrincipal();
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: targetPrincipal, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: otherPrincipal, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: callerPrincipal, scopes: [{ allowed_actions: [`profiles:u:${targetPrincipal}`] }] },
+                });
+                try {
+                    // Superset-of-caller — see the note in the test above.
+                    const minted = (await client.auth.mintToken({
+                        userId: callerUserId, contextId: ctxId,
+                        scope: { allowedActions: [`profiles:u:${targetPrincipal}`, 'records:r', 'search:r'] },
+                    })) as { token: string };
+                    const scoped = getScopedClient(minted.token);
+
+                    const updated = await scoped.auth.updateAccessProfile({
+                        contextId: ctxId, principalId: targetPrincipal,
+                        body: { principalId: targetPrincipal, scopes: [{ allowed_actions: ['records:r', 'search:r'] }] },
+                    });
+                    expect(updated.scopes?.[0]?.allowed_actions).toContain('search:r');
+
+                    // A third, unrelated principal is refused.
+                    await expect(scoped.auth.updateAccessProfile({
+                        contextId: ctxId, principalId: otherPrincipal,
+                        body: { principalId: otherPrincipal, scopes: [{ allowed_actions: ['search:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 403 });
+
+                    // Not even the CALLER's own principal is admitted — the qualifier names one
+                    // literal target, not "self OR that literal". Without this, a backend that
+                    // treated a literal qualifier as "that literal OR self" would still pass every
+                    // other assertion in this test.
+                    await expect(scoped.auth.updateAccessProfile({
+                        contextId: ctxId, principalId: callerPrincipal,
+                        body: { principalId: callerPrincipal, scopes: [{ allowed_actions: ['search:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 403 });
+                } finally {
+                    await tryCleanup('target profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: targetPrincipal }));
+                    await tryCleanup('other profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: otherPrincipal }));
+                    await tryCleanup('caller profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: callerPrincipal }));
+                    await tryCleanup('target user', () => client.identity.deleteUser({ id: targetUserId }));
+                    await tryCleanup('other user', () => client.identity.deleteUser({ id: otherUserId }));
+                    await tryCleanup('caller user', () => client.identity.deleteUser({ id: callerUserId }));
+                }
+            });
+
+            test('a bare, unqualified profiles:u stays broad — unaffected, still the context-admin grant', async () => {
+                const { principalId: targetPrincipal, userId: targetUserId } = await realPrincipal();
+                const { principalId: callerPrincipal, userId: callerUserId } = await realPrincipal();
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: targetPrincipal, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: callerPrincipal, scopes: [{ allowed_actions: ['profiles:u'] }] },
+                });
+                try {
+                    // Superset-of-caller — see the note further up this describe block.
+                    const minted = (await client.auth.mintToken({
+                        userId: callerUserId, contextId: ctxId,
+                        scope: { allowedActions: ['profiles:u', 'records:r', 'search:r'] },
+                    })) as { token: string };
+                    const updated = await getScopedClient(minted.token).auth.updateAccessProfile({
+                        contextId: ctxId, principalId: targetPrincipal,
+                        body: { principalId: targetPrincipal, scopes: [{ allowed_actions: ['records:r', 'search:r'] }] },
+                    });
+                    expect(updated.scopes?.[0]?.allowed_actions).toContain('search:r');
+                } finally {
+                    await tryCleanup('target profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: targetPrincipal }));
+                    await tryCleanup('caller profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId, principalId: callerPrincipal }));
+                    await tryCleanup('target user', () => client.identity.deleteUser({ id: targetUserId }));
+                    await tryCleanup('caller user', () => client.identity.deleteUser({ id: callerUserId }));
+                }
+            });
+
+            test('profiles:r does NOT accept a qualifier — rejected at authoring time', async () => {
+                const { principalId, userId } = await realPrincipal();
+                try {
+                    await expect(client.auth.createAccessProfile({
+                        contextId: ctxId,
+                        body: { principalId, scopes: [{ allowed_actions: ['profiles:r:self'] }] },
+                    })).rejects.toMatchObject({ statusCode: 400 });
+                } finally {
+                    await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
+                }
+            });
+        });
+
         // 0.39.0: create_own_scoped_key was removed as a working literal (it was never wired to any
         // enforcement path) and now fails author-time validation with 400, same as any other
         // unrecognized colon-less string.
         test("the retired 'create_own_scoped_key' literal is rejected at author time, same as any other unrecognized bare literal", async () => {
-            const principalId = 'usr_' + uniqueTag().replace(/-/g, '');
-            await expect(client.auth.createAccessProfile({
-                contextId: ctxId,
-                body: { principalId, scopes: [{ allowed_actions: ['create_own_scoped_key'] }] },
-            })).rejects.toMatchObject({ statusCode: 400 });
+            const { principalId, userId } = await realPrincipal();
+            try {
+                await expect(client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId, scopes: [{ allowed_actions: ['create_own_scoped_key'] }] },
+                })).rejects.toMatchObject({ statusCode: 400 });
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
+            }
         });
 
     });

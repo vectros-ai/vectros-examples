@@ -5,6 +5,28 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.15.0 — 2026-08-19
+
+### Added
+
+- Live coverage for the mirrored `mcp` example's `lookup_principal.contextId` parameter (API 0.40.0
+  namespace placement) in both resolve mode and lookup mode, plus a namespace-registration fixture
+  the lookup-mode entity tests now require.
+
+### Changed
+
+- Examples repinned to **Vectros SDK 0.40.0**. The TypeScript examples pin
+  `@vectros-ai/sdk@^0.40.0` (was `^0.39.0`); the Python range moves to
+  `vectros>=0.40.0,<0.41.0`; the Java example now pins `ai.vectros:vectros-sdk:0.40.0`.
+
+### Fixed
+
+- The `mcp` example's fixture setup test no longer lets one missing scope silently skip an unrelated
+  fixture (schema/document/namespace provisioning are independent preconditions, gated by different
+  scopes); each is now attempted and reported independently.
+- A `contextId` test in the `mcp` example now checks its namespace precondition directly and skips
+  honestly instead of failing with a misleading assertion message when the precondition isn't met.
+
 ## 0.14.0 — 2026-08-12
 
 Examples repinned to **Vectros SDK 0.39.0**. The TypeScript examples pin

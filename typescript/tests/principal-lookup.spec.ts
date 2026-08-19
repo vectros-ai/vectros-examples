@@ -20,7 +20,10 @@ describe('principal-lookup', () => {
     test('same principal in two contexts surfaces in cross-context lookup', async () => {
         const ctxA = ('a' + uniqueTag()).slice(0, 31);
         const ctxB = ('b' + uniqueTag()).slice(0, 31);
-        const principalId = 'usr_' + uniqueTag();
+        // 0.40.0: a usr_ principalId must name a real user before an access profile can be
+        // created against it.
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        const principalId = `usr_${user.id}`;
 
         await client.auth.createAppContext({ body: { contextId: ctxA, name: 'lookup ctx A' } });
         await client.auth.createAppContext({ body: { contextId: ctxB, name: 'lookup ctx B' } });
@@ -49,6 +52,7 @@ describe('principal-lookup', () => {
             // Context deletion needs a matching `confirm` token.
             await tryCleanup('ctxA', () => client.auth.deleteAppContext({ contextId: ctxA, confirm: ctxA }));
             await tryCleanup('ctxB', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
         }
     });
 

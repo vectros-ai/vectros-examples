@@ -5,15 +5,21 @@ import ai.vectros.resources.auth.requests.DeleteAppContextRequest;
 import ai.vectros.resources.auth.requests.IssuerRequest;
 import ai.vectros.resources.auth.requests.ListIssuersRequest;
 import ai.vectros.resources.auth.requests.TokenExchangeRequest;
+import ai.vectros.resources.auth.requests.TokenRequest;
 import ai.vectros.resources.identity.requests.UserExistsByEmailRequest;
 import ai.vectros.types.AccessProfileRequest;
 import ai.vectros.types.AppContextRequest;
 import ai.vectros.types.IssuerPage;
 import ai.vectros.types.IssuerResponse;
+import ai.vectros.types.MintTokenResponse;
 import ai.vectros.types.RoleRequest;
 import ai.vectros.types.ScopeClause;
+import ai.vectros.types.ScopeRequest;
 import ai.vectros.types.UserRequest;
 import ai.vectros.types.UserResponse;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -44,6 +50,7 @@ class IssuersTokenExchangeSmokeTest {
     private static final String GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange";
     private static final String JWT_TYPE = "urn:ietf:params:oauth:token-type:jwt";
     private static final Base64.Encoder B64URL = Base64.getUrlEncoder().withoutPadding();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private String ctxId;
 
@@ -84,6 +91,34 @@ class IssuersTokenExchangeSmokeTest {
     private static String slug(String prefix) {
         String s = prefix + Smoke.uniqueTag();
         return s.substring(0, Math.min(31, s.length()));
+    }
+
+    // Every register/delete elsewhere in this file uses the root client. Writing an issuer
+    // registration accepts ONLY a root sk_* key or the CLI bootstrap's dedicated provisioning
+    // capability — a capability that can never be granted to an ordinary role, and that a bare
+    // '*' wildcard does not satisfy either. An ordinary scoped token carrying neither must be
+    // refused.
+    @Test
+    void registerIssuerWithOrdinaryScopedTokenIs403() {
+        MintTokenResponse minted = Smoke.live().auth().mintToken(TokenRequest.builder()
+            .scope(ScopeRequest.builder().allowedActions(List.of("records:r")).build())
+            .contextId(ctxId).build());
+        VectrosApiClient scoped = Smoke.client(minted.getToken());
+        Smoke.expectStatus(() -> scoped.auth().registerIssuer(IssuerRequest.builder()
+            .issuerId(slug("noauth")).issuer("https://" + Smoke.uniqueTag() + ".example.com/")
+            .jwksUri("https://www.googleapis.com/oauth2/v3/certs")
+            .audience("aud-" + Smoke.uniqueTag()).contextId(ctxId).build()), 403);
+    }
+
+    @Test
+    void deleteIssuerWithOrdinaryScopedTokenIs403() {
+        MintTokenResponse minted = Smoke.live().auth().mintToken(TokenRequest.builder()
+            .scope(ScopeRequest.builder().allowedActions(List.of("records:r")).build())
+            .contextId(ctxId).build());
+        VectrosApiClient scoped = Smoke.client(minted.getToken());
+        // The gate runs before any existence check — a non-existent issuerId must still 403, never
+        // 404, so this proves the GATE fired, not a coincidental not-found.
+        Smoke.expectStatus(() -> scoped.auth().deleteIssuer(slug("noauth")), 403);
     }
 
     @Test
@@ -230,6 +265,62 @@ class IssuersTokenExchangeSmokeTest {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Token exchange — OAuth error envelope shape (RFC 6749 §5.2)
+    // -----------------------------------------------------------------------
+    // Every rejection test above asserts statusOf() only. This proves the BODY
+    // shape too — the deliberate deviation from this API's usual {message}
+    // envelope, since a generic OAuth client (not the Vectros SDK) is the
+    // documented caller. Uses Smoke.rawPost — the Fern ApiException has no
+    // typed field for either OAuth key (no response schema is declared for
+    // the 4xx/401/403/404 cases).
+
+    @Test
+    void exchange400UsesOAuthEnvelopeNotMessage() throws Exception {
+        Smoke.RawResponse r = Smoke.rawPost("/v1/auth/token/exchange",
+            "{\"grant_type\":\"" + GRANT_TYPE + "\",\"subject_token\":\"\",\"subject_token_type\":\"" + JWT_TYPE + "\"}");
+        assertEquals(400, r.status());
+        JsonNode body = MAPPER.readTree(r.body());
+        assertTrue(body.hasNonNull("error") && body.get("error").asText().length() > 0);
+        assertTrue(body.hasNonNull("error_description") && body.get("error_description").asText().length() > 0);
+        assertFalse(body.has("message"));
+    }
+
+    @Test
+    void exchange404UsesOAuthEnvelopeNotMessage() throws Exception {
+        String jwt = fakeJwt("https://definitely-never-registered-" + Smoke.uniqueTag() + ".example.com/",
+            "no-such-audience-" + Smoke.uniqueTag(), null);
+        Smoke.RawResponse r = Smoke.rawPost("/v1/auth/token/exchange",
+            "{\"grant_type\":\"" + GRANT_TYPE + "\",\"subject_token\":\"" + jwt + "\",\"subject_token_type\":\"" + JWT_TYPE + "\"}");
+        assertEquals(404, r.status());
+        JsonNode body = MAPPER.readTree(r.body());
+        assertTrue(body.hasNonNull("error") && body.get("error").asText().length() > 0);
+        assertTrue(body.hasNonNull("error_description") && body.get("error_description").asText().length() > 0);
+        assertFalse(body.has("message"));
+    }
+
+    @Test
+    void exchange401UsesOAuthEnvelopeNotMessage() throws Exception {
+        String issuerId = slug("envl");
+        String issuer = "https://accounts.google.com";
+        String audience = "aud-" + Smoke.uniqueTag();
+        Smoke.live().auth().registerIssuer(IssuerRequest.builder()
+            .issuerId(issuerId).issuer(issuer).jwksUri("https://www.googleapis.com/oauth2/v3/certs")
+            .audience(audience).contextId(ctxId).build());
+        try {
+            String jwt = fakeJwt(issuer, audience, "smoke-" + Smoke.uniqueTag());
+            Smoke.RawResponse r = Smoke.rawPost("/v1/auth/token/exchange",
+                "{\"grant_type\":\"" + GRANT_TYPE + "\",\"subject_token\":\"" + jwt + "\",\"subject_token_type\":\"" + JWT_TYPE + "\"}");
+            assertEquals(401, r.status());
+            JsonNode body = MAPPER.readTree(r.body());
+            assertTrue(body.hasNonNull("error") && body.get("error").asText().length() > 0);
+            assertTrue(body.hasNonNull("error_description") && body.get("error_description").asText().length() > 0);
+            assertFalse(body.has("message"));
+        } finally {
+            try { Smoke.live().auth().deleteIssuer(issuerId); } catch (RuntimeException ignored) { }
+        }
+    }
+
     @Test
     void existsByEmailTrueForAMemberFalseForAStranger() {
         String email = Smoke.uniqueTag() + "@test.com";
@@ -251,6 +342,60 @@ class IssuersTokenExchangeSmokeTest {
         } finally {
             try { Smoke.live().auth().deleteAccessProfile(ctxId, "usr_" + user.getId().orElseThrow()); } catch (RuntimeException ignored) { }
             try { Smoke.live().identity().deleteUser(user.getId().orElseThrow()); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /v1/app-contexts/{contextId}/profiles — batched email resolution
+    // -----------------------------------------------------------------------
+    // Only the singular getAccessProfile path asserts email resolution elsewhere in this suite.
+    // The LIST endpoint resolves email via a separate, batched code path — two distinct
+    // users/profiles so a mis-keyed batch (rows swapped, or the whole page resolved from one
+    // row's email) would be caught, not just "email is present somewhere".
+    @Test
+    void listAccessProfilesResolvesEmailPerRow() {
+        String emailA = Smoke.uniqueTag() + "-a@test.com";
+        String emailB = Smoke.uniqueTag() + "-b@test.com";
+        UserResponse userA = Smoke.live().identity().createUser(
+            UserRequest.builder().externalId(Smoke.uniqueTag()).email(emailA).build());
+        UserResponse userB = Smoke.live().identity().createUser(
+            UserRequest.builder().externalId(Smoke.uniqueTag()).email(emailB).build());
+        Smoke.live().auth().createAccessProfile(ctxId, AccessProfileRequest.builder()
+            .principalId("usr_" + userA.getId().orElseThrow())
+            .scopes(List.of(ScopeClause.builder().allowedActions(List.of("records:r")).build()))
+            .build());
+        Smoke.live().auth().createAccessProfile(ctxId, AccessProfileRequest.builder()
+            .principalId("usr_" + userB.getId().orElseThrow())
+            .scopes(List.of(ScopeClause.builder().allowedActions(List.of("records:r")).build()))
+            .build());
+        try {
+            // Root key holds users:r implicitly — email present, and correctly per-row.
+            var page = Smoke.live().auth().listAccessProfiles(ctxId,
+                ai.vectros.resources.auth.requests.ListAccessProfilesRequest.builder().build());
+            var rows = page.getData().orElseThrow();
+            String foundEmailA = rows.stream()
+                .filter(p -> ("usr_" + userA.getId().orElseThrow()).equals(p.getPrincipalId().orElse(null)))
+                .findFirst().flatMap(p -> p.getEmail()).orElse(null);
+            String foundEmailB = rows.stream()
+                .filter(p -> ("usr_" + userB.getId().orElseThrow()).equals(p.getPrincipalId().orElse(null)))
+                .findFirst().flatMap(p -> p.getEmail()).orElse(null);
+            assertEquals(emailA, foundEmailA);
+            assertEquals(emailB, foundEmailB);
+
+            // A scoped token holding profiles:r but NOT users:r — email must be absent on every row.
+            MintTokenResponse minted = Smoke.live().auth().mintToken(TokenRequest.builder()
+                .scope(ScopeRequest.builder().allowedActions(List.of("profiles:r")).build())
+                .contextId(ctxId).build());
+            var scopedPage = Smoke.client(minted.getToken()).auth().listAccessProfiles(ctxId,
+                ai.vectros.resources.auth.requests.ListAccessProfilesRequest.builder().build());
+            var scopedRows = scopedPage.getData().orElseThrow();
+            assertTrue(scopedRows.size() >= 2);
+            scopedRows.forEach(p -> assertTrue(p.getEmail().isEmpty(), "expected no email on scoped list row"));
+        } finally {
+            try { Smoke.live().auth().deleteAccessProfile(ctxId, "usr_" + userA.getId().orElseThrow()); } catch (RuntimeException ignored) { }
+            try { Smoke.live().auth().deleteAccessProfile(ctxId, "usr_" + userB.getId().orElseThrow()); } catch (RuntimeException ignored) { }
+            try { Smoke.live().identity().deleteUser(userA.getId().orElseThrow()); } catch (RuntimeException ignored) { }
+            try { Smoke.live().identity().deleteUser(userB.getId().orElseThrow()); } catch (RuntimeException ignored) { }
         }
     }
 }

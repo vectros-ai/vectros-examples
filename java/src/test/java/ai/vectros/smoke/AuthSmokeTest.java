@@ -30,6 +30,19 @@ class AuthSmokeTest {
     }
 
     @Test
+    void rootKeyPrincipalKeyIdIsStableAcrossCalls() {
+        // principalKeyId for a root sk_* key identifies the KEY, not the call —
+        // unlike an st_* token's per-mint jti (see
+        // scopedTokenPrincipalKeyIdIsUniquePerMint), two pings with the SAME key
+        // must report the SAME value. Asserting only "is a string" would not
+        // catch a regression that started minting a fresh id per call.
+        PingResponse r1 = Smoke.live().auth().ping();
+        PingResponse r2 = Smoke.live().auth().ping();
+        assertNotNull(r1.getPrincipalKeyId());
+        assertEquals(r1.getPrincipalKeyId(), r2.getPrincipalKeyId());
+    }
+
+    @Test
     void ping403WithInvalidKey() {
         VectrosApiClient bad = Smoke.client("sk_live_invalid_for_smoke_test");
         // Invalid keys surface as 403 (denied before any handler runs), not 401.

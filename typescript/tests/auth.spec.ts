@@ -323,8 +323,9 @@ describe('auth', () => {
     });
 
     // Any ${{ … }}-shaped dataScope value other than the exact recognised spellings
-    // (${{ self.* }}, ${{ any }}, ${{ under.self.userId }}, ${{ under.self.scope.<ns> }}) must be
-    // rejected at mint time — guarding against a near-miss spelling silently storing as an inert,
+    // (${{ self.* }}, ${{ any }}, ${{ under.self.userId }}, ${{ under.self.scope.<ns> }}, and — since
+    // 0.40.0 — ${{ member.scope.<ns> }} / ${{ member.scope.<ns>:<level> }}, see namespaces.spec.ts) must
+    // be rejected at mint time — guarding against a near-miss spelling silently storing as an inert,
     // always-false literal.
     test.each([
         ['wrong case', '${{ Any }}'],
@@ -335,5 +336,33 @@ describe('auth', () => {
         await expect(client.auth.mintToken({
             scope: { allowedActions: ['records:r'], dataScope: { 'scope:org': [value] } },
         })).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    // 0.40.0: POST /v1/auth/token's contextId-not-found 404 previously hand-assembled its body —
+    // {"message": ...} only, missing requestId, and no Content-Type header. It now returns the
+    // SAME envelope as every other error on the API. Raw fetch (not the SDK) so the wire body and
+    // headers are inspectable directly, same pattern as error-contract.spec.ts.
+    test("mintToken with a nonexistent contextId → 404 with the standard error envelope (requestId, Content-Type)", async () => {
+        const baseUrl = process.env.VECTROS_API_BASE_URL!.replace(/\/+$/, '');
+        const resp = await fetch(`${baseUrl}/v1/auth/token`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${process.env.VECTROS_API_KEY}`,
+            },
+            body: JSON.stringify({
+                scope: { allowedActions: ['records:r'] },
+                // contextId is capped at 31 chars — 'no-such-context-' + uniqueTag() (25 chars)
+                // is 41, over the limit, and would 400 on FORMAT before ever reaching the
+                // not-found check this test targets.
+                contextId: ('nosuch-' + uniqueTag()).slice(0, 31),
+            }),
+        });
+        expect(resp.status).toBe(404);
+        expect(resp.headers.get('content-type')).toMatch(/application\/json/);
+        const body = JSON.parse(await resp.text()) as { message?: string; requestId?: string };
+        expect(typeof body.message).toBe('string');
+        expect(typeof body.requestId).toBe('string');
+        expect(body.requestId).toBeTruthy();
     });
 });

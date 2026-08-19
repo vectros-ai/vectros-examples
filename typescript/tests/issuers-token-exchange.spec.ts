@@ -18,7 +18,7 @@
  * self-signup + invite-bind remain untested by this file — named here, not
  * silently missing.
  */
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
 /** Base64url-encode without padding (Buffer's 'base64url' covers Node ≥ 15.7). */
@@ -52,6 +52,43 @@ async function expectReject(promise: Promise<unknown>, statusCode: number): Prom
     return caught!;
 }
 
+// -----------------------------------------------------------------------
+// Raw HTTP for the exchange endpoint — deliberately NOT the SDK. §1.4 of
+// TOKEN-EXCHANGE-CONTRACT.md documents the OAuth envelope ({error,
+// error_description}, RFC 6749 §5.2) as a deliberate deviation from this
+// API's usual {message} shape; the generated SDK's error type has no typed
+// field for either (no response schema is declared for the 4xx/401/403/404
+// cases), so asserting the wire shape needs the raw body, same pattern as
+// error-contract.spec.ts.
+// -----------------------------------------------------------------------
+function baseUrl(): string {
+    const u = process.env.VECTROS_API_BASE_URL;
+    if (!u) throw new Error('VECTROS_API_BASE_URL required');
+    return u.replace(/\/+$/, '');
+}
+
+async function rawExchange(body: Record<string, unknown>): Promise<{ status: number; parsed: unknown }> {
+    const resp = await fetch(`${baseUrl()}/v1/auth/token/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    const rawBody = await resp.text();
+    return { status: resp.status, parsed: JSON.parse(rawBody) };
+}
+
+interface OAuthErrorBody {
+    error: string;
+    error_description: string;
+    message?: unknown;
+    [k: string]: unknown;
+}
+
+interface MintedToken {
+    token: string;
+    expiresAt: number;
+}
+
 describe('issuers + token exchange', () => {
     let ctxId: string;
 
@@ -70,6 +107,37 @@ describe('issuers + token exchange', () => {
     // -----------------------------------------------------------------------
 
     describe('issuer registry', () => {
+        // Every registerIssuer/deleteIssuer call elsewhere in this file uses the tenant's root
+        // client. Writing an issuer registration accepts ONLY a root sk_* key or the CLI
+        // bootstrap's dedicated provisioning capability — a capability that can never be granted
+        // to an ordinary role, and that a bare '*' wildcard does not satisfy either. An ordinary
+        // scoped token carrying neither must be refused, regardless of what else it's scoped to.
+        test('registerIssuer with an ordinary scoped (non-root, non-provisioning) token → 403', async () => {
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId,
+                scope: { allowedActions: ['records:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            await expectReject(scoped.auth.registerIssuer({
+                issuerId: ('noauth' + uniqueTag()).slice(0, 31),
+                issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId,
+            }), 403);
+        });
+
+        test('deleteIssuer with an ordinary scoped (non-root, non-provisioning) token → 403', async () => {
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId,
+                scope: { allowedActions: ['records:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            // The authorization gate runs before any existence check — a non-existent issuerId
+            // must still 403, never 404, so this proves the gate fired, not a coincidental
+            // not-found.
+            await expectReject(scoped.auth.deleteIssuer({ issuerId: ('noauth' + uniqueTag()).slice(0, 31) }), 403);
+        });
+
         test('register → get → list → delete → get 404s', async () => {
             const issuerId = ('reg' + uniqueTag()).slice(0, 31);
             const issuer = `https://${uniqueTag()}.example.com/`;
@@ -136,6 +204,9 @@ describe('issuers + token exchange', () => {
         });
 
         test('a second issuerId cannot claim an (issuer, audience) pair already registered', async () => {
+            // NOTE: since 0.40.0 this ALSO collides with the one-active-IdP-per-context rule
+            // below (both issuers target the same context) — the two isolating tests that
+            // follow disambiguate which rule actually fires when only one of them applies.
             const issuer = `https://${uniqueTag()}.example.com/`;
             const audience = `aud-${uniqueTag()}`;
             const firstId = ('paira' + uniqueTag()).slice(0, 31);
@@ -148,6 +219,53 @@ describe('issuers + token exchange', () => {
                 await expectReject(client.auth.registerIssuer({
                     issuerId: secondId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
                     audience, contextId: ctxId,
+                }), 400);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
+            }
+        });
+
+        // Isolates pair-uniqueness (TENANT-wide, independent of context) from the one-active-IdP-
+        // per-context rule tested right below: same pair, but DIFFERENT contexts, so the
+        // per-context rule can never be what fires here.
+        test('the SAME (issuer, audience) pair is still refused across DIFFERENT contexts (tenant-wide pair uniqueness)', async () => {
+            const otherCtxId = ('pr2' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'pair-uniqueness spec 2' } });
+            const issuer = `https://${uniqueTag()}.example.com/`;
+            const audience = `aud-${uniqueTag()}`;
+            const firstId = ('pr2a' + uniqueTag()).slice(0, 31);
+            const secondId = ('pr2b' + uniqueTag()).slice(0, 31);
+            try {
+                await client.auth.registerIssuer({
+                    issuerId: firstId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience, contextId: ctxId,
+                });
+                await expectReject(client.auth.registerIssuer({
+                    issuerId: secondId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience, contextId: otherCtxId,
+                }), 400);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
+                await tryCleanup('other context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
+            }
+        });
+
+        // A context has exactly one ACTIVE issuer, independent of pair uniqueness. DIFFERENT
+        // (issuer, audience) pair, SAME context, so pair-uniqueness can never be what fires here.
+        test('a second DISTINCT issuer in the SAME context is refused — one active IdP per context', async () => {
+            const firstId = ('oneidp1' + uniqueTag()).slice(0, 31);
+            const secondId = ('oneidp2' + uniqueTag()).slice(0, 31);
+            try {
+                await client.auth.registerIssuer({
+                    issuerId: firstId, issuer: `https://${uniqueTag()}.example.com/`,
+                    jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience: `aud-${uniqueTag()}`, contextId: ctxId,
+                });
+                await expectReject(client.auth.registerIssuer({
+                    issuerId: secondId, issuer: `https://${uniqueTag()}.example.com/`,
+                    jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience: `aud-${uniqueTag()}`, contextId: ctxId,
                 }), 400);
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
@@ -248,6 +366,33 @@ describe('issuers + token exchange', () => {
                 subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
             }), 404);
         });
+
+        // The optional context_id disambiguation field: a mismatch (naming a context this issuer
+        // is not registered against) is refused identically to an unrecognized issuer — no
+        // distinguishing information.
+        test('context_id naming a context this issuer is NOT registered against → 404, identical to an unrecognized issuer', async () => {
+            const issuerId = ('ctxid' + uniqueTag()).slice(0, 31);
+            const issuer = 'https://accounts.google.com';
+            const audience = `aud-${uniqueTag()}`;
+            await client.auth.registerIssuer({
+                issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience, contextId: ctxId,
+            });
+            const otherCtxId = ('ctxid2' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'exchange context_id spec' } });
+            try {
+                await expectReject(client.auth.exchangeToken({
+                    grant_type: GRANT_TYPE,
+                    subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
+                    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+                    context_id: otherCtxId,
+                }), 404);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+                await tryCleanup('other context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
+            }
+        });
     });
 
     describe('token exchange — a REAL registered issuer, unverifiable signature → 401', () => {
@@ -288,6 +433,70 @@ describe('issuers + token exchange', () => {
                 subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
                 subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
             }), 404);
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Token exchange — OAuth error envelope shape (RFC 6749 §5.2)
+    // -----------------------------------------------------------------------
+    // Every rejection test above asserts statusCode only. This section proves
+    // the BODY shape too — the deliberate deviation from this API's usual
+    // {message} envelope, since a generic OAuth client (not the Vectros SDK)
+    // is the documented caller.
+    describe('token exchange — OAuth error envelope shape (RFC 6749 §5.2)', () => {
+        test('400 (missing subject_token) → {error, error_description}, not {message}', async () => {
+            const { status, parsed } = await rawExchange({
+                grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+                subject_token: '',
+                subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+            });
+            expect(status).toBe(400);
+            const body = parsed as OAuthErrorBody;
+            expect(typeof body.error).toBe('string');
+            expect(body.error.length).toBeGreaterThan(0);
+            expect(typeof body.error_description).toBe('string');
+            expect(body.error_description.length).toBeGreaterThan(0);
+            expect(body.message).toBeUndefined();
+        });
+
+        test('404 (unregistered issuer) → {error, error_description}, not {message}', async () => {
+            const { status, parsed } = await rawExchange({
+                grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+                subject_token: fakeJwt({
+                    iss: 'https://definitely-never-registered-' + uniqueTag() + '.example.com/',
+                    aud: 'no-such-audience-' + uniqueTag(),
+                }),
+                subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+            });
+            expect(status).toBe(404);
+            const body = parsed as OAuthErrorBody;
+            expect(typeof body.error).toBe('string');
+            expect(typeof body.error_description).toBe('string');
+            expect(body.message).toBeUndefined();
+        });
+
+        test('401 (registered issuer, unverifiable signature) → {error, error_description}, not {message}', async () => {
+            const issuerId = ('envl' + uniqueTag()).slice(0, 31);
+            const issuer = 'https://accounts.google.com';
+            const audience = `aud-${uniqueTag()}`;
+            await client.auth.registerIssuer({
+                issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience, contextId: ctxId,
+            });
+            try {
+                const { status, parsed } = await rawExchange({
+                    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+                    subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
+                    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+                });
+                expect(status).toBe(401);
+                const body = parsed as OAuthErrorBody;
+                expect(typeof body.error).toBe('string');
+                expect(typeof body.error_description).toBe('string');
+                expect(body.message).toBeUndefined();
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+            }
         });
     });
 });

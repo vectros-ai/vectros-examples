@@ -69,6 +69,36 @@ def ctx_id(client):
 # Issuer registry CRUD
 # -----------------------------------------------------------------------
 
+def test_register_issuer_with_ordinary_scoped_token_403(client, ctx_id):
+    # Every register/delete elsewhere in this file uses the root client. Writing an issuer
+    # registration accepts ONLY a root sk_* key or the CLI bootstrap's dedicated provisioning
+    # capability -- a capability that can never be granted to an ordinary role, and that a bare
+    # '*' wildcard does not satisfy either. An ordinary scoped token carrying neither must be
+    # refused.
+    minted = client.auth.mint_token(
+        context_id=ctx_id, scope=vectros.ScopeRequest(allowed_actions=["records:r"]),
+    )
+    scoped = support.make_client(minted.token)
+    with pytest.raises(vectros.core.api_error.ApiError) as exc:
+        scoped.auth.register_issuer(
+            issuer_id=slug("noauth"), issuer=f"https://{support.unique_tag()}.example.com/",
+            jwks_uri=GOOGLE_JWKS, audience=f"aud-{support.unique_tag()}", context_id=ctx_id,
+        )
+    assert support.status_of(exc.value) == 403
+
+
+def test_delete_issuer_with_ordinary_scoped_token_403(client, ctx_id):
+    minted = client.auth.mint_token(
+        context_id=ctx_id, scope=vectros.ScopeRequest(allowed_actions=["records:r"]),
+    )
+    scoped = support.make_client(minted.token)
+    # The gate runs before any existence check -- a non-existent issuer_id must still 403, never
+    # 404, so this proves the GATE fired, not a coincidental not-found.
+    with pytest.raises(vectros.core.api_error.ApiError) as exc:
+        scoped.auth.delete_issuer(slug("noauth"))
+    assert support.status_of(exc.value) == 403
+
+
 def test_register_get_list_delete_then_get_404s(client, ctx_id):
     issuer_id = slug("reg")
     issuer = f"https://{support.unique_tag()}.example.com/"
@@ -232,6 +262,62 @@ def test_exchange_registered_issuer_unverifiable_signature_401_then_deregistered
 
 
 # -----------------------------------------------------------------------
+# Token exchange — OAuth error envelope shape (RFC 6749 §5.2)
+# -----------------------------------------------------------------------
+# Every rejection test above asserts status_of() only. This proves the BODY
+# shape too -- the deliberate deviation from this API's usual {message}
+# envelope, since a generic OAuth client (not the vectros SDK) is the
+# documented caller. Uses support.raw_post -- the generated SDK's ApiError
+# has no typed field for either OAuth key (no response schema is declared
+# for the 4xx/401/403/404 cases).
+def test_exchange_400_uses_oauth_envelope_not_message():
+    r = support.raw_post("/v1/auth/token/exchange", json.dumps({
+        "grant_type": GRANT_TYPE, "subject_token": "", "subject_token_type": JWT_TYPE,
+    }))
+    assert r.status == 400
+    assert isinstance(r.parsed.get("error"), str) and r.parsed["error"]
+    assert isinstance(r.parsed.get("error_description"), str) and r.parsed["error_description"]
+    assert "message" not in r.parsed
+
+
+def test_exchange_404_uses_oauth_envelope_not_message():
+    jwt = fake_jwt(
+        iss=f"https://definitely-never-registered-{support.unique_tag()}.example.com/",
+        aud=f"no-such-audience-{support.unique_tag()}",
+    )
+    r = support.raw_post("/v1/auth/token/exchange", json.dumps({
+        "grant_type": GRANT_TYPE, "subject_token": jwt, "subject_token_type": JWT_TYPE,
+    }))
+    assert r.status == 404
+    assert isinstance(r.parsed.get("error"), str) and r.parsed["error"]
+    assert isinstance(r.parsed.get("error_description"), str) and r.parsed["error_description"]
+    assert "message" not in r.parsed
+
+
+def test_exchange_401_uses_oauth_envelope_not_message(client, ctx_id):
+    issuer_id = slug("envl")
+    issuer = "https://accounts.google.com"
+    audience = f"aud-{support.unique_tag()}"
+    client.auth.register_issuer(
+        issuer_id=issuer_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
+    )
+    try:
+        jwt = fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")
+        r = support.raw_post("/v1/auth/token/exchange", json.dumps({
+            "grant_type": GRANT_TYPE, "subject_token": jwt, "subject_token_type": JWT_TYPE,
+        }))
+        assert r.status == 401
+        assert isinstance(r.parsed.get("error"), str) and r.parsed["error"]
+        assert isinstance(r.parsed.get("error_description"), str) and r.parsed["error_description"]
+        assert "message" not in r.parsed
+    finally:
+        try:
+            client.auth.delete_issuer(issuer_id)
+        except vectros.core.api_error.ApiError:
+            pass
+
+
+# -----------------------------------------------------------------------
 # GET /v1/users/exists-by-email
 # -----------------------------------------------------------------------
 
@@ -259,3 +345,50 @@ def test_exists_by_email_true_for_a_member_false_for_a_stranger(client, ctx_id):
             client.identity.delete_user(user.id)
         except vectros.core.api_error.ApiError:
             pass
+
+
+# -----------------------------------------------------------------------
+# GET /v1/app-contexts/{contextId}/profiles -- batched email resolution
+# -----------------------------------------------------------------------
+# Only the singular get_access_profile path asserts email resolution elsewhere in this suite.
+# The LIST endpoint resolves email via a separate, batched code path -- two distinct
+# users/profiles so a mis-keyed batch (rows swapped, or the whole page resolved from one row's
+# email) would be caught, not just "email is present somewhere".
+def test_list_access_profiles_resolves_email_per_row(client, ctx_id):
+    email_a = f"{support.unique_tag()}-a@test.com"
+    email_b = f"{support.unique_tag()}-b@test.com"
+    user_a = client.identity.create_user(external_id=support.unique_tag(), email=email_a)
+    user_b = client.identity.create_user(external_id=support.unique_tag(), email=email_b)
+    client.auth.create_access_profile(
+        ctx_id, principal_id=f"usr_{user_a.id}", scopes=[vectros.ScopeClause(allowed_actions=["records:r"])],
+    )
+    client.auth.create_access_profile(
+        ctx_id, principal_id=f"usr_{user_b.id}", scopes=[vectros.ScopeClause(allowed_actions=["records:r"])],
+    )
+    try:
+        # Root key holds users:r implicitly -- email present, and correctly per-row.
+        page = client.auth.list_access_profiles(ctx_id)
+        rows = {p.principal_id: p.email for p in (page.data or [])}
+        assert rows.get(f"usr_{user_a.id}") == email_a
+        assert rows.get(f"usr_{user_b.id}") == email_b
+
+        # A scoped token holding profiles:r but NOT users:r -- email must be absent on every row.
+        minted = client.auth.mint_token(
+            context_id=ctx_id, scope=vectros.ScopeRequest(allowed_actions=["profiles:r"]),
+        )
+        scoped = support.make_client(minted.token)
+        scoped_page = scoped.auth.list_access_profiles(ctx_id)
+        scoped_rows = list(scoped_page.data or [])
+        assert len(scoped_rows) >= 2
+        for row in scoped_rows:
+            assert row.email is None
+    finally:
+        for user in (user_a, user_b):
+            try:
+                client.auth.delete_access_profile(ctx_id, f"usr_{user.id}")
+            except vectros.core.api_error.ApiError:
+                pass
+            try:
+                client.identity.delete_user(user.id)
+            except vectros.core.api_error.ApiError:
+                pass

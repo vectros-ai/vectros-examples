@@ -26,6 +26,7 @@ interface AdminLogsResponse {
         path?: string;
         requestId?: string;   // 0.36.0: the single-call id, echoed in error bodies — quote it to support
         errorCode?: string;   // 0.36.0: present on a failure rejected with a typed code
+        delegationChain?: string | null; // 0.40.0: present only under a delegate-mint-derived key
     }>;
     truncated: boolean;
     queryDurationMs: number;
@@ -267,4 +268,84 @@ describe('admin logs', () => {
             limit: 5,
         })).rejects.toMatchObject({ statusCode: 400 });
     });
+
+    // 0.40.0 — delegationChain: present on traffic from a delegate-minted key, and absent from
+    // ordinary (non-delegated) traffic.
+    test('delegationChain is present on traffic from a delegate-minted key, and null on ordinary traffic', async () => {
+        const ctx = ('dchain' + uniqueTag()).slice(0, 31);
+        await client.auth.createAppContext({ body: { contextId: ctx, name: 'delegationChain spec' } });
+        const delegator = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        let delegatedKeyId: string | undefined;
+        let delegatorKeyId: string | undefined;
+        try {
+            // The delegate-mint capability only relaxes WHO the credential may be bound to, never
+            // WHAT it may do — see the note in capabilities.spec.ts's delegate-mint describe block.
+            // The delegator must independently hold a scope that's already a superset of the target
+            // profile's own scope (records:r below).
+            await client.auth.createAccessProfile({
+                contextId: ctx,
+                body: {
+                    principalId: `usr_${delegator.id}`,
+                    scopes: [{
+                        allowed_actions: ['keys:c', 'records:r'],
+                        granted_capabilities: ['delegate-mint'],
+                    }],
+                },
+            });
+            await client.auth.createAccessProfile({
+                contextId: ctx,
+                body: { principalId: `usr_${target.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const delegatorKey = await client.auth.createScopedKey({
+                keyName: 'delegator-' + uniqueTag(), tenantId: liveTenantId, contextId: ctx, userId: delegator.id!,
+            });
+            delegatorKeyId = delegatorKey.keyId!;
+            const delegatorClient = new VectrosClient({
+                token: delegatorKey.rawKey!, environment: process.env.VECTROS_API_BASE_URL!,
+            });
+            const delegated = await delegatorClient.auth.createScopedKey({
+                keyName: 'delegated-' + uniqueTag(), tenantId: liveTenantId, contextId: ctx, userId: target.id!,
+            });
+            delegatedKeyId = delegated.keyId!;
+            const delegatedClient = new VectrosClient({
+                token: delegated.rawKey!, environment: process.env.VECTROS_API_BASE_URL!,
+            });
+            await delegatedClient.auth.ping();
+
+            const response = await pollLogs(
+                { keyId: delegatedKeyId, limit: 20 },
+                (r) => r.entries.length > 0,
+            );
+            expect(response.entries.length).toBeGreaterThan(0);
+            expect(response.entries.some((e) => typeof e.delegationChain === 'string' && e.delegationChain!.length > 0)).toBe(true);
+
+            // Ordinary (non-delegated) traffic: plain root credential traffic, which was never
+            // delegated to. Neither `delegatorKey` nor a key the delegator mints for itself work as
+            // an "ordinary" comparator: minting a key bound to a specific principal is itself a form
+            // of delegation and correctly carries a chain of its own, even for a self-bound mint.
+            // The one comparator that's unambiguously chain-free by construction is the root
+            // credential's own traffic.
+            const rootPing = (await client.auth.ping()) as { principalKeyId?: string };
+            const rootKeyId = rootPing.principalKeyId;
+            expect(rootKeyId).toBeTruthy();
+
+            const ordinary = await pollLogs(
+                { keyId: rootKeyId, limit: 20 },
+                (r) => r.entries.length > 0,
+            );
+            expect(ordinary.entries.length).toBeGreaterThan(0);
+            expect(ordinary.entries.some((e) => e.delegationChain != null)).toBe(false);
+        } finally {
+            if (delegatedKeyId) await tryCleanup('delegated key', () => client.auth.revokeScopedKey({ keyId: delegatedKeyId! }));
+            if (delegatorKeyId) await tryCleanup('delegator key', () => client.auth.revokeScopedKey({ keyId: delegatorKeyId! }));
+            await tryCleanup('delegator profile', () =>
+                client.auth.deleteAccessProfile({ contextId: ctx, principalId: `usr_${delegator.id}` }));
+            await tryCleanup('target profile', () =>
+                client.auth.deleteAccessProfile({ contextId: ctx, principalId: `usr_${target.id}` }));
+            await tryCleanup('delegator user', () => client.identity.deleteUser({ id: delegator.id! }));
+            await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
+            await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctx, confirm: ctx }));
+        }
+    }, 120_000);
 });
