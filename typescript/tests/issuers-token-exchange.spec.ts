@@ -4,22 +4,37 @@
  * (`POST /v1/auth/token/exchange`).
  *
  * SCOPE NOTE: a genuinely SUCCESSFUL exchange (200, a real minted token) —
- * and the self-signup / invite-bind paths that depend on one — requires a
- * subject_token signed by a JWKS whose PRIVATE key this suite controls, at a
- * PUBLICLY reachable URL (the exchange endpoint fail-closed rejects
- * loopback/link-local/private-range JWKS hosts, so no local mock server can
- * stand in). No such fixture is available today, and standing one up is out
- * of scope here. This file covers everything reachable WITHOUT one: the full
- * issuer-registry CRUD contract, every validation/routing rejection
- * `exchange()` can produce before or in place of a live signature check
- * (400s, the 404 "unknown issuer" path, and a genuine 401 by registering a
- * REAL public JWKS endpoint and presenting a syntactically-valid JWT with a
- * signature that can never verify against it). Successful exchange +
- * self-signup + invite-bind remain untested by this file — named here, not
- * silently missing.
+ * and the self-signup path that depends on one — requires a subject_token
+ * signed by a JWKS whose PRIVATE key this suite controls, at a PUBLICLY
+ * reachable URL (the exchange endpoint fail-closed rejects loopback/link-
+ * local/private-range JWKS hosts, so no local mock server can stand in). No
+ * such fixture is available today, and standing one up is out of scope
+ * here. This file covers everything reachable WITHOUT one: the full
+ * issuer-registry CRUD contract (including `PUT` — #1023's trust-anchor-vs-
+ * safe-field split, `status: suspended`, the 403-vs-404 split), and every
+ * validation/routing rejection `exchange()` can produce before or in place
+ * of a live signature check (400s, the 404 "unknown issuer" path, and a
+ * genuine 401 by registering a REAL public JWKS endpoint and presenting a
+ * syntactically-valid JWT with a signature that can never verify against
+ * it). Successful exchange + self-signup remain untested by this file —
+ * named here, not silently missing.
+ *
+ * TWO NAMED GAPS, deliberately not covered here (see "issuer registry"
+ * below for the in-file investigation notes, not just this summary):
+ *   - DELETE-refused-if-bound (409, `assertNoBoundMembership`) — attempted
+ *     via the invite-activation `externalSubject` path (needs no real
+ *     JWKS), but activation consistently 400s for reasons unobservable from
+ *     outside the uniform-error-message design. NOT covered.
+ *   - Cross-context register-COLLISION (400, a context-confined caller):
+ *     only root's idempotent-echo path is covered (verified live). The
+ *     confined-caller 400 rejection has no black-box-reachable path at all
+ *     — `registerIssuer` requires `provisioning:c` or root, and
+ *     `provisioning:c` is platform-minted, never grantable to a
+ *     partner-authored role. NOT covered, and structurally can't be from
+ *     this suite.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, expectReject } from '../src/helpers';
 
 /** Base64url-encode without padding (Buffer's 'base64url' covers Node ≥ 15.7). */
 function b64url(input: string | Buffer): string {
@@ -38,18 +53,6 @@ function fakeJwt(claims: Record<string, unknown>): string {
     const payload = b64url(JSON.stringify(claims));
     const sig = b64url(Buffer.from('not-a-real-signature-' + uniqueTag()));
     return `${header}.${payload}.${sig}`;
-}
-
-async function expectReject(promise: Promise<unknown>, statusCode: number): Promise<{ body?: unknown }> {
-    let caught: { statusCode?: number; body?: unknown } | undefined;
-    try {
-        await promise;
-    } catch (e) {
-        caught = e as { statusCode?: number; body?: unknown };
-    }
-    expect(caught).toBeDefined();
-    expect(caught!.statusCode).toBe(statusCode);
-    return caught!;
 }
 
 // -----------------------------------------------------------------------
@@ -303,6 +306,258 @@ describe('issuers + token exchange', () => {
             } finally {
                 await tryCleanup('role', () => client.auth.deleteRole({ contextId: ctxId, roleId }));
             }
+        });
+
+        // DELETE-refused-if-bound (409, PartnerIssuerHandler.assertNoBoundMembership)
+        // is NOT covered by this file. Investigated a JWKS-free path: a real
+        // bound-user row needs no live signature verify — TokenExchangeHandler
+        // composes externalSubject as `${issuerId}#${sub}` at a real exchange,
+        // but the same field is independently settable via the invitation-
+        // ACTIVATION request (UserRequest.externalSubject; the one call site
+        // where it's actually honored — an ordinary update ignores it). Built
+        // the full invite → activate flow (createInvite with sendEmail:false
+        // to get a real inv_* token, then updateUser with status:ACTIVE +
+        // inviteToken + externalSubject + emailVerifiedAttestation:true) and
+        // it consistently 400s "Invitation could not be activated" — verified
+        // via three independent angles (SDK call, raw fetch bypassing the SDK,
+        // and manually decoding the inv_* JWT to confirm sub/iss/aud/exp/email
+        // all match what AcceptInviteService.activate checks against claims).
+        // Every claim-level check passes; AcceptInviteService's own uniform-
+        // message design (deliberately "no probing channel between bad-
+        // signature / expired / hash-mismatch / email-mismatch") makes the
+        // remaining candidates (the invite-token hash comparison, the KMS
+        // signature verify) unobservable from outside. Flagged to the branch
+        // owner rather than silently dropped — this may be a real gap in the
+        // activation path, or a subtle setup requirement this investigation
+        // didn't find; either way it's outside what black-box probing alone
+        // can resolve. The bound-user guard itself remains covered at the
+        // Java level (PartnerIssuerHandlerTest, per the #1023 research).
+
+        test('re-registering an issuerId already owned by ANOTHER context echoes the ORIGINAL owner unchanged — never adopts the new context or values', async () => {
+            // Measured live rather than assumed: a root caller re-registering an
+            // issuerId that already exists in a DIFFERENT context does NOT 400 —
+            // it hits the same idempotent-echo path as the same-context case
+            // (`created: false`), because root is unconfined and this is,
+            // structurally, still "the issuerId already exists" from root's
+            // point of view. (The confined-credential version of a genuine
+            // cross-context COLLISION has no black-box-reachable path at all:
+            // registerIssuer requires provisioning:c or root, and provisioning:c
+            // is platform-minted, never grantable to a partner-authored role.)
+            //
+            // What's still a real, worth-pinning invariant: the echo returns
+            // context A's ORIGINAL row byte-for-byte — it does NOT silently
+            // move the issuer to context B, and does NOT adopt any of the
+            // differing issuer/audience values the second call supplied. THAT
+            // silent-adoption shape is the actual leak risk this guards.
+            const ownerCtxId = ('owner' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ownerCtxId, name: 'issuer cross-ctx owner' } });
+            const otherCtxId = ('other' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'issuer cross-ctx other' } });
+            const issuerId = ('xctx' + uniqueTag()).slice(0, 31);
+            const realIssuer = `https://${uniqueTag()}.example.com/`;
+            const realAudience = `aud-${uniqueTag()}`;
+            try {
+                // Context A owns this issuerId.
+                const first = await client.auth.registerIssuer({
+                    issuerId, issuer: realIssuer,
+                    jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience: realAudience, contextId: ownerCtxId,
+                });
+                expect(first.created).toBe(true);
+
+                // Re-registering the SAME issuerId under a DIFFERENT context, with
+                // DIFFERENT issuer/audience values, does not reject — but echoes
+                // the ORIGINAL, never the newly-requested shape.
+                const second = await client.auth.registerIssuer({
+                    issuerId, issuer: 'https://different-issuer.example.com/',
+                    jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience: `aud-different-${uniqueTag()}`, contextId: otherCtxId,
+                });
+                expect(second.created).toBe(false);
+                expect(second.contextId).toBe(ownerCtxId);
+                expect(second.issuer).toBe(realIssuer);
+                expect(second.audience).toBe(realAudience);
+
+                // Confirmed durable, not just an artifact of the response shape.
+                const stillOwnerConfig = await client.auth.getIssuer({ issuerId });
+                expect(stillOwnerConfig.contextId).toBe(ownerCtxId);
+                expect(stillOwnerConfig.issuer).toBe(realIssuer);
+                expect(stillOwnerConfig.audience).toBe(realAudience);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+                await tryCleanup('owner context', () =>
+                    client.auth.deleteAppContext({ contextId: ownerCtxId, confirm: ownerCtxId }));
+                await tryCleanup('other context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // PUT /v1/auth/issuers/{issuerId} — #1023: update a registered issuer's
+    // SAFE fields (subClaim/emailClaim/status/selfSignupPolicies) while its
+    // trust anchor (issuer/jwksUri/audience) and routing pin (contextId) stay
+    // immutable via this route. `status: suspended` is the concrete,
+    // observable effect of a safe-field change — asserted against a real
+    // subsequent exchangeToken() call, not just the PUT response echo.
+    // -----------------------------------------------------------------------
+
+    describe('issuer update (PUT)', () => {
+        async function registerThrowawayIssuer(): Promise<{ issuerId: string; issuer: string; jwksUri: string; audience: string }> {
+            const issuerId = ('upd' + uniqueTag()).slice(0, 31);
+            const issuer = `https://${uniqueTag()}.example.com/`;
+            const jwksUri = 'https://www.googleapis.com/oauth2/v3/certs';
+            const audience = `aud-${uniqueTag()}`;
+            await client.auth.registerIssuer({ issuerId, issuer, jwksUri, audience, contextId: ctxId });
+            return { issuerId, issuer, jwksUri, audience };
+        }
+
+        test('a differing trust-anchor OR routing-pin field (issuer/jwksUri/audience/contextId) is rejected with 400, naming the field', async () => {
+            // contextId isn't part of the "trust anchor" strictly speaking (it's
+            // the routing pin, IssuerUpdateService.rejectIfContextIdChanged is a
+            // separate check from rejectIfTrustAnchorChanged) but is immutable via
+            // this route for the same reason and rejected the same way — covered
+            // alongside issuer/jwksUri/audience rather than as a separate test.
+            const otherCtxId = ('updxctx' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'issuer PUT contextId-immutable spec' } });
+            const reg = await registerThrowawayIssuer();
+            try {
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, issuer: 'https://different.example.com/',
+                }), 400);
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, jwksUri: 'https://different.example.com/jwks',
+                }), 400);
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, audience: 'different-aud',
+                }), 400);
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, contextId: otherCtxId,
+                }), 400);
+                // Unchanged after every rejected attempt.
+                const stillOriginal = await client.auth.getIssuer({ issuerId: reg.issuerId });
+                expect(stillOriginal.issuer).toBe(reg.issuer);
+                expect(stillOriginal.jwksUri).toBe(reg.jwksUri);
+                expect(stillOriginal.audience).toBe(reg.audience);
+                expect(stillOriginal.contextId).toBe(ctxId);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+                await tryCleanup('other context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
+            }
+        });
+
+        test('echoing the CURRENT trust-anchor value back is a no-op, not a rejection', async () => {
+            const reg = await registerThrowawayIssuer();
+            try {
+                const updated = await client.auth.updateIssuer({
+                    issuerId: reg.issuerId,
+                    issuer: reg.issuer, jwksUri: reg.jwksUri, audience: reg.audience, subClaim: 'sub',
+                });
+                expect(updated.issuer).toBe(reg.issuer);
+                expect(updated.jwksUri).toBe(reg.jwksUri);
+                expect(updated.audience).toBe(reg.audience);
+                expect(updated.subClaim).toBe('sub');
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
+        test('safe fields (subClaim/emailClaim) update freely while the trust anchor persists unchanged', async () => {
+            const reg = await registerThrowawayIssuer();
+            try {
+                const updated = await client.auth.updateIssuer({
+                    issuerId: reg.issuerId,
+                    subClaim: 'preferred_username', emailClaim: 'work_email',
+                });
+                expect(updated.subClaim).toBe('preferred_username');
+                expect(updated.emailClaim).toBe('work_email');
+                // Trust anchor untouched by a safe-field-only update.
+                expect(updated.issuer).toBe(reg.issuer);
+                expect(updated.jwksUri).toBe(reg.jwksUri);
+                expect(updated.audience).toBe(reg.audience);
+
+                const reloaded = await client.auth.getIssuer({ issuerId: reg.issuerId });
+                expect(reloaded.subClaim).toBe('preferred_username');
+                expect(reloaded.emailClaim).toBe('work_email');
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
+        test('status: suspended is now reachable via PUT, and a suspended issuer is rejected identically to unregistered (404) at exchange', async () => {
+            const reg = await registerThrowawayIssuer();
+            try {
+                expect((await client.auth.getIssuer({ issuerId: reg.issuerId })).status).toBe('active');
+
+                const suspended = await client.auth.updateIssuer({
+                    issuerId: reg.issuerId, status: 'suspended',
+                });
+                expect(suspended.status).toBe('suspended');
+
+                // Deliberately uniform with the "never registered" 404 — a caller
+                // cannot distinguish "never registered" from "registered then
+                // suspended", the same shape as the existing deregister-then-
+                // exchange test just below.
+                await expectReject(client.auth.exchangeToken({
+                    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+                    subject_token: fakeJwt({ iss: reg.issuer, aud: reg.audience, sub: 'smoke-' + uniqueTag() }),
+                    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+                }), 404);
+
+                // Reversible: reinstating clears the suspension.
+                const reinstated = await client.auth.updateIssuer({
+                    issuerId: reg.issuerId, status: 'active',
+                });
+                expect(reinstated.status).toBe('active');
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
+        test('a selfSignupPolicies entry targeting an already-elevated role is rejected at UPDATE too, not just registration', async () => {
+            const reg = await registerThrowawayIssuer();
+            const roleId = ('elevupd' + uniqueTag()).slice(0, 31);
+            await client.auth.createRole({
+                contextId: ctxId,
+                body: { roleId, name: 'Elevated (update path)', scopes: [{ allowed_actions: ['*'] }] },
+            });
+            try {
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId,
+                    selfSignupPolicies: [{ signup_type: 'member', role_id: roleId }],
+                }), 400);
+            } finally {
+                await tryCleanup('role', () => client.auth.deleteRole({ contextId: ctxId, roleId }));
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
+        test('PUT 403 is the capability gate ONLY — an ordinary scoped token is refused even though the issuer genuinely exists', async () => {
+            const reg = await registerThrowawayIssuer();
+            try {
+                const minted = (await client.auth.mintToken({
+                    contextId: ctxId,
+                    scope: { allowedActions: ['records:r'] },
+                })) as { token: string };
+                const scoped = getScopedClient(minted.token);
+                // The authorization gate runs before any existence check — the
+                // 403 fires purely because the caller lacks the capability, the
+                // same "gate before load" shape the registerIssuer/deleteIssuer
+                // 403 tests above already pin.
+                await expectReject(scoped.auth.updateIssuer({
+                    issuerId: reg.issuerId, subClaim: 'x',
+                }), 403);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
+        test('PUT on a never-registered issuerId → 404, not 403 — distinct from the capability gate above', async () => {
+            const missing = ('nosuch' + uniqueTag()).slice(0, 31);
+            await expectReject(client.auth.updateIssuer({
+                issuerId: missing, subClaim: 'x',
+            }), 404);
         });
     });
 

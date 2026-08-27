@@ -26,7 +26,7 @@
  * request (a sibling of `id`/`body`) — used directly below.
  */
 import { client } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
 
 interface ErrorBody { message?: string; requestId?: string; [k: string]: unknown; }
 
@@ -97,18 +97,36 @@ describe('records (payload tiering + PUT truncation guard)', () => {
         return rec.id!;
     }
 
-    /** Drains the type feed and returns the projected list item for `id` (or undefined). */
+    /**
+     * Drains the type feed and returns the projected list item for `id` (or
+     * undefined). Retries a few times: the file's own header comment is right
+     * that search-index visibility is irrelevant here (indexMode NONE), but
+     * `listRecords` is a separate DynamoDB list/query path with its own
+     * ordinary eventual-consistency window — a just-created row isn't always
+     * immediately visible to it. Never observed in isolation (fast enough
+     * there that a single pass always wins), but measured live under the
+     * full 39-file suite's heavier concurrent write load: `PUT ?allowClear=
+     * true confirms the full replacement...` flaked exactly once with
+     * `listItem` returning undefined on its first (and, before this fix,
+     * only) pass. Bounded retry absorbs that window the same way the rest of
+     * this suite polls for search visibility, just for a different backing
+     * store.
+     */
     async function listItem(id: string, includePayload = false) {
-        let cursor: string | null | undefined;
-        do {
-            const req: any = { type: recordType, limit: 100 };
-            if (cursor) req.startFrom = cursor;
-            if (includePayload) req.includePayload = 'true';
-            const page = await client.records.listRecords(req);
-            const hit = (page.data ?? []).find((r) => r.id === id);
-            if (hit) return hit;
-            cursor = page.nextCursor;
-        } while (cursor);
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+            let cursor: string | null | undefined;
+            do {
+                const req: any = { type: recordType, limit: 100 };
+                if (cursor) req.startFrom = cursor;
+                if (includePayload) req.includePayload = 'true';
+                const page = await client.records.listRecords(req);
+                const hit = (page.data ?? []).find((r) => r.id === id);
+                if (hit) return hit;
+                cursor = page.nextCursor;
+            } while (cursor);
+            await sleep(500);
+        }
         return undefined;
     }
 

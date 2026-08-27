@@ -5,6 +5,14 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.16.0
+
+### Fixed
+
+- The TypeScript example's list-CRUD app-context test now drains every page via `nextCursor` instead
+  of trusting the default single page, so a freshly-created context is asserted reliably regardless
+  of how many prior contexts the tenant has accumulated.
+
 ## 0.15.0 — 2026-08-19
 
 ### Added

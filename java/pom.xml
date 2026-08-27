@@ -6,7 +6,7 @@
 
   <groupId>ai.vectros.smoke</groupId>
   <artifactId>vectros-sdk-java-smoke</artifactId>
-  <version>0.15.0</version>
+  <version>0.16.0</version>
   <packaging>jar</packaging>
   <licenses>
     <license>
@@ -18,7 +18,7 @@
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <vectros.sdk.version>0.40.0</vectros.sdk.version>
+    <vectros.sdk.version>0.41.0</vectros.sdk.version>
     <junit.version>5.11.3</junit.version>
   </properties>
 

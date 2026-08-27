@@ -13,6 +13,7 @@
  *   "*"          = single-entry wildcard that grants everything
  */
 import { VectrosClient } from '@vectros-ai/sdk';
+import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { client, getScopedClient } from '../src/client';
 import { uniqueTag, pollUntilIndexed, tryCleanup } from '../src/helpers';
 
@@ -40,6 +41,7 @@ describe('auth', () => {
         const badClient = new VectrosClient({
             token: 'sk_live_invalid_for_smoke_test',
             environment: process.env.VECTROS_API_BASE_URL!,
+            fetch: rateLimitAwareFetch, maxRetries: 0, // shared per-tenant burst limit — see src/rateLimitFetch.ts
         });
         await expect(badClient.auth.ping()).rejects.toMatchObject({
             statusCode: 403,

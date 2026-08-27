@@ -32,6 +32,7 @@
  * permissions are still in effect. Minting a fresh principal per test avoids that window entirely.
  */
 import { VectrosClient } from '@vectros-ai/sdk';
+import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
@@ -59,7 +60,8 @@ async function mintCapableKey(
         userId,
     });
     return {
-        scoped: new VectrosClient({ token: key.rawKey!, environment: process.env.VECTROS_API_BASE_URL! }),
+        // shared per-tenant burst limit — see src/rateLimitFetch.ts
+        scoped: new VectrosClient({ token: key.rawKey!, environment: process.env.VECTROS_API_BASE_URL!, fetch: rateLimitAwareFetch, maxRetries: 0 }),
         keyId: key.keyId!,
     };
 }

@@ -267,6 +267,11 @@ describe('schema lineage (basedOn / specificityRank)', () => {
                 scope: {
                     allowedActions: ['records:crud'],
                     identity: { 'scope:org': org.id!, [`scope:${namespace}`]: teamValue },
+                    // A namespace dimension always needs explicit clause authority to authorize
+                    // placement into it — identity alone is no longer sufficient (only the principal
+                    // itself gets that free pass). Grant it here rather than relying on identity to
+                    // imply it.
+                    dataScope: { 'scope:org': [org.id!], [`scope:${namespace}`]: [teamValue] },
                 },
             })) as MintedToken;
             const scoped = getScopedClient(minted.token);

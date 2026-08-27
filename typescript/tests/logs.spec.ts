@@ -11,6 +11,7 @@
  */
 import { VectrosClient } from '@vectros-ai/sdk';
 import { client } from '../src/client';
+import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { uniqueTag, sleep, tryCleanup } from '../src/helpers';
 
 // getAdminLogs returns Record<string, unknown> in the SDK; this local
@@ -187,6 +188,7 @@ describe('admin logs', () => {
         const scopedClient = new VectrosClient({
             token: minted.token,
             environment: process.env.VECTROS_API_BASE_URL!,
+            fetch: rateLimitAwareFetch, maxRetries: 0, // shared per-tenant burst limit — see src/rateLimitFetch.ts
         });
         await expect(
             scopedClient.auth.getAdminLogs({ startTime: windowStart(), limit: 10 })
@@ -301,15 +303,19 @@ describe('admin logs', () => {
                 keyName: 'delegator-' + uniqueTag(), tenantId: liveTenantId, contextId: ctx, userId: delegator.id!,
             });
             delegatorKeyId = delegatorKey.keyId!;
+            // shared per-tenant burst limit — see src/rateLimitFetch.ts
             const delegatorClient = new VectrosClient({
                 token: delegatorKey.rawKey!, environment: process.env.VECTROS_API_BASE_URL!,
+                fetch: rateLimitAwareFetch, maxRetries: 0,
             });
             const delegated = await delegatorClient.auth.createScopedKey({
                 keyName: 'delegated-' + uniqueTag(), tenantId: liveTenantId, contextId: ctx, userId: target.id!,
             });
             delegatedKeyId = delegated.keyId!;
+            // shared per-tenant burst limit — see src/rateLimitFetch.ts
             const delegatedClient = new VectrosClient({
                 token: delegated.rawKey!, environment: process.env.VECTROS_API_BASE_URL!,
+                fetch: rateLimitAwareFetch, maxRetries: 0,
             });
             await delegatedClient.auth.ping();
 

@@ -26,6 +26,7 @@
  * covered").
  */
 import { VectrosClient } from '@vectros-ai/sdk';
+import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
@@ -48,7 +49,7 @@ const LEAK_MARKERS = [
  *  genuinely revoked key takes, so it exercises the invalid-key contract without
  *  provisioning-then-revoking a real key. */
 function badKeyClient(token: string): VectrosClient {
-    return new VectrosClient({ token, environment: process.env.VECTROS_API_BASE_URL! });
+    return new VectrosClient({ token, environment: process.env.VECTROS_API_BASE_URL!, fetch: rateLimitAwareFetch, maxRetries: 0 }); // shared per-tenant burst limit — see src/rateLimitFetch.ts
 }
 
 /**

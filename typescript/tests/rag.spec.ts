@@ -14,7 +14,7 @@
  * LLM query-expansion could dilute anyway).
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, collectStream } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, collectStream, withRateLimitRetry } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 
@@ -53,7 +53,8 @@ describe('inference: /v1/rag', () => {
 
     // ANCHOR — full RAG event sequence
     test('rag stream emits search_results then content_delta then done', async () => {
-        const stream = await client.inference.ragInference({
+        // shared per-tenant burst limit — see withRateLimitRetry (src/helpers.ts)
+        const stream = await withRateLimitRetry(() => client.inference.ragInference({
             query: 'What treatment is recommended for stage 1 hypertension?',
             search: {
                 mode: 'HYBRID',
@@ -64,7 +65,7 @@ describe('inference: /v1/rag', () => {
                 createdAfter: testStartedAt,
             },
             maxTokens: 128,
-        });
+        }));
         const events = await collectStream<any>(stream);
 
         // First non-content event must be search_results
@@ -95,7 +96,8 @@ describe('inference: /v1/rag', () => {
         // Query with terms guaranteed not to appear in any corpus doc. RAG
         // should still emit search_results (empty) + content_delta (LLM
         // saying "no relevant content") + done.
-        const stream = await client.inference.ragInference({
+        // shared per-tenant burst limit — see withRateLimitRetry (src/helpers.ts)
+        const stream = await withRateLimitRetry(() => client.inference.ragInference({
             query: 'What does the document say about quasar fusion in zebra economics?',
             search: {
                 mode: 'HYBRID',
@@ -103,7 +105,7 @@ describe('inference: /v1/rag', () => {
                 createdAfter: testStartedAt,
             },
             maxTokens: 64,
-        });
+        }));
         const events = await collectStream<any>(stream);
 
         const searchResults = events.find((e) => e.event === 'search_results');
@@ -147,7 +149,8 @@ describe('inference: /v1/rag', () => {
             })) as MintedToken;
             const scoped = getScopedClient(minted.token);
 
-            const stream = await scoped.inference.ragInference({
+            // shared per-tenant burst limit — see withRateLimitRetry (src/helpers.ts)
+            const stream = await withRateLimitRetry(() => scoped.inference.ragInference({
                 query: 'What treatments are discussed?',
                 search: {
                     mode: 'HYBRID',
@@ -161,7 +164,7 @@ describe('inference: /v1/rag', () => {
                     userId: user.id!,
                 },
                 maxTokens: 64,
-            });
+            }));
             const events = await collectStream<any>(stream);
             const searchResults = events.find((e) => e.event === 'search_results');
             const ids = (searchResults?.results ?? []).map((r: any) => r.documentId);
@@ -197,11 +200,12 @@ describe('inference: /v1/rag', () => {
             })) as MintedToken;
             const scoped = getScopedClient(minted.token);
 
-            const stream = await scoped.inference.ragInference({
+            // shared per-tenant burst limit — see withRateLimitRetry (src/helpers.ts)
+            const stream = await withRateLimitRetry(() => scoped.inference.ragInference({
                 query: 'What content is available?',
                 search: { mode: 'HYBRID', limit: 10, createdAfter: testStartedAt, userId: user.id! },
                 maxTokens: 64,
-            });
+            }));
             const events = await collectStream<any>(stream);
             const searchResults = events.find((e) => e.event === 'search_results');
             const ids = (searchResults?.results ?? []).map((r: any) => r.documentId);
