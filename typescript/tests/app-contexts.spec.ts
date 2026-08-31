@@ -10,8 +10,8 @@
  *     `confirm` token; with it the context enters purging and the drain
  *     actually ERASES its data-plane content (the destroy-path test seeds a
  *     schema/record/folder/document AND a role/access-profile — the four
- *     context-scoped DATA models plus the two ACCESS models `#1029`'s
- *     registry-loop fix pinned coverage for — and asserts each is gone, not
+ *     context-scoped DATA models plus the two ACCESS models the teardown
+ *     registry loop is pinned to cover — and asserts each is gone, not
  *     just that the status flipped, THEN polls until the context row itself
  *     404s, proving the full async drain converges, not just its first tick)
  *   - 400 on malformed contextId (must match /^[a-z][a-z0-9-]{2,30}$/)
@@ -92,9 +92,10 @@ async function pollUntilLeftActive(
  *
  * Also used for the app-context ROW ITSELF (pass `() =>
  * tenantClient.auth.getAppContext({contextId})`, `CONTEXT_GONE_TIMEOUT_MS`) —
- * the full teardown convergence, one level past a per-row check. #1029 (context-
- * teardown registry loop, mirrors #1014's tenant-wide fix) hardened exactly
- * the gate that proves: `ContextTeardownSupport.contextContentEmpty` must
+ * the full teardown convergence, one level past a per-row check. The
+ * context-teardown registry loop (mirroring the platform's own tenant-wide
+ * teardown) hardened exactly the gate that proves:
+ * `ContextTeardownSupport.contextContentEmpty` must
  * read EVERY context-scoped model — the four DATA models AND the two ACCESS
  * models (RoleDB/AccessProfileDB) — as truly empty before a self-tick can
  * flip the row to `deleted` and remove it; a model silently unprobed would
@@ -225,9 +226,13 @@ describe('app-contexts', () => {
             contextId,
             name: 'Smoke App Context',
             description: 'created by app-contexts.spec',
+            // companyName (0.42.0) — the DEPLOYER's own org display name, distinct from `name`
+            // (the app's own identity). Purely additive; optional on every request.
+            companyName: 'Smoke Co',
         } });
         expect(created.contextId).toBe(contextId);
         expect(created.name).toBe('Smoke App Context');
+        expect(created.companyName).toBe('Smoke Co');
         // Composite key shape: tenantId#contextId
         expect(created.id).toMatch(new RegExp(`#${contextId}$`));
 
@@ -235,6 +240,7 @@ describe('app-contexts', () => {
             const loaded = await client.auth.getAppContext({ contextId });
             expect(loaded.contextId).toBe(contextId);
             expect(loaded.name).toBe('Smoke App Context');
+            expect(loaded.companyName).toBe('Smoke Co');
 
             // PATCH semantics — null/omitted fields preserve existing values.
             // body.contextId is immutable (path supplies it); the handler ignores
@@ -245,10 +251,12 @@ describe('app-contexts', () => {
                     contextId,
                     name: 'Smoke App Context (updated)',
                     description: 'updated',
+                    companyName: 'Smoke Co (updated)',
                 },
             });
             expect(updated.name).toBe('Smoke App Context (updated)');
             expect(updated.description).toBe('updated');
+            expect(updated.companyName).toBe('Smoke Co (updated)');
 
             // {data, nextCursor} envelope, oldest-first — drain every page via nextCursor rather than
             // trusting the single default page. The account's app-context list grows without bound
@@ -311,7 +319,7 @@ describe('app-contexts', () => {
     // roles, access profiles — via a confirm-gated background cascade (`confirm`
     // must echo the contextId; without it the API returns 400 and nothing is
     // removed). To prove the destructive effect end-to-end we seed real content
-    // spanning BOTH halves of what `#1029`'s content-drained gate walks —
+    // spanning BOTH halves of what the content-drained gate walks —
     // schema/record/folder/document (the four context-scoped DATA models) AND a
     // role (an ACCESS model; the OTHER ACCESS model, the seeding access profile,
     // already exists as part of `provisionConfinedContext`'s own setup) — delete
@@ -360,8 +368,9 @@ describe('app-contexts', () => {
                 text: 'destroy-smoke document body', indexMode: 'TEXT', payload: { name: 'destroy-smoke doc' },
             } });
 
-            // ── Seed the ACCESS-plane content — the OTHER half `#1029` pinned
-            // coverage for. A root credential authors roles/profiles directly
+            // ── Seed the ACCESS-plane content — the OTHER half the
+            // content-drained gate covers. A root credential authors
+            // roles/profiles directly
             // (context administration is root-authority, not delegated to the
             // confined seeding key).
             roleId = ('drole' + uniqueTag()).slice(0, 31);
@@ -405,9 +414,10 @@ describe('app-contexts', () => {
             // … and — the crux — the delete ACTUALLY REMOVES the seeded content:
             // every row 404s within seconds. This, not the status flip, is the
             // proof the delete erased real data. Both DATA-model rows (already
-            // covered) AND the ACCESS-model rows (#1029's other half) must drain —
-            // an undrained role or access profile is exactly the shape the
-            // registry-loop bug would have let slip through unnoticed.
+            // covered) AND the ACCESS-model rows (the registry loop's other
+            // half) must drain — an undrained role or access profile is
+            // exactly the shape a registry-loop gap would let slip through
+            // unnoticed.
             //
             // Run the six independent polls CONCURRENTLY (each row drains on its
             // own schedule, with no ordering dependency on the others) — the
@@ -425,7 +435,7 @@ describe('app-contexts', () => {
             // … and finally, the full convergence: once every registered model
             // reads empty, the background self-tick flips the context to
             // `deleted` and removes the row itself. This is the end-to-end proof
-            // `contextContentEmpty`'s registry-driven loop (#1029) actually
+            // `contextContentEmpty`'s registry-driven loop actually
             // reaches a terminal state, not just that it correctly holds the gate
             // open while content remains. Genuinely sequential after the above —
             // the context row can't be removed until every model above already

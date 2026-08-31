@@ -362,4 +362,132 @@ describe('schema lineage (basedOn / specificityRank)', () => {
             await tryCleanup('delete owner user', () => client.identity.deleteUser({ id: owner.id! }));
         }
     });
+
+    // 0.42.0 — documents/lookup gained sortFrom/sortTo, the equivalent of the
+    // 0.38.0 records-side feature (composite-lookup.spec.ts). Documents keep
+    // single-field lookups (composite/multi-field stays records-only), so this
+    // only needs to prove the bound narrows an exact `value` match by the
+    // lookup field's sort key (createdAt, the default) — same shape as the
+    // records-side test, on the documents surface for the first time.
+    test('POST /v1/documents/lookup: sortFrom/sortTo narrow an exact value match by createdAt', async () => {
+        const docType = `smoke_lineage_docsort_${uniqueTag()}`;
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: docType,
+            displayName: 'Doc Lookup Sort Window',
+            indexMode: 'NONE',
+            allowedSurfaces: ['document'],
+            fields: [{ fieldId: 'batch', fieldType: 'string' }],
+            lookupFields: [{ fieldName: 'batch' }],
+        } });
+        const batch = 'batch-' + uniqueTag();
+        let docOld: string | undefined;
+        let docNew: string | undefined;
+        try {
+            const older = await client.documents.ingestDocument({ body: {
+                title: 'doc-sort-older', text: 'older', indexMode: 'NONE',
+                schemaId: schema.id, payload: { batch },
+            } });
+            docOld = older.id!;
+            await new Promise((r) => setTimeout(r, 1200)); // ensure a distinct createdAt tick
+            const newer = await client.documents.ingestDocument({ body: {
+                title: 'doc-sort-newer', text: 'newer', indexMode: 'NONE',
+                schemaId: schema.id, payload: { batch },
+            } });
+            docNew = newer.id!;
+
+            const sortFromMs = String(Date.parse((await client.documents.getDocument({ id: docNew })).createdAt!));
+            const bounded = await client.documents.lookupDocuments({
+                type: docType, field: 'batch', value: batch, sortFrom: sortFromMs,
+            });
+            const boundedIds = (bounded.data ?? []).map((d) => d.id);
+            expect(boundedIds).toContain(docNew);
+            expect(boundedIds).not.toContain(docOld); // created before the sortFrom bound
+
+            const unbounded = await client.documents.lookupDocuments({ type: docType, field: 'batch', value: batch });
+            const unboundedIds = (unbounded.data ?? []).map((d) => d.id);
+            expect(unboundedIds).toContain(docOld);
+            expect(unboundedIds).toContain(docNew);
+        } finally {
+            if (docOld) await tryCleanup('delete older document', () => client.documents.deleteDocument({ id: docOld! }));
+            if (docNew) await tryCleanup('delete newer document', () => client.documents.deleteDocument({ id: docNew! }));
+            await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schema.id! }));
+        }
+    });
+
+    // -------------------------------------------------------------------
+    // 0.40.0 — allowedSurfaces narrowed from "no identity surface" to
+    // "no `user` surface": an `entity`-surfaced schema is now writable by an
+    // ordinary scoped credential (homed in that credential's own context,
+    // not RESERVED_DEFAULT), while `user` still requires root.
+    // -------------------------------------------------------------------
+    describe('allowedSurfaces: entity vs. user (0.40.0)', () => {
+        test('a scoped credential CAN create an entity-surfaced schema, but NOT a user-surfaced one', async () => {
+            const ctxId = ('assrf' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxId, name: 'allowedSurfaces spec' } });
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId, scope: { allowedActions: ['schemas:c', 'schemas:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            let entitySchemaId: string | undefined;
+            try {
+                const entityType = `smoke_ent_surf_${uniqueTag()}`;
+                const created = await scoped.schemas.createSchema({ body: {
+                    typeName: entityType, displayName: 'Entity-surfaced (scoped)',
+                    indexMode: 'NONE', allowedSurfaces: ['entity'],
+                    fields: [{ fieldId: 'name', fieldType: 'string', searchable: false }],
+                } });
+                entitySchemaId = created.id!;
+                expect(created.allowedSurfaces).toContain('entity');
+
+                const userType = `smoke_user_surf_${uniqueTag()}`;
+                await expect(scoped.schemas.createSchema({ body: {
+                    typeName: userType, displayName: 'User-surfaced (scoped, should fail)',
+                    indexMode: 'NONE', allowedSurfaces: ['user'],
+                    fields: [{ fieldId: 'name', fieldType: 'string', searchable: false }],
+                } })).rejects.toMatchObject({ statusCode: 403 });
+            } finally {
+                if (entitySchemaId) await tryCleanup('entity schema', () => client.schemas.deleteSchema({ id: entitySchemaId! }));
+                await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            }
+        });
+
+        test('GET /v1/schemas?surface=entity merges the caller\'s own context with the tenant-wide home', async () => {
+            const ctxId = ('asmrg' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxId, name: 'allowedSurfaces merge spec' } });
+            const ownType = `smoke_ent_own_${uniqueTag()}`;
+            const tenantType = `smoke_ent_tw_${uniqueTag()}`;
+            // Root key writes land in RESERVED_DEFAULT (the tenant-wide home) unless a
+            // context-pinned credential writes instead — a scoped credential confined
+            // to ctxId is what puts a schema in the CALLER's own context.
+            const minted = (await client.auth.mintToken({
+                contextId: ctxId, scope: { allowedActions: ['schemas:c', 'schemas:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            const ownSchema = await scoped.schemas.createSchema({ body: {
+                typeName: ownType, displayName: 'Own-context entity schema',
+                indexMode: 'NONE', allowedSurfaces: ['entity'],
+                fields: [{ fieldId: 'name', fieldType: 'string', searchable: false }],
+            } });
+            const tenantSchema = await client.schemas.createSchema({ body: {
+                typeName: tenantType, displayName: 'Tenant-wide entity schema',
+                indexMode: 'NONE', allowedSurfaces: ['entity'],
+                fields: [{ fieldId: 'name', fieldType: 'string', searchable: false }],
+            } });
+            try {
+                // recordType + surface:'entity' resolves the ONE schema for that type name
+                // from own-context-plus-tenant-wide (per the SDK's own field doc) — avoids
+                // the plain list's pagination entirely, so a large pre-existing RESERVED_DEFAULT
+                // population (this is a long-lived shared tenant) can't push either row past
+                // a page boundary.
+                const ownFound = await scoped.schemas.listSchemas({ surface: 'entity', recordType: ownType });
+                expect((ownFound.data ?? []).map((s) => s.typeName)).toContain(ownType);
+                const tenantFound = await scoped.schemas.listSchemas({ surface: 'entity', recordType: tenantType });
+                expect((tenantFound.data ?? []).map((s) => s.typeName)).toContain(tenantType);
+            } finally {
+                await tryCleanup('own schema', () => client.schemas.deleteSchema({ id: ownSchema.id! }));
+                await tryCleanup('tenant schema', () => client.schemas.deleteSchema({ id: tenantSchema.id! }));
+                await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            }
+        });
+    });
 });

@@ -10,7 +10,7 @@
  * local/private-range JWKS hosts, so no local mock server can stand in). No
  * such fixture is available today, and standing one up is out of scope
  * here. This file covers everything reachable WITHOUT one: the full
- * issuer-registry CRUD contract (including `PUT` — #1023's trust-anchor-vs-
+ * issuer-registry CRUD contract (including `PUT`'s trust-anchor-vs-
  * safe-field split, `status: suspended`, the 403-vs-404 split), and every
  * validation/routing rejection `exchange()` can produce before or in place
  * of a live signature check (400s, the 404 "unknown issuer" path, and a
@@ -19,12 +19,8 @@
  * it). Successful exchange + self-signup remain untested by this file —
  * named here, not silently missing.
  *
- * TWO NAMED GAPS, deliberately not covered here (see "issuer registry"
+ * ONE NAMED GAP, deliberately not covered here (see "issuer registry"
  * below for the in-file investigation notes, not just this summary):
- *   - DELETE-refused-if-bound (409, `assertNoBoundMembership`) — attempted
- *     via the invite-activation `externalSubject` path (needs no real
- *     JWKS), but activation consistently 400s for reasons unobservable from
- *     outside the uniform-error-message design. NOT covered.
  *   - Cross-context register-COLLISION (400, a context-confined caller):
  *     only root's idempotent-echo path is covered (verified live). The
  *     confined-caller 400 rejection has no black-box-reachable path at all
@@ -308,30 +304,52 @@ describe('issuers + token exchange', () => {
             }
         });
 
-        // DELETE-refused-if-bound (409, PartnerIssuerHandler.assertNoBoundMembership)
-        // is NOT covered by this file. Investigated a JWKS-free path: a real
-        // bound-user row needs no live signature verify — TokenExchangeHandler
-        // composes externalSubject as `${issuerId}#${sub}` at a real exchange,
-        // but the same field is independently settable via the invitation-
-        // ACTIVATION request (UserRequest.externalSubject; the one call site
-        // where it's actually honored — an ordinary update ignores it). Built
-        // the full invite → activate flow (createInvite with sendEmail:false
-        // to get a real inv_* token, then updateUser with status:ACTIVE +
-        // inviteToken + externalSubject + emailVerifiedAttestation:true) and
-        // it consistently 400s "Invitation could not be activated" — verified
-        // via three independent angles (SDK call, raw fetch bypassing the SDK,
-        // and manually decoding the inv_* JWT to confirm sub/iss/aud/exp/email
-        // all match what AcceptInviteService.activate checks against claims).
-        // Every claim-level check passes; AcceptInviteService's own uniform-
-        // message design (deliberately "no probing channel between bad-
-        // signature / expired / hash-mismatch / email-mismatch") makes the
-        // remaining candidates (the invite-token hash comparison, the KMS
-        // signature verify) unobservable from outside. Flagged to the branch
-        // owner rather than silently dropped — this may be a real gap in the
-        // activation path, or a subtle setup requirement this investigation
-        // didn't find; either way it's outside what black-box probing alone
-        // can resolve. The bound-user guard itself remains covered at the
-        // Java level (PartnerIssuerHandlerTest, per the #1023 research).
+        // DELETE-refused-if-bound (409, PartnerIssuerHandler.assertNoBoundMembership) — a
+        // JWKS-free path: a real bound-user row needs no live signature verify.
+        // TokenExchangeHandler composes externalSubject as `${issuerId}#${sub}` at a real
+        // exchange, but the same field is independently settable via the invitation-
+        // ACTIVATION request (UserRequest.externalSubject — the one call site where it's
+        // actually honored; an ordinary update ignores it). A prior investigation attempted
+        // this exact flow (createInvite with sendEmail:false, then updateUser with
+        // status:ACTIVE + inviteToken + externalSubject + emailVerifiedAttestation:true) and
+        // it consistently 400'd "Invitation could not be activated" — that was an activation-
+        // path platform bug independent of this test, since fixed. Re-verified live: the
+        // activation now succeeds and this test passes.
+        test('DELETE is refused with 409 once a real user is bound via this issuer', async () => {
+            const issuerId = ('bound' + uniqueTag()).slice(0, 31);
+            await client.auth.registerIssuer({
+                issuerId, issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId,
+            });
+            const invite = await client.auth.createInvite({
+                email: `smoke-bound-${uniqueTag()}@example.com`,
+                contextId: ctxId,
+                accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                sendEmail: false,
+            });
+            const userId = invite.userId!;
+            expect(typeof userId).toBe('string');
+            expect(invite.inviteToken).toBeTruthy();
+            try {
+                // externalId defaults to the userId itself at invite time (server-side) and is
+                // immutable — must be echoed back unchanged on this activation PUT.
+                await client.identity.updateUser({
+                    id: userId,
+                    body: {
+                        externalId: userId,
+                        status: 'ACTIVE',
+                        inviteToken: invite.inviteToken!,
+                        externalSubject: `${issuerId}#sub-${uniqueTag()}`,
+                        emailVerifiedAttestation: true,
+                    },
+                });
+                await expectReject(client.auth.deleteIssuer({ issuerId }), 409);
+            } finally {
+                await tryCleanup('bound user', () => client.identity.deleteUser({ id: userId }));
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+            }
+        });
 
         test('re-registering an issuerId already owned by ANOTHER context echoes the ORIGINAL owner unchanged — never adopts the new context or values', async () => {
             // Measured live rather than assumed: a root caller re-registering an
@@ -394,7 +412,7 @@ describe('issuers + token exchange', () => {
     });
 
     // -----------------------------------------------------------------------
-    // PUT /v1/auth/issuers/{issuerId} — #1023: update a registered issuer's
+    // PUT /v1/auth/issuers/{issuerId} — update a registered issuer's
     // SAFE fields (subClaim/emailClaim/status/selfSignupPolicies) while its
     // trust anchor (issuer/jwksUri/audience) and routing pin (contextId) stay
     // immutable via this route. `status: suspended` is the concrete,

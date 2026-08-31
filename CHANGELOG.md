@@ -5,7 +5,34 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
-## 0.16.0
+## 0.17.0 — 2026-08-30
+
+### Added
+
+- **Python and Java gain new coverage for access profiles, in-request capability
+  behavior, activity-log queries, and namespace registration** — four areas the
+  TypeScript example already demonstrated (in whole or in part) but Python and
+  Java did not, now brought to closer parity across all three languages: access
+  profile / role CRUD and composition, every named `granted_capabilities`
+  behavior (`member-lifecycle`, `forensic-read`, `context-directory-read`,
+  `delegate-mint`, `delegate-principal-stamp`), the activity-log query surface,
+  and namespace placement (tenant-wide vs. context-owned) plus membership
+  resolution.
+- **Substantially deepened existing TypeScript coverage** across access
+  profiles, capability behavior, erasure requests, user identity resolution
+  (including cross-context collision handling), namespace placement, schema
+  lineage (`basedOn` customization + `specificityRank`), `POST
+  /v1/auth/token/assume`, usage/credits reporting, and invite validation — more
+  scenarios per surface, not new surfaces, on top of what was already
+  demonstrated there.
+
+### Changed
+
+- Examples repinned to **Vectros SDK 0.42.0**. The TypeScript examples pin
+  `@vectros-ai/sdk@^0.42.0` (was `^0.41.0`); the Python range moves to
+  `vectros>=0.42.0,<0.43.0`; the Java example now pins `ai.vectros:vectros-sdk:0.42.0`.
+
+## 0.16.0 — 2026-08-27
 
 ### Fixed
 

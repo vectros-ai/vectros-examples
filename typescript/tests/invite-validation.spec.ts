@@ -9,7 +9,7 @@
  *      mint bound to such a profile) may not name a role that doesn't exist
  *      in the app context.
  */
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
 describe('invite validation', () => {
@@ -62,6 +62,79 @@ describe('invite validation', () => {
                 })).rejects.toMatchObject({ statusCode: 400 });
             } finally {
                 await tryCleanup('invited user', () => client.identity.deleteUser({ id: userId }));
+            }
+        });
+    });
+
+    // -------------------------------------------------------------------
+    // 0.40.0 — invite collision against a SUSPENDED identity: uniform 409
+    // for a scoped credential, structured body for root (root can already
+    // enumerate its own users, so a structured body discloses nothing new).
+    // -------------------------------------------------------------------
+    describe('invite collision against a suspended identity', () => {
+        test('root gets a structured email_already_associated body; a scoped credential gets the uniform 409', async () => {
+            const email = `${uniqueTag()}@test.com`;
+            const externalId = uniqueTag();
+            const user = await client.identity.createUser({ body: { externalId, email } });
+            try {
+                await client.identity.updateUser({ id: user.id!, body: { externalId, status: 'SUSPENDED' } });
+
+                let rootCaught: { statusCode?: number; body?: unknown } | undefined;
+                try {
+                    await client.auth.createInvite({
+                        email, contextId: ctxId, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    });
+                } catch (e) {
+                    rootCaught = e as { statusCode?: number; body?: unknown };
+                }
+                expect(rootCaught?.statusCode).toBe(409);
+                const rootBody = rootCaught?.body as { error?: string; message?: string } | undefined;
+                expect(rootBody?.error).toBe('email_already_associated');
+                expect(rootBody?.message).toContain('suspended');
+
+                // Inviting requires member-lifecycle (capabilities.spec.ts): a scoped
+                // credential can only be authored via a real AccessProfile carrying
+                // granted_capabilities (mintToken's ScopeRequest has no such field).
+                const inviter = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+                let inviterKeyId: string | undefined;
+                try {
+                    await client.auth.createAccessProfile({
+                        contextId: ctxId,
+                        body: {
+                            principalId: `usr_${inviter.id}`,
+                            scopes: [{
+                                allowed_actions: ['profiles:c', 'records:r'],
+                                granted_capabilities: ['member-lifecycle'],
+                            }],
+                        },
+                    });
+                    const inviterKey = await client.auth.createScopedKey({
+                        keyName: 'invsusp-' + uniqueTag(), tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                        contextId: ctxId, userId: inviter.id!,
+                    });
+                    inviterKeyId = inviterKey.keyId;
+                    const scoped = getScopedClient(inviterKey.rawKey!);
+                    let scopedCaught: { statusCode?: number; body?: unknown } | undefined;
+                    try {
+                        await scoped.auth.createInvite({
+                            email, contextId: ctxId, sendEmail: false,
+                            accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                        });
+                    } catch (e) {
+                        scopedCaught = e as { statusCode?: number; body?: unknown };
+                    }
+                    expect(scopedCaught?.statusCode).toBe(409);
+                    // Uniform: no 'error'/'email_already_associated' disclosure, and no
+                    // structured hint distinguishing this from an ordinary collision.
+                    expect(JSON.stringify(scopedCaught?.body ?? '')).not.toContain('email_already_associated');
+                } finally {
+                    if (inviterKeyId) await tryCleanup('inviter key', () => client.auth.revokeScopedKey({ keyId: inviterKeyId! }));
+                    await tryCleanup('inviter profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${inviter.id}` }));
+                    await tryCleanup('inviter user', () => client.identity.deleteUser({ id: inviter.id! }));
+                }
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
             }
         });
     });

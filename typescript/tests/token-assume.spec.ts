@@ -1,5 +1,5 @@
 /**
- * token-assume.spec.ts — `POST /v1/auth/token/assume` (#1040).
+ * token-assume.spec.ts — `POST /v1/auth/token/assume`.
  *
  * `/assume` re-mints a presented root `st_*` scoped token with one or more
  * `identity.scope:<namespace>` values changed, PROVIDED a single one of the
@@ -14,8 +14,7 @@
  * detail) and what ACCESS-MATRIX.md §10's coverage table names as
  * unexercised ("none yet"):
  *
- *   1. THE #1040 REGRESSION — the union-check-over-grant bug the MR's cold-pass
- *      BLOCKER closed: a caller composed of TWO roles,
+ *   1. THE UNION-CHECK-OVER-GRANT REGRESSION — a caller composed of TWO roles,
  *      each granting a DIFFERENT single dimension, must be REFUSED a single
  *      `/assume` call spanning both dimensions together — even though each
  *      dimension is individually granted by *some* role. Only ONE role's own
@@ -89,6 +88,46 @@ describe('token assume', () => {
     });
 
     // -----------------------------------------------------------------------
+    // 0.41.0 — assumable grant authoring-time validation. `assumable` is a
+    // role/profile-level map naming which VALUES a holder may switch into —
+    // it targets a fixed entity id, never a placeholder, so `${{ under.self.
+    // scope.<namespace> }}` (valid syntax on the SIBLING `data_scope` field,
+    // proven above at auth.spec.ts:159) must be rejected here at author time.
+    // Two authoring surfaces both validate the same grammar — role AND
+    // inline access-profile scopes — so both get a rejection case.
+    // -----------------------------------------------------------------------
+
+    describe('assumable grant authoring-time validation', () => {
+        test('a role\'s assumable value using the ${{ under.self.scope.<ns> }} placeholder is rejected at create', async () => {
+            const roleId = ('asplch' + uniqueTag()).slice(0, 31);
+            await expectReject(client.auth.createRole({
+                contextId: ctxId,
+                body: {
+                    roleId, name: 'assumable-placeholder-role',
+                    scopes: [{ allowed_actions: ['records:r'] }],
+                    assumable: { 'scope:org': ['${{ under.self.scope.org }}'] },
+                },
+            }), 400);
+        });
+
+        test('an inline access-profile scope\'s assumable value using the same placeholder is rejected at create', async () => {
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            try {
+                await expectReject(client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: {
+                        principalId: `usr_${user.id}`,
+                        scopes: [{ allowed_actions: ['records:r'] }],
+                        assumable: { 'scope:org': ['${{ under.self.scope.org }}'] },
+                    },
+                }), 400);
+            } finally {
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Basic request-shape validation.
     // -----------------------------------------------------------------------
 
@@ -120,12 +159,13 @@ describe('token assume', () => {
     });
 
     // -----------------------------------------------------------------------
-    // The #1040 regression: entitlement is evaluated per-role, live, and a
-    // multi-dimension request may only be satisfied by ONE role's own joint
-    // grant — never synthesized across two independently-granting roles.
+    // The union-check-over-grant regression: entitlement is evaluated
+    // per-role, live, and a multi-dimension request may only be satisfied
+    // by ONE role's own joint grant — never synthesized across two
+    // independently-granting roles.
     // -----------------------------------------------------------------------
 
-    describe('entitlement — union-check-over-grant regression (#1040)', () => {
+    describe('entitlement — union-check-over-grant regression', () => {
         let roleOrgOnly: string;
         let roleClientOnly: string;
         let roleBoth: string;
@@ -312,4 +352,32 @@ describe('token assume', () => {
             expect(assumed.expires_in).toBeGreaterThan(0);
         });
     });
+
+    // -----------------------------------------------------------------------
+    // 0.41.0 — per-clause survival on re-mint. NOT COVERED HERE — structurally
+    // unreachable from this suite, same root cause as the token-exchange
+    // suite's own blocked successful-exchange coverage.
+    //
+    // CHANGELOG: "what survives the re-mint is now stated per clause" — a
+    // clause that doesn't reference the requested dimension survives
+    // verbatim; one that does survives only if the granting role's own live
+    // clause list still contains it byte-identically, else it's dropped
+    // entirely. Proving the DIFFERENTIAL behavior (one clause survives while
+    // a sibling clause from the SAME presented token drops) requires
+    // presenting `/assume` a genuinely MULTI-CLAUSE `st_*` token. Every token
+    // this suite can mint comes from the root-key `mintToken` escape hatch
+    // (`ScopeRequest`: one flat `allowedActions` list + one shared
+    // `dataScope` map — structurally a SINGLE clause; confirmed empirically:
+    // a two-action mint with no dataScope survives both actions untouched
+    // after assume regardless of role composition, and adding a dataScope
+    // entry on the requested dimension instead trips the unrelated "query
+    // params don't satisfy any clause" check on an unscoped read, which
+    // conflates with — not isolates — the narrowing rule). A real
+    // multi-clause token, one that actually reflects a composed
+    // AccessProfile's several authored clauses, is only issued by token
+    // exchange or self-signup — both need a subject_token signed by a JWKS
+    // this suite controls at a publicly reachable URL, a fixture not
+    // available today (see the issuer/token-exchange suite's own note on
+    // this same gap). Revisit alongside that gap, not independently.
+    // -----------------------------------------------------------------------
 });

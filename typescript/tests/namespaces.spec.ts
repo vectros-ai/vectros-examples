@@ -18,7 +18,7 @@
  * every other namespace test in this file uses.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
 
 interface MintedToken {
     token: string;
@@ -116,6 +116,59 @@ describe('namespaces', () => {
                 // ...but reachable, unaffected, from its own context.
                 const reloaded = await client.identity.getEntity({ namespace, id: entityId, contextId: ctxA });
                 expect(reloaded.id).toBe(entityId);
+            } finally {
+                if (entityId) await tryCleanup('entity', () =>
+                    client.identity.deleteEntity({ namespace, id: entityId!, contextId: ctxA }));
+                await tryCleanup('namespace', () => client.identity.deleteNamespace({ namespace, contextId: ctxA }));
+                await tryCleanup('ctxA', () => client.auth.deleteAppContext({ contextId: ctxA, confirm: ctxA }));
+                await tryCleanup('ctxB', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+            }
+        });
+
+        // 0.40.0 — GET /v1/entities/{namespace}/{id}/versions shares the SAME
+        // ?contextId= confinement as every other entity sub-route, but was
+        // never itself exercised — only create/get/delete were.
+        test("GET .../versions honors ?contextId= confinement identically to get/delete", async () => {
+            const ctxA = ('nsv' + uniqueTag()).slice(0, 31);
+            const ctxB = ('nsw' + uniqueTag()).slice(0, 31);
+            const namespace = nsName('ver');
+            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace versions ctx A' } });
+            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace versions ctx B' } });
+            await client.identity.registerNamespace({
+                contextId: ctxA, body: { namespace, specificityRank: 500, entityBacked: true },
+            });
+            let entityId: string | undefined;
+            try {
+                const entity = await client.identity.createEntity({
+                    namespace, contextId: ctxA, body: { externalId: 'ent-' + uniqueTag(), name: 'versioned' },
+                });
+                entityId = entity.id!;
+                // A change so there's at least one version row to read back.
+                await client.identity.updateEntity({
+                    namespace, id: entityId, contextId: ctxA,
+                    body: { externalId: entity.externalId!, name: 'versioned (updated)' },
+                });
+
+                // The version row isn't written by the update call itself — it's persisted
+                // asynchronously by a downstream pipeline after the update response returns,
+                // so an immediate read here can race it (measured: a real, low but nonzero
+                // flake rate). Poll instead of asserting on the first read — same pattern the
+                // sibling "update record → version history includes both versions" test in
+                // records.spec.ts uses for identical reasons.
+                const deadline = Date.now() + 30_000;
+                let ownVersions: { data?: unknown[] } = {};
+                while (Date.now() < deadline) {
+                    ownVersions = await client.identity.getEntityVersions({ namespace, id: entityId, contextId: ctxA });
+                    if ((ownVersions.data ?? []).length > 0) break;
+                    await sleep(2_000);
+                }
+                // `data ?? []` alone is vacuously true for an empty array — assert the
+                // update above actually produced a readable version row, not just that
+                // the response SHAPE is an array.
+                expect((ownVersions.data ?? []).length).toBeGreaterThan(0);
+
+                await expect(client.identity.getEntityVersions({ namespace, id: entityId, contextId: ctxB }))
+                    .rejects.toMatchObject({ statusCode: 404 });
             } finally {
                 if (entityId) await tryCleanup('entity', () =>
                     client.identity.deleteEntity({ namespace, id: entityId!, contextId: ctxA }));

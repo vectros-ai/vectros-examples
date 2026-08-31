@@ -200,6 +200,52 @@ class IssuersTokenExchangeSmokeTest {
     }
 
     @Test
+    void secondDistinctIssuerInSameContextRefusedOneActiveIdpPerContext() {
+        // 0.40.0: a context has exactly one ACTIVE issuer, independent of pair
+        // uniqueness. DIFFERENT (issuer, audience) pair, SAME context, so
+        // pair-uniqueness (secondIssuerIdCannotClaimAnAlreadyRegisteredPair, above)
+        // can never be what fires here.
+        String firstId = slug("oneidp1");
+        String secondId = slug("oneidp2");
+        try {
+            Smoke.live().auth().registerIssuer(IssuerRequest.builder()
+                .issuerId(firstId).issuer("https://" + Smoke.uniqueTag() + ".example.com/")
+                .jwksUri("https://www.googleapis.com/oauth2/v3/certs")
+                .audience("aud-" + Smoke.uniqueTag()).contextId(ctxId).build());
+            Smoke.expectStatus(() -> Smoke.live().auth().registerIssuer(IssuerRequest.builder()
+                .issuerId(secondId).issuer("https://" + Smoke.uniqueTag() + ".example.com/")
+                .jwksUri("https://www.googleapis.com/oauth2/v3/certs")
+                .audience("aud-" + Smoke.uniqueTag()).contextId(ctxId).build()), 400);
+        } finally {
+            try { Smoke.live().auth().deleteIssuer(firstId); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    @Test
+    void exchangeContextIdNamingAContextTheIssuerIsNotRegisteredAgainstIs404() {
+        // 0.40.0: the optional context_id disambiguation field -- a mismatch (naming
+        // a context this issuer is NOT registered against) is refused identically to
+        // an unrecognized issuer, no distinguishing information.
+        String issuerId = slug("ctxid");
+        String issuer = "https://accounts.google.com";
+        String audience = "aud-" + Smoke.uniqueTag();
+        Smoke.live().auth().registerIssuer(IssuerRequest.builder()
+            .issuerId(issuerId).issuer(issuer).jwksUri("https://www.googleapis.com/oauth2/v3/certs")
+            .audience(audience).contextId(ctxId).build());
+        String otherCtxId = slug("ctxid2");
+        Smoke.live().auth().createAppContext(AppContextRequest.builder().contextId(otherCtxId).name("exchange context_id spec (java)").build());
+        try {
+            String jwt = fakeJwt(issuer, audience, "smoke-" + Smoke.uniqueTag());
+            Smoke.expectStatus(() -> Smoke.live().auth().exchangeToken(TokenExchangeRequest.builder()
+                .grantType(GRANT_TYPE).subjectToken(jwt).subjectTokenType(JWT_TYPE).contextId(otherCtxId).build()), 404);
+        } finally {
+            try { Smoke.live().auth().deleteIssuer(issuerId); } catch (RuntimeException ignored) { }
+            try { Smoke.live().auth().deleteAppContext(otherCtxId,
+                DeleteAppContextRequest.builder().confirm(otherCtxId).build()); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    @Test
     void selfSignupPolicyTargetingAnAlreadyElevatedRoleRejectedAtRegistration() {
         // 'provisioning:c' can never be granted to any role at all (rejected at role-authoring time,
         // independent of self-signup) — wildcard '*' is the grantable literal that is also

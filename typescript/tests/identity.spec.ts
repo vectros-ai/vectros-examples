@@ -328,6 +328,166 @@ describe('identity', () => {
         }
     });
 
+    // -------------------------------------------------------------------
+    // 0.41.0 — POST /v1/users cross-context collision (plain echo AND
+    // ?upsert=true). identity.spec.ts's own same-context echo (above) stops
+    // short of the cross-context case: a confined caller's colliding user
+    // must get the SAME uniform 400 whether or not it holds users:r/users:u,
+    // when the existing user's AccessProfile
+    // lives in a DIFFERENT context than the caller's own bound one — the
+    // subset-of-caller confinement, not the missing-scope rule, is what's
+    // under test here.
+    // -------------------------------------------------------------------
+    describe('POST /v1/users cross-context collision', () => {
+        let ctxA: string;
+        let ctxB: string;
+
+        beforeAll(async () => {
+            ctxA = ('uxa' + uniqueTag()).slice(0, 31);
+            ctxB = ('uxb' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'users cross-context A' } });
+            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'users cross-context B' } });
+        });
+
+        afterAll(async () => {
+            await tryCleanup('ctx A', () => client.auth.deleteAppContext({ contextId: ctxA, confirm: ctxA }));
+            await tryCleanup('ctx B', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+        });
+
+        test('plain (non-upsert) collision: a confined caller in context B cannot echo a victim bound only to context A', async () => {
+            const externalId = uniqueTag();
+            const victim = await client.identity.createUser({ body: { externalId } });
+            await client.auth.createAccessProfile({
+                contextId: ctxA,
+                body: { principalId: `usr_${victim.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const minted = (await client.auth.mintToken({
+                contextId: ctxB, scope: { allowedActions: ['users:c', 'users:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            try {
+                let caught: { statusCode?: number; body?: unknown } | undefined;
+                try {
+                    await scoped.identity.createUser({ body: { externalId } });
+                } catch (e) {
+                    caught = e as { statusCode?: number; body?: unknown };
+                }
+                expect(caught).toBeDefined();
+                expect(caught!.statusCode).toBe(400);
+                expect(JSON.stringify(caught!.body ?? '')).not.toContain(victim.id);
+            } finally {
+                await tryCleanup('profile', () =>
+                    client.auth.deleteAccessProfile({ contextId: ctxA, principalId: `usr_${victim.id}` }));
+                await tryCleanup('victim', () => client.identity.deleteUser({ id: victim.id! }));
+            }
+        });
+
+        test('?upsert=true collision: a confined caller in context B cannot overwrite a victim bound only to context A', async () => {
+            const externalId = uniqueTag();
+            const victim = await client.identity.createUser({ body: { externalId, email: `${uniqueTag()}@test.com` } });
+            await client.auth.createAccessProfile({
+                contextId: ctxA,
+                body: { principalId: `usr_${victim.id}`, scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const minted = (await client.auth.mintToken({
+                contextId: ctxB, scope: { allowedActions: ['users:c', 'users:u', 'users:r'] },
+            })) as MintedToken;
+            const scoped = getScopedClient(minted.token);
+            try {
+                await expect(scoped.identity.createUser({
+                    upsert: true, body: { externalId, email: `changed-${uniqueTag()}@test.com` },
+                })).rejects.toMatchObject({ statusCode: 400 });
+                // No partial write: re-load with the root key and confirm the
+                // victim's email is untouched.
+                const reloaded = await client.identity.getUser({ id: victim.id! });
+                expect(reloaded.email).toBe(victim.email);
+            } finally {
+                await tryCleanup('profile', () =>
+                    client.auth.deleteAccessProfile({ contextId: ctxA, principalId: `usr_${victim.id}` }));
+                await tryCleanup('victim', () => client.identity.deleteUser({ id: victim.id! }));
+            }
+        });
+    });
+
+    // -------------------------------------------------------------------
+    // 0.40.0 — scoped-key-mint 404 uniformity: POST /v1/admin/keys/scoped
+    // returns the SAME message whether userId names no user at all in the
+    // tenant, or a real user with no AccessProfile in the target context —
+    // collapsing what used to be a tenant-wide user-existence oracle.
+    // -------------------------------------------------------------------
+    test('createScopedKey 404s identically for a nonexistent userId and a real user with no profile in context', async () => {
+        const ctxId = ('sk404' + uniqueTag()).slice(0, 31);
+        await client.auth.createAppContext({ body: { contextId: ctxId, name: 'scoped-key 404 uniformity spec' } });
+        const realUserNoProfile = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        const fakeUserId = '00000000-0000-0000-0000-000000000000';
+        try {
+            let caughtFake: { statusCode?: number; body?: unknown } | undefined;
+            try {
+                await client.auth.createScopedKey({
+                    keyName: 'sk404-fake-' + uniqueTag(), tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                    contextId: ctxId, userId: fakeUserId,
+                });
+            } catch (e) { caughtFake = e as { statusCode?: number; body?: unknown }; }
+
+            let caughtReal: { statusCode?: number; body?: unknown } | undefined;
+            try {
+                await client.auth.createScopedKey({
+                    keyName: 'sk404-real-' + uniqueTag(), tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                    contextId: ctxId, userId: realUserNoProfile.id!,
+                });
+            } catch (e) { caughtReal = e as { statusCode?: number; body?: unknown }; }
+
+            expect(caughtFake?.statusCode).toBe(404);
+            expect(caughtReal?.statusCode).toBe(404);
+            const msgFake = (caughtFake?.body as { message?: string } | undefined)?.message ?? '';
+            const msgReal = (caughtReal?.body as { message?: string } | undefined)?.message ?? '';
+            // Same template, only the interpolated userId differs — replace each
+            // one's own id before comparing so the messages are byte-identical.
+            expect(msgFake.replace(fakeUserId, '<id>')).toBe(msgReal.replace(realUserNoProfile.id!, '<id>'));
+            expect(msgFake).toContain('AccessProfile not found for user');
+        } finally {
+            await tryCleanup('real user', () => client.identity.deleteUser({ id: realUserNoProfile.id! }));
+            await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+        }
+    });
+
+    // -------------------------------------------------------------------
+    // 0.41.0 — POST /v1/users?upsert=true genuine overwrite + no-op fast
+    // path. invite-validation.spec.ts covers the PENDING/email-frozen
+    // rejection paths only; neither a successful overwrite nor the
+    // identical-content no-op is exercised anywhere in this suite.
+    // -------------------------------------------------------------------
+    test('?upsert=true overwrites an existing user\'s fields, and a byte-identical re-post is a no-op', async () => {
+        const externalId = uniqueTag();
+        const user = await client.identity.createUser({
+            body: { externalId, payload: { role: 'clinician' } },
+        });
+        try {
+            const overwritten = await client.identity.createUser({
+                upsert: true,
+                body: { externalId, payload: { role: 'admin' } },
+            });
+            expect(overwritten.id).toBe(user.id);
+            expect(overwritten.created).toBeFalsy();
+            const reloaded = await client.identity.getUser({ id: user.id! });
+            const meta = reloaded.payload as { role?: string } | undefined;
+            expect(meta?.role).toBe('admin');
+
+            // Identical content re-post: a no-op fast path, not a fresh write —
+            // asserted by content stability (the API exposes no write-count/
+            // version field on users to assert a skipped write more directly).
+            const noop = await client.identity.createUser({
+                upsert: true,
+                body: { externalId, payload: { role: 'admin' } },
+            });
+            expect(noop.id).toBe(user.id);
+            const noopMeta = noop.payload as { role?: string } | undefined;
+            expect(noopMeta?.role).toBe('admin');
+        } finally {
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
     test('org entity CRUD + externalId idempotency', async () => {
         const externalId = uniqueTag();
         const org = await client.identity.createEntity({ namespace: 'org', body: {

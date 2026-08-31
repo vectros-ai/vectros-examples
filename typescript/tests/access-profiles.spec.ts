@@ -243,6 +243,75 @@ describe('access-profiles', () => {
             }
         });
 
+        // ---------------------------------------------------------------
+        // 0.41.0 — roleIds: multi-role AccessProfile composition. roleIds
+        // (plural) concatenates each named role's clauses additively — the
+        // granted action set is the UNION of what each role's own clauses
+        // grant, each clause still keyed to its own authoring role. roleId
+        // (singular, tested above) is the deprecated equivalent of
+        // roleIds:[value] and is populated in the response ONLY when
+        // exactly one role composes — omitted entirely for a genuine
+        // multi-role composition, which this test also pins.
+        // ---------------------------------------------------------------
+        test('roleIds composes two roles additively; roleId is present for one, omitted for two', async () => {
+            const roleA = ('rida' + uniqueTag()).slice(0, 31);
+            const roleB = ('ridb' + uniqueTag()).slice(0, 31);
+            await client.auth.createRole({
+                contextId: ctxId,
+                body: { roleId: roleA, name: 'roleIds-A', scopes: [{ allowed_actions: ['documents:r'] }] },
+            });
+            await client.auth.createRole({
+                contextId: ctxId,
+                body: { roleId: roleB, name: 'roleIds-B', scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const { principalId: soloPrincipal, userId: soloUserId } = await realPrincipal();
+            const { principalId: duoPrincipal, userId: duoUserId } = await realPrincipal();
+            let duoKeyId: string | undefined;
+            try {
+                // Single-entry roleIds: roleId IS populated (equivalent to roleId:roleA).
+                const solo = await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: soloPrincipal, roleIds: [roleA] },
+                });
+                expect(solo.roleIds).toEqual([roleA]);
+                expect(solo.roleId).toBe(roleA);
+
+                // Two-entry roleIds: roleId is OMITTED — a genuine composition has
+                // no single representative role to echo there.
+                const duo = await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    body: { principalId: duoPrincipal, roleIds: [roleA, roleB] },
+                });
+                expect(duo.roleIds).toEqual([roleA, roleB]);
+                expect(duo.roleId).toBeFalsy();
+
+                // The composed action set is the UNION of both roles' own clauses —
+                // proven via a REAL scoped key bound to this principal (its effective
+                // permissions are resolved from the AccessProfile's actual roleIds
+                // composition), NOT mintToken (a root-key escape hatch that mints
+                // whatever scope is explicitly requested regardless of the
+                // principal's real roles — it would "pass" even if roleIds granted
+                // nothing at all). Neither role alone grants both actions.
+                const duoKey = await client.auth.createScopedKey({
+                    keyName: 'roleids-duo-' + uniqueTag(),
+                    tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                    contextId: ctxId, userId: duoUserId,
+                });
+                duoKeyId = duoKey.keyId;
+                const duoScoped = getScopedClient(duoKey.rawKey!);
+                await expect(duoScoped.documents.listDocuments()).resolves.toBeDefined();
+                await expect(duoScoped.records.listRecords({ recent: 'true' })).resolves.toBeDefined();
+            } finally {
+                if (duoKeyId) await tryCleanup('duo key', () => client.auth.revokeScopedKey({ keyId: duoKeyId! }));
+                await tryCleanup('solo profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: soloPrincipal }));
+                await tryCleanup('duo profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: duoPrincipal }));
+                await tryCleanup('solo user', () => client.identity.deleteUser({ id: soloUserId }));
+                await tryCleanup('duo user', () => client.identity.deleteUser({ id: duoUserId }));
+                await tryCleanup('role A', () => client.auth.deleteRole({ contextId: ctxId, roleId: roleA }));
+                await tryCleanup('role B', () => client.auth.deleteRole({ contextId: ctxId, roleId: roleB }));
+            }
+        });
+
         test('identityOverrides accepts scope:org + scope:client (values must reference real entities)', async () => {
             // The sacred fields ARE the tenant identifier and the userId —
             // schema rejects them. Any grammar-valid scope:<namespace> key is
@@ -333,6 +402,17 @@ describe('access-profiles', () => {
             } finally {
                 await tryCleanup('user', () => client.identity.deleteUser({ id: userId }));
             }
+        });
+
+        // 0.40.0 — a usr_<id> principalId must name a REAL user in the
+        // tenant. Every other test in this file uses realPrincipal() as
+        // scaffolding specifically because of this rule, but none directly
+        // asserts the rejection itself.
+        test('a usr_<id> principalId naming no real user is rejected with 400', async () => {
+            await expect(client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId: 'usr_' + uniqueTag(), scopes: [{ allowed_actions: ['records:r'] }] },
+            })).rejects.toMatchObject({ statusCode: 400 });
         });
 
         test('idempotent POST returns existing profile', async () => {

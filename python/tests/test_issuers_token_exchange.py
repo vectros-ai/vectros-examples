@@ -183,6 +183,30 @@ def test_second_issuer_id_cannot_claim_an_already_registered_pair(client, ctx_id
             pass
 
 
+def test_second_distinct_issuer_in_same_context_refused_one_active_idp_per_context(client, ctx_id):
+    # 0.40.0: a context has exactly one ACTIVE issuer, independent of pair
+    # uniqueness. DIFFERENT (issuer, audience) pair, SAME context, so
+    # pair-uniqueness (tested above) can never be what fires here.
+    first_id = slug("oneidp1")
+    second_id = slug("oneidp2")
+    try:
+        client.auth.register_issuer(
+            issuer_id=first_id, issuer=f"https://{support.unique_tag()}.example.com/",
+            jwks_uri=GOOGLE_JWKS, audience=f"aud-{support.unique_tag()}", context_id=ctx_id,
+        )
+        with pytest.raises(vectros.core.api_error.ApiError) as exc:
+            client.auth.register_issuer(
+                issuer_id=second_id, issuer=f"https://{support.unique_tag()}.example.com/",
+                jwks_uri=GOOGLE_JWKS, audience=f"aud-{support.unique_tag()}", context_id=ctx_id,
+            )
+        assert support.status_of(exc.value) == 400
+    finally:
+        try:
+            client.auth.delete_issuer(first_id)
+        except vectros.core.api_error.ApiError:
+            pass
+
+
 def test_self_signup_policy_targeting_an_already_elevated_role_rejected_at_registration(client, ctx_id):
     # 'provisioning:c' can never be granted to any role at all (rejected at role-authoring time,
     # independent of self-signup) -- wildcard '*' is the grantable literal that is also treated
@@ -257,6 +281,36 @@ def test_exchange_registered_issuer_unverifiable_signature_401_then_deregistered
     finally:
         try:
             client.auth.delete_issuer(issuer_id)
+        except vectros.core.api_error.ApiError:
+            pass
+
+
+def test_exchange_context_id_naming_a_context_the_issuer_is_not_registered_against_404(client, ctx_id):
+    # 0.40.0: the optional context_id disambiguation field -- a mismatch (naming
+    # a context this issuer is NOT registered against) is refused identically to
+    # an unrecognized issuer, no distinguishing information.
+    issuer_id = slug("ctxid")
+    issuer = "https://accounts.google.com"
+    audience = f"aud-{support.unique_tag()}"
+    client.auth.register_issuer(
+        issuer_id=issuer_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
+    )
+    other_ctx_id = slug("ctxid2")
+    client.auth.create_app_context(context_id=other_ctx_id, name="exchange context_id spec (python)")
+    try:
+        jwt = fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")
+        with pytest.raises(vectros.core.api_error.ApiError) as exc:
+            client.auth.exchange_token(
+                grant_type=GRANT_TYPE, subject_token=jwt, subject_token_type=JWT_TYPE, context_id=other_ctx_id,
+            )
+        assert support.status_of(exc.value) == 404
+    finally:
+        try:
+            client.auth.delete_issuer(issuer_id)
+        except vectros.core.api_error.ApiError:
+            pass
+        try:
+            client.auth.delete_app_context(other_ctx_id, confirm=other_ctx_id)
         except vectros.core.api_error.ApiError:
             pass
 

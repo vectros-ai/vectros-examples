@@ -196,6 +196,78 @@ describe('usage', () => {
         await expect(scoped.auth.getUsage()).rejects.toMatchObject({ statusCode: 403 });
     });
 
+    // -------------------------------------------------------------------
+    // 0.40.0 — GET /v1/usage context-confined narrowing: a token confined
+    // to one app context sees a `contexts` breakdown restricted to that
+    // context, and naming a DIFFERENT context via ?contextId= is refused.
+    // -------------------------------------------------------------------
+    describe('context-confined narrowing', () => {
+        test('a context-confined token\'s contexts[] breakdown is restricted to its own context', async () => {
+            const ctxA = ('usg' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'usage narrowing spec' } });
+            let schemaId: string | undefined;
+            let recId: string | undefined;
+            try {
+                const minted = (await client.auth.mintToken({
+                    contextId: ctxA, scope: { allowedActions: ['billing:r', 'records:c', 'schemas:c'] },
+                })) as MintedToken;
+                const scoped = getScopedClient(minted.token);
+
+                // Generate real billable activity IN ctxA — a brand-new, otherwise-idle
+                // context has nothing in its `usage.contexts` breakdown, which would make
+                // the narrowing assertion below pass VACUOUSLY (the loop just never runs).
+                // Schemas are context-scoped: a root createSchema with no context binding
+                // lands in the tenant-wide default context, unreachable from a
+                // ctxA-confined token — so the schema must be created BY the ctxA-confined
+                // token itself (the same "ownerless bootstrap" pattern other specs in this
+                // suite use).
+                const recordType = `smoke_usage_narrow_${uniqueTag()}`;
+                const schema = await scoped.schemas.createSchema({ body: {
+                    typeName: recordType, displayName: 'Usage Narrowing Probe', indexMode: 'NONE',
+                    allowedSurfaces: ['record'],
+                    fields: [{ fieldId: 'note', fieldType: 'string', required: false }],
+                } });
+                schemaId = schema.id!;
+                const rec = await scoped.records.createRecord({ body: {
+                    typeName: recordType, schemaId, payload: { note: 'usage narrowing probe' },
+                } });
+                recId = rec.id!;
+
+                const usage = (await scoped.auth.getUsage()) as unknown as UsageReport & { contexts?: { contextId?: string }[] };
+                const seenContexts = (usage.contexts ?? []).map((c) => c.contextId);
+                // Non-empty first — otherwise the per-entry loop below would silently
+                // skip and this test would pass no matter what the breakdown contains.
+                expect(seenContexts.length).toBeGreaterThan(0);
+                // Every entry in the breakdown must be this token's OWN context —
+                // no sibling context's row leaks through.
+                for (const c of seenContexts) expect(c).toBe(ctxA);
+            } finally {
+                if (recId) await tryCleanup('probe record', () => client.records.deleteRecord({ id: recId! }));
+                if (schemaId) await tryCleanup('probe schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctxA, confirm: ctxA }));
+            }
+        });
+
+        test('a context-confined token naming a DIFFERENT context via ?contextId= is refused', async () => {
+            const ctxA = ('usgb' + uniqueTag()).slice(0, 31);
+            const ctxB = ('usgc' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'usage narrowing spec A' } });
+            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'usage narrowing spec B' } });
+            try {
+                const minted = (await client.auth.mintToken({
+                    contextId: ctxA, scope: { allowedActions: ['billing:r'] },
+                })) as MintedToken;
+                const scoped = getScopedClient(minted.token);
+                // Measured live: naming a context outside the token's own reach is an
+                // authorization refusal (403), not a structural validation error.
+                await expect(scoped.auth.getUsage({ contextId: ctxB })).rejects.toMatchObject({ statusCode: 403 });
+            } finally {
+                await tryCleanup('context A', () => client.auth.deleteAppContext({ contextId: ctxA, confirm: ctxA }));
+                await tryCleanup('context B', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+            }
+        });
+    });
+
     describe('inference section', () => {
         test('inference.balanceCents is non-negative', async () => {
             const usage = (await client.auth.getUsage()) as unknown as UsageReport;

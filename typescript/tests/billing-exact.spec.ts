@@ -3,8 +3,15 @@
  *
  * The other usage assertions are directional (>=) because counters accumulate across runs. This
  * spec pins exact AMOUNTS instead, using before/after deltas of `credits.usedMilli` as the
- * isolated counter: the suite runs serially (`jest --runInBand`), so between two snapshots the
- * partner counter moves only for THIS spec's operations.
+ * isolated counter: this file's own run is ALWAYS serialized alone, before anything else in the
+ * suite starts writing to the shared tenant (see the harness's exclusive-lane pre-pass — the file
+ * is listed there specifically so this spec's own exact-delta assumption holds), so between two
+ * snapshots the partner counter moves only for THIS spec's operations. That guarantee is NOT a
+ * property of the suite running serially overall (it doesn't, since two other lanes run
+ * concurrently after this one finishes) — it's specific to this file's own pre-pass isolation, and
+ * a future change that drops this file from the exclusive list, or adds a second exact-delta spec
+ * without also listing it there, silently reopens exactly the collision this comment exists to
+ * prevent.
  *
  * The probe is chosen so the only fees in play are exactly computable from the published
  * pricing schedule (vectros.ai/pricing):

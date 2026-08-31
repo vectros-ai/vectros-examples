@@ -33,8 +33,10 @@
  */
 import { VectrosClient } from '@vectros-ai/sdk';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
+
+interface MintedToken { token: string; expiresAt: number; }
 
 async function mintCapableKey(
     ctxId: string, userId: string, allowedActions: string[], grantedCapabilities?: string[],
@@ -189,6 +191,66 @@ describe('capabilities (granted_capabilities)', () => {
             }
         });
 
+        // 0.42.0 — member-lifecycle's elevation was extended to cover resendInvite too. Resend
+        // requires ALL THREE of profiles:c, profiles:r AND profiles:u (each individually
+        // satisfiable by the member-lifecycle elevation) — 'c' is retained even though resend
+        // creates nothing new, matching createInvite's own requirement exactly rather than a
+        // narrower resend-specific set; 'r' covers disclosing the outstanding invitation's state,
+        // 'u' covers rotating its token/hash/expiry.
+        test('member-lifecycle WITHOUT profiles:u cannot resend an outstanding invite', async () => {
+            const email = `${uniqueTag()}@test.com`;
+            const invite = await client.auth.createInvite({
+                email, contextId: ctxId, sendEmail: false,
+                accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            try {
+                const { scoped, keyId } = await mintCapableKey(
+                    ctxId, user.id!, ['profiles:c', 'profiles:r', 'records:r'], ['member-lifecycle']);
+                try {
+                    await expect(scoped.auth.resendInvite({
+                        email, contextId: ctxId, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 403 });
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId }));
+                }
+            } finally {
+                await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+                await tryCleanup('invited user', () => client.identity.deleteUser({ id: invite.userId! }));
+            }
+        });
+
+        test('member-lifecycle WITH profiles:c+r+u CAN resend an outstanding invite', async () => {
+            const email = `${uniqueTag()}@test.com`;
+            const invite = await client.auth.createInvite({
+                email, contextId: ctxId, sendEmail: false,
+                accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            try {
+                const { scoped, keyId } = await mintCapableKey(
+                    ctxId, user.id!, ['profiles:c', 'profiles:r', 'profiles:u', 'records:r'], ['member-lifecycle']);
+                try {
+                    const resent = await scoped.auth.resendInvite({
+                        email, contextId: ctxId, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    });
+                    // Rotates the token — same invited userId, a fresh token/link.
+                    expect(resent.userId).toBe(invite.userId);
+                    expect(resent.inviteToken).toBeTruthy();
+                    expect(resent.inviteToken).not.toBe(invite.inviteToken);
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId }));
+                }
+            } finally {
+                await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+                await tryCleanup('invited user', () => client.identity.deleteUser({ id: invite.userId! }));
+            }
+        });
+
         test('a QUALIFIED profiles:c:self does NOT satisfy the member-lifecycle elevation (requires a BARE grant)', async () => {
             // The member-lifecycle elevation requires an UNQUALIFIED profiles:c grant (or "*"). A
             // narrowly-qualified form like profiles:c:self must not silently widen into tenant-wide
@@ -212,6 +274,213 @@ describe('capabilities (granted_capabilities)', () => {
             } finally {
                 await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
                 await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            }
+        });
+
+        // 0.42.0's OTHER half: attaching an ALREADY-ACTIVE member to an additional app context via
+        // POST /v1/users/invite (re-inviting their same email into a context they're not in yet).
+        // Distinct requirement from resendInvite above — the ACTIVE-attach branch mints no token
+        // (nothing to mutate), so it needs only a bare elevated profiles:r, not r+u.
+        // Reachable without any real external IdP: a target context with NO registered issuer
+        // treats any externalSubject that doesn't look like a real IdP-qualified subject (an
+        // ordinary activated smoke user's shape) as compatible, so this doesn't need issuer
+        // registration at all — traced directly against the actual credential-compatibility check
+        // rather than assumed from the SDK doc's own prose, which undersold the mechanism as
+        // needing real IdP compatibility to even exercise.
+        test('member-lifecycle WITH bare profiles:r attaches an ACTIVE member to a second context', async () => {
+            // Everything from the first write onward is inside the try/finally — an earlier version
+            // of this test created resources before entering it, which would leak an app context +
+            // orphaned users on a setup-step failure (staging rate-limit/flakiness). See the
+            // SUSPENDED-lockout test below for the same fix applied consistently.
+            let memberUserId: string | undefined;
+            let ctxId2: string | undefined;
+            let inviter: { id?: string } | undefined;
+            try {
+                // Step 1: create + activate a member in ctxId (plain synthetic externalSubject, no
+                // '#', so it stays issuer-compatible with any unregistered-issuer context — mirrors
+                // issuers-token-exchange.spec.ts's own activation recipe).
+                const memberEmail = `${uniqueTag()}@test.com`;
+                const invite = await client.auth.createInvite({
+                    email: memberEmail, contextId: ctxId, sendEmail: false,
+                    accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                memberUserId = invite.userId!;
+                await client.identity.updateUser({
+                    id: memberUserId,
+                    body: {
+                        externalId: memberUserId, status: 'ACTIVE', inviteToken: invite.inviteToken!,
+                        externalSubject: `smoke-subject-${uniqueTag()}`, emailVerifiedAttestation: true,
+                    },
+                });
+
+                // Step 2: a second app context the member has no profile in yet.
+                ctxId2 = ('capml2' + uniqueTag()).slice(0, 31);
+                await client.auth.createAppContext({ body: { contextId: ctxId2, name: 'capabilities spec (attach target)' } });
+                inviter = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+
+                // WITHOUT profiles:r: bare profiles:c is enough to even call the endpoint, but the
+                // ACTIVE-attach branch's own disclosure gate still 409s.
+                const { scoped: withoutR, keyId: keyWithoutR } = await mintCapableKey(
+                    ctxId2, inviter.id!, ['profiles:c', 'records:r'], ['member-lifecycle']);
+                try {
+                    await expect(withoutR.auth.createInvite({
+                        email: memberEmail, contextId: ctxId2, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 409 });
+                } finally {
+                    await tryCleanup('probe key (without r)', () => client.auth.revokeScopedKey({ keyId: keyWithoutR }));
+                }
+
+                // WITH profiles:c+r: the attach succeeds — 201, the EXISTING member's userId, no email
+                // (nothing to accept, the identity is already live).
+                const { scoped: withR, keyId: keyWithR } = await mintCapableKey(
+                    ctxId2, inviter.id!, ['profiles:c', 'profiles:r', 'records:r'], ['member-lifecycle']);
+                try {
+                    const attached = await withR.auth.createInvite({
+                        email: memberEmail, contextId: ctxId2, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    });
+                    expect(attached.userId).toBe(memberUserId);
+                    expect(attached.emailSent).toBe(false);
+                } finally {
+                    await tryCleanup('probe key (with r)', () => client.auth.revokeScopedKey({ keyId: keyWithR }));
+                    await tryCleanup('attached profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId2!, principalId: `usr_${memberUserId}` }));
+                }
+            } finally {
+                if (inviter?.id) {
+                    await tryCleanup('inviter profile', () => client.auth.deleteAccessProfile({ contextId: ctxId2!, principalId: `usr_${inviter!.id}` }));
+                    await tryCleanup('inviter user', () => client.identity.deleteUser({ id: inviter!.id! }));
+                }
+                if (ctxId2) await tryCleanup('second context', () => client.auth.deleteAppContext({ contextId: ctxId2!, confirm: ctxId2! }));
+                if (memberUserId) {
+                    await tryCleanup('member profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${memberUserId}` }));
+                    await tryCleanup('member user', () => client.identity.deleteUser({ id: memberUserId! }));
+                }
+            }
+        });
+
+        // SUSPENDED is a deliberate, unconditional lockout — the design explicitly does NOT
+        // auto-reactivate a suspended identity into a new context as a side effect of an unrelated
+        // invite, even for a caller holding every grant the ACTIVE-attach case above needs. This is
+        // the one branch of the documented ACTIVE/PENDING/SUSPENDED dispatch table that must never
+        // unlock — the highest-value case to keep smoke-verified precisely because a regression here
+        // would be a live lockout bypass, not just an over-restriction.
+        test('member-lifecycle CANNOT attach a SUSPENDED member — 409 regardless of grants held', async () => {
+            let memberUserId: string | undefined;
+            let ctxId2: string | undefined;
+            let inviter: { id?: string } | undefined;
+            try {
+                const memberEmail = `${uniqueTag()}@test.com`;
+                const invite = await client.auth.createInvite({
+                    email: memberEmail, contextId: ctxId, sendEmail: false,
+                    accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                memberUserId = invite.userId!;
+                await client.identity.updateUser({
+                    id: memberUserId,
+                    body: {
+                        externalId: memberUserId, status: 'ACTIVE', inviteToken: invite.inviteToken!,
+                        externalSubject: `smoke-subject-${uniqueTag()}`, emailVerifiedAttestation: true,
+                    },
+                });
+                await client.identity.updateUser({ id: memberUserId, body: { externalId: memberUserId, status: 'SUSPENDED' } });
+
+                ctxId2 = ('capml3' + uniqueTag()).slice(0, 31);
+                await client.auth.createAppContext({ body: { contextId: ctxId2, name: 'capabilities spec (suspended attach target)' } });
+                inviter = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+
+                // Full grant set the ACTIVE case above needed to succeed — proves the 409 comes from
+                // the SUSPENDED lockout itself, not from a missing scope.
+                const { scoped, keyId } = await mintCapableKey(
+                    ctxId2, inviter.id!, ['profiles:c', 'profiles:r', 'profiles:u', 'records:r'], ['member-lifecycle']);
+                try {
+                    await expect(scoped.auth.createInvite({
+                        email: memberEmail, contextId: ctxId2, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 409 });
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId }));
+                }
+            } finally {
+                if (inviter?.id) {
+                    await tryCleanup('inviter profile', () => client.auth.deleteAccessProfile({ contextId: ctxId2!, principalId: `usr_${inviter!.id}` }));
+                    await tryCleanup('inviter user', () => client.identity.deleteUser({ id: inviter!.id! }));
+                }
+                if (ctxId2) await tryCleanup('second context', () => client.auth.deleteAppContext({ contextId: ctxId2!, confirm: ctxId2! }));
+                if (memberUserId) {
+                    await tryCleanup('member profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${memberUserId}` }));
+                    await tryCleanup('member user', () => client.identity.deleteUser({ id: memberUserId! }));
+                }
+            }
+        });
+
+        // A DIFFERENT code path from resendInvite above: createInvite itself, when the invited email
+        // already has a PENDING invitation ELSEWHERE in the tenant, attaches the new context's access
+        // to that same outstanding invitation and rotates its token — same requirement (profiles:r+u
+        // together) as an ordinary resend, but reached through POST /v1/users/invite, not
+        // /invite/resend. A prior commit's message claimed this was "already covered" by the
+        // resendInvite tests above — verified false: resendInvite only ever exercises the explicit
+        // /resend endpoint against a SAME-context PENDING row, never createInvite's own PENDING branch.
+        test('member-lifecycle WITH profiles:c+r+u attaches a PENDING member (via createInvite) to a second context', async () => {
+            let memberUserId: string | undefined;
+            let originalInviteToken: string | undefined;
+            let ctxId2: string | undefined;
+            let inviter: { id?: string } | undefined;
+            try {
+                const memberEmail = `${uniqueTag()}@test.com`;
+                const invite = await client.auth.createInvite({
+                    email: memberEmail, contextId: ctxId, sendEmail: false,
+                    accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+                memberUserId = invite.userId!;
+                originalInviteToken = invite.inviteToken!;
+                // Left PENDING deliberately — never activated.
+
+                ctxId2 = ('capml4' + uniqueTag()).slice(0, 31);
+                await client.auth.createAppContext({ body: { contextId: ctxId2, name: 'capabilities spec (pending attach target)' } });
+                inviter = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+
+                // WITHOUT profiles:u: same requirement as the explicit resend endpoint — bare
+                // profiles:c+r is not enough, since attaching a PENDING row also rotates its token.
+                const { scoped: withoutU, keyId: keyWithoutU } = await mintCapableKey(
+                    ctxId2, inviter.id!, ['profiles:c', 'profiles:r', 'records:r'], ['member-lifecycle']);
+                try {
+                    await expect(withoutU.auth.createInvite({
+                        email: memberEmail, contextId: ctxId2, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    })).rejects.toMatchObject({ statusCode: 409 });
+                } finally {
+                    await tryCleanup('probe key (without u)', () => client.auth.revokeScopedKey({ keyId: keyWithoutU }));
+                }
+
+                // WITH profiles:c+r+u: attaches AND rotates — same userId, a fresh token, still
+                // PENDING (nothing to accept yet, sendEmail:false here too).
+                const { scoped: withU, keyId: keyWithU } = await mintCapableKey(
+                    ctxId2, inviter.id!, ['profiles:c', 'profiles:r', 'profiles:u', 'records:r'], ['member-lifecycle']);
+                try {
+                    const attached = await withU.auth.createInvite({
+                        email: memberEmail, contextId: ctxId2, sendEmail: false,
+                        accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    });
+                    expect(attached.userId).toBe(memberUserId);
+                    expect(attached.inviteToken).toBeTruthy();
+                    expect(attached.inviteToken).not.toBe(originalInviteToken);
+                } finally {
+                    await tryCleanup('probe key (with u)', () => client.auth.revokeScopedKey({ keyId: keyWithU }));
+                    await tryCleanup('attached profile', () =>
+                        client.auth.deleteAccessProfile({ contextId: ctxId2!, principalId: `usr_${memberUserId}` }));
+                }
+            } finally {
+                if (inviter?.id) {
+                    await tryCleanup('inviter profile', () => client.auth.deleteAccessProfile({ contextId: ctxId2!, principalId: `usr_${inviter!.id}` }));
+                    await tryCleanup('inviter user', () => client.identity.deleteUser({ id: inviter!.id! }));
+                }
+                if (ctxId2) await tryCleanup('second context', () => client.auth.deleteAppContext({ contextId: ctxId2!, confirm: ctxId2! }));
+                if (memberUserId) {
+                    await tryCleanup('member profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${memberUserId}` }));
+                    await tryCleanup('member user', () => client.identity.deleteUser({ id: memberUserId! }));
+                }
             }
         });
     });
@@ -309,6 +578,252 @@ describe('capabilities (granted_capabilities)', () => {
                 await tryCleanup('other profile', () =>
                     client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${other.id}` }));
                 await tryCleanup('other user', () => client.identity.deleteUser({ id: other.id! }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // delegate-principal-stamp (0.42.0) — a CREATE may stamp a userId
+    // belonging to someone else in the tenant, once the SAME clause that
+    // authorizes the write also explicitly names `userId` in its own
+    // data_scope. Unlike delegate-mint/forensic-read/context-directory-read,
+    // its reach is bounded by the record type + app context the clause
+    // already confines the write to, not tenant-wide.
+    // -----------------------------------------------------------------------
+
+    describe('delegate-principal-stamp', () => {
+        // mintCapableKey has no data_scope param — this capability's necessity
+        // condition requires the write-authorizing clause to
+        // independently admit `userId`, so these tests author the profile
+        // directly rather than through the shared helper. `admitsUserId`
+        // toggles the data_scope half independently of the capability half, so
+        // callers can probe either side of the necessity-not-sufficiency pair
+        // on its own.
+        async function mintStampKey(
+            ctxId: string, callerUserId: string, grantedCapabilities?: string[], admitsUserId = true,
+        ): Promise<{ scoped: VectrosClient; keyId: string }> {
+            const principalId = `usr_${callerUserId}`;
+            await client.auth.createAccessProfile({
+                contextId: ctxId,
+                upsert: true,
+                body: {
+                    principalId,
+                    scopes: [{
+                        allowed_actions: ['records:c', 'records:r', 'records:u', 'schemas:c', 'schemas:r'],
+                        ...(admitsUserId
+                            ? { data_scope: { userId: ['${{ any }}'] } as unknown as Record<string, Record<string, unknown>> }
+                            : {}),
+                        granted_capabilities: grantedCapabilities,
+                    }],
+                },
+            });
+            const key = await client.auth.createScopedKey({
+                keyName: 'stamp-' + uniqueTag(), tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                contextId: ctxId, userId: callerUserId,
+            });
+            return {
+                scoped: new VectrosClient({ token: key.rawKey!, environment: process.env.VECTROS_API_BASE_URL!, fetch: rateLimitAwareFetch, maxRetries: 0 }),
+                keyId: key.keyId!,
+            };
+        }
+
+        // The FIRST schema under a typeName must be created by a root/unscoped credential with no
+        // ownership (schema-lineage.spec.ts's own rule) — it becomes the lineage's shared base. A
+        // root create with no context binding lands in RESERVED_DEFAULT though, unreachable from a
+        // credential confined to ctxId; an ownerless token MINTED confined to ctxId (no userId) is
+        // both unowned AND correctly bound — same pattern erasure-requests.spec.ts uses to seed its
+        // own first-of-type schema.
+        async function createOwnerlessSchemaIn(ctxId: string, typeName: string): Promise<string> {
+            const bootstrap = (await client.auth.mintToken({
+                contextId: ctxId, scope: { allowedActions: ['schemas:c', 'schemas:r'] },
+            })) as MintedToken;
+            const ownerlessApi = getScopedClient(bootstrap.token);
+            const schema = await ownerlessApi.schemas.createSchema({ body: {
+                typeName, displayName: 'Stamp Probe', indexMode: 'NONE', allowedSurfaces: ['record'],
+            } });
+            return schema.id!;
+        }
+
+        test('userId:any in data_scope alone, WITHOUT the capability, still 403s a foreign-userId create', async () => {
+            // The clause names userId, satisfying the "must be explicit" half, but the capability is the OTHER half of the
+            // necessity-not-sufficiency pair — data_scope admission alone never bypasses the separate
+            // bearer/identity ownership check.
+            const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const recordType = `smoke_stamp_${uniqueTag()}`;
+            let keyId: string | undefined;
+            let schemaId: string | undefined;
+            try {
+                const { scoped, keyId: kid } = await mintStampKey(ctxId, caller.id!, undefined);
+                keyId = kid;
+                schemaId = await createOwnerlessSchemaIn(ctxId, recordType);
+                await expect(scoped.records.createRecord({
+                    body: { typeName: recordType, schemaId, userId: target.id },
+                })).rejects.toMatchObject({ statusCode: 403 });
+            } finally {
+                if (schemaId) await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                if (keyId) await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+                await tryCleanup('caller profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${caller.id}` }));
+                await tryCleanup('caller user', () => client.identity.deleteUser({ id: caller.id! }));
+                await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
+            }
+        });
+
+        test('userId:any in data_scope WITH the capability CAN stamp a foreign userId on create', async () => {
+            const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const recordType = `smoke_stamp_${uniqueTag()}`;
+            let keyId: string | undefined;
+            let schemaId: string | undefined;
+            let recordId: string | undefined;
+            try {
+                const { scoped, keyId: kid } = await mintStampKey(ctxId, caller.id!, ['delegate-principal-stamp']);
+                keyId = kid;
+                schemaId = await createOwnerlessSchemaIn(ctxId, recordType);
+                const created = await scoped.records.createRecord({
+                    body: { typeName: recordType, schemaId, userId: target.id },
+                });
+                recordId = created.id!;
+                // The stamped ownership is the real, functional effect — read it back via root
+                // rather than trusting the create response alone.
+                const loaded = await client.records.getRecord({ id: recordId });
+                expect(loaded.userId).toBe(target.id);
+            } finally {
+                if (recordId) await tryCleanup('stamped record', () => client.records.deleteRecord({ id: recordId! }));
+                if (schemaId) await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                if (keyId) await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+                await tryCleanup('caller profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${caller.id}` }));
+                await tryCleanup('caller user', () => client.identity.deleteUser({ id: caller.id! }));
+                await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
+            }
+        });
+
+        // The OTHER half of necessity-not-sufficiency: the capability alone, with a clause that does
+        // NOT explicitly admit `userId`, still denies — "absent means absent," not a wildcard the
+        // capability implicitly widens.
+        test('the capability alone, WITHOUT userId admitted in data_scope, still denies a foreign-userId create', async () => {
+            // 400, not 403 — verified live. The capability bypasses the identity-conflict check
+            // that would otherwise 403 a foreign userId, so the write reaches a SEPARATE
+            // placement check: the caller's clause genuinely ALLOWS the records:c action (the
+            // action itself is not refused), but no clause covers the resulting userId dimension,
+            // which is reported as a validation error (400), not an access-denied error (403) —
+            // "the action was authorized, the placement wasn't" is a different failure shape from
+            // "action refused outright."
+            const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const recordType = `smoke_stamp_${uniqueTag()}`;
+            let keyId: string | undefined;
+            let schemaId: string | undefined;
+            try {
+                const { scoped, keyId: kid } = await mintStampKey(
+                    ctxId, caller.id!, ['delegate-principal-stamp'], /* admitsUserId */ false);
+                keyId = kid;
+                schemaId = await createOwnerlessSchemaIn(ctxId, recordType);
+                await expect(scoped.records.createRecord({
+                    body: { typeName: recordType, schemaId, userId: target.id },
+                })).rejects.toMatchObject({
+                    statusCode: 400,
+                    // Pins the failure to the placement/coverage path specifically, not just any
+                    // 400 — the message names the uncovered dimension.
+                    message: expect.stringContaining('userId'),
+                });
+            } finally {
+                if (schemaId) await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                if (keyId) await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+                await tryCleanup('caller profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${caller.id}` }));
+                await tryCleanup('caller user', () => client.identity.deleteUser({ id: caller.id! }));
+                await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
+            }
+        });
+
+        // The capability's own documented boundary: CREATE-only. An UPDATE can never reassign
+        // userId, with or without this capability — traced directly against the code path that
+        // applies the capability's stamping effect, which only runs on create, never on
+        // update/patch.
+        test('the capability does NOT extend to UPDATE — reassigning userId on an existing record still 403s', async () => {
+            const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const another = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const recordType = `smoke_stamp_${uniqueTag()}`;
+            let keyId: string | undefined;
+            let schemaId: string | undefined;
+            let recordId: string | undefined;
+            try {
+                const { scoped, keyId: kid } = await mintStampKey(ctxId, caller.id!, ['delegate-principal-stamp']);
+                keyId = kid;
+                schemaId = await createOwnerlessSchemaIn(ctxId, recordType);
+                const created = await scoped.records.createRecord({
+                    body: { typeName: recordType, schemaId, userId: target.id },
+                });
+                recordId = created.id!;
+                await expect(scoped.records.updateRecord({
+                    id: recordId, body: { typeName: recordType, schemaId, userId: another.id },
+                })).rejects.toMatchObject({ statusCode: 403 });
+            } finally {
+                if (recordId) await tryCleanup('stamped record', () => client.records.deleteRecord({ id: recordId! }));
+                if (schemaId) await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                if (keyId) await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+                await tryCleanup('caller profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${caller.id}` }));
+                await tryCleanup('caller user', () => client.identity.deleteUser({ id: caller.id! }));
+                await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
+                await tryCleanup('another user', () => client.identity.deleteUser({ id: another.id! }));
+            }
+        });
+
+        // Token-level, not clause-scoped: the capability on ONE clause and the admitting userId
+        // data_scope on a SEPARATE clause of the SAME token still admits — proves capability
+        // checks union across every clause on the token rather than requiring the capability to
+        // sit on the same clause as the write it unblocks.
+        test('the capability on one clause + admitting data_scope on a DIFFERENT clause still admits', async () => {
+            const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const recordType = `smoke_stamp_${uniqueTag()}`;
+            const principalId = `usr_${caller.id}`;
+            let keyId: string | undefined;
+            let schemaId: string | undefined;
+            let recordId: string | undefined;
+            try {
+                await client.auth.createAccessProfile({
+                    contextId: ctxId,
+                    upsert: true,
+                    body: {
+                        principalId,
+                        scopes: [
+                            // Clause A: carries the capability, no data_scope at all — irrelevant to
+                            // this specific write's own admission.
+                            { allowed_actions: ['schemas:r'], granted_capabilities: ['delegate-principal-stamp'] },
+                            // Clause B: admits the write + the foreign userId, carries no capability
+                            // of its own.
+                            {
+                                allowed_actions: ['records:c', 'records:r', 'schemas:c'],
+                                data_scope: { userId: ['${{ any }}'] } as unknown as Record<string, Record<string, unknown>>,
+                            },
+                        ],
+                    },
+                });
+                const key = await client.auth.createScopedKey({
+                    keyName: 'stamp-split-' + uniqueTag(), tenantId: process.env.VECTROS_LIVE_TENANT_ID!,
+                    contextId: ctxId, userId: caller.id!,
+                });
+                keyId = key.keyId!;
+                const scoped = new VectrosClient({
+                    token: key.rawKey!, environment: process.env.VECTROS_API_BASE_URL!,
+                    fetch: rateLimitAwareFetch, maxRetries: 0,
+                });
+                schemaId = await createOwnerlessSchemaIn(ctxId, recordType);
+                const created = await scoped.records.createRecord({
+                    body: { typeName: recordType, schemaId, userId: target.id },
+                });
+                recordId = created.id!;
+                const loaded = await client.records.getRecord({ id: recordId });
+                expect(loaded.userId).toBe(target.id);
+            } finally {
+                if (recordId) await tryCleanup('stamped record', () => client.records.deleteRecord({ id: recordId! }));
+                if (schemaId) await tryCleanup('schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                if (keyId) await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: keyId! }));
+                await tryCleanup('caller profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+                await tryCleanup('caller user', () => client.identity.deleteUser({ id: caller.id! }));
+                await tryCleanup('target user', () => client.identity.deleteUser({ id: target.id! }));
             }
         });
     });

@@ -23,6 +23,7 @@ import urllib.error
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+import httpx
 import vectros
 from vectros import VectrosApi
 from vectros.core.api_error import ApiError
@@ -45,9 +46,61 @@ def base_url() -> str:
     return require_env("VECTROS_API_BASE_URL").rstrip("/")
 
 
+# ---------------------------------------------------------------------------
+# Rate-limit visibility (gotcha-sdk-silent-429-retry-masks-load-only-flakes)
+# ---------------------------------------------------------------------------
+# The partner API's rate limiter is a SHARED, per-tenant, 60s fixed-window
+# counter -- every concurrent caller against the same tenant counts against
+# it. On a trip it returns 429 with Retry-After set to the actual seconds
+# until the window resets. Left alone, the SDK's own default retry pays that
+# wait SILENTLY inside a single call -- invisible to any test's own timeout
+# and indistinguishable from a genuine hang or (worse, as measured while
+# writing test_namespaces.py's membership-revocation test) able to shift a
+# request's real send time late enough to observe a state a request sent
+# promptly would not have. This is the Python analogue of
+# smoke-tests/src/rateLimitFetch.ts: pays the SAME wait but VISIBLY (a
+# printed warning, so a slow run is diagnosable) and BOUNDED to a small,
+# fixed attempt count -- not the SDK's opaque retry layered on top of this.
+# Every client this module constructs gets both this transport AND
+# max_retries=0, for the same reason rateLimitFetch.ts's own doc gives: the
+# latter stops the SDK from retrying again on top of what this already
+# resolved (or gave up on), which would silently double the wait.
+_MAX_RATE_LIMIT_ATTEMPTS = 3
+
+
+class _RateLimitAwareTransport(httpx.HTTPTransport):
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        attempt = 1
+        while True:
+            response = super().handle_request(request)
+            if response.status_code != 429 or attempt >= _MAX_RATE_LIMIT_ATTEMPTS:
+                return response
+            retry_after = response.headers.get("Retry-After")
+            try:
+                seconds = float(retry_after) if retry_after else float("nan")
+            except ValueError:
+                seconds = float("nan")
+            # The rate limiter's window is 60s -- fall back to the full window
+            # rather than guess something smaller if the header is missing.
+            wait_s = seconds if seconds == seconds and seconds > 0 else 60.0  # NaN != NaN
+            response.close()
+            print(
+                f"[rate-limit] 429 from {request.url} (attempt {attempt}/{_MAX_RATE_LIMIT_ATTEMPTS}) "
+                f"-- waiting {wait_s}s per Retry-After before retrying"
+            )
+            time.sleep(wait_s)
+            attempt += 1
+
+
 def make_client(token: str) -> VectrosApi:
-    """A VectrosApi bound to `token` and the configured base URL."""
-    return VectrosApi(base_url=base_url(), token=token)
+    """A VectrosApi bound to `token` and the configured base URL, with the
+    rate-limit-aware transport above and max_retries=0 (see that class's
+    doc) so a shared-tenant 429 is visible and boundedly retried exactly
+    once, not silently retried twice."""
+    return VectrosApi(
+        base_url=base_url(), token=token, max_retries=0,
+        httpx_client=httpx.Client(transport=_RateLimitAwareTransport()),
+    )
 
 
 def live_client() -> VectrosApi:
