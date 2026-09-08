@@ -25,7 +25,7 @@
  */
 import * as fs from 'fs';
 import { client } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, withRateLimitRetry } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE } from '../src/fixtures';
 
 const BASE_URL = process.env.VECTROS_API_BASE_URL!;
@@ -46,10 +46,14 @@ async function putPdf(uploadUrl: string): Promise<void> {
  * reports INDEXED — poll /text until it 404s rather than asserting once.
  */
 async function pollUntilTextGone(docId: string, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     for (;;) {
         try {
-            await client.documents.getDocumentText({ id: docId });
+            // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+            // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+            // timeout that looks like the thing never happening. Extend by exactly what was paid.
+            await withRateLimitRetry(() => client.documents.getDocumentText({ id: docId }),
+                (waitedMs) => { deadline += waitedMs; });
         } catch (err) {
             if ((err as { statusCode?: number }).statusCode === 404) return;
             throw err;

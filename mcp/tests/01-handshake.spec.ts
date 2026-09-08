@@ -23,6 +23,8 @@ test('MCP handshake + tools/list returns expected catalog', async () => {
     'record_delete',
     // 0.41.0: record_batch_get (wraps POST /v1/records/batch-get)
     'record_batch_get',
+    // 0.43.0: record_batch_write (wraps POST /v1/records/batch)
+    'record_batch_write',
     // launch data-plane I/O (tier 2)
     'document_query',
     // launch data-plane I/O (tier 3)

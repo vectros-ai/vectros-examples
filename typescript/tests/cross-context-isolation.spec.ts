@@ -27,7 +27,7 @@ import {
     TwoContextFixture,
     ContextHandle,
 } from '../src/cross-context';
-import { uniqueTag } from '../src/helpers';
+import { uniqueTag, withRateLimitRetry } from '../src/helpers';
 
 /** Asserts a promise rejects with the given HTTP status. */
 async function expectStatus(p: Promise<unknown>, status: number): Promise<void> {
@@ -284,11 +284,15 @@ async function createSchema(ctx: ContextHandle, type: string): Promise<string> {
  * analogue of the shared pollUntilIndexed (which is bound to the root client).
  */
 async function pollUntilIndexedIn(ctx: ContextHandle, docId: string, timeoutMs = 60_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     let status: string | undefined;
     while (Date.now() < deadline) {
         // indexStatus since the 2.4.0 status split; `status` fallback for pre-split envs.
-        const doc = await ctx.api.documents.getDocument({ id: docId });
+        // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+        // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+        // timeout that looks like the thing never happening. Extend by exactly what was paid.
+        const doc = await withRateLimitRetry(() => ctx.api.documents.getDocument({ id: docId }),
+            (waitedMs) => { deadline += waitedMs; });
         status = doc.indexStatus ?? doc.status;
         if (status === 'INDEXED') return;
         if (status === 'FAILED') {

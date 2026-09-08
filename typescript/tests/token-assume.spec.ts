@@ -5,14 +5,12 @@
  * `identity.scope:<namespace>` values changed, PROVIDED a single one of the
  * caller's own composed roles jointly grants the exact combination requested
  * (its `assumable` map — a point-check, deliberately separate from what
- * `data_scope` permits reading/writing). See ACCESS-MATRIX.md §9b for the
- * full design.
+ * `data_scope` permits reading/writing).
  *
  * SCOPE — this file targets exactly what a black-box smoke test adds over the
- * exhaustive Java suite (`TokenAssumeHandlerTest`, ~1600 lines, already covers
- * every check-order branch, the freshness guard, and every narrowing rule in
- * detail) and what ACCESS-MATRIX.md §10's coverage table names as
- * unexercised ("none yet"):
+ * exhaustive server-side unit suite (~1600 lines, already covering every
+ * check-order branch, the freshness guard, and every narrowing rule in detail)
+ * and what the access-coverage matrix names as unexercised ("none yet"):
  *
  *   1. THE UNION-CHECK-OVER-GRANT REGRESSION — a caller composed of TWO roles,
  *      each granting a DIFFERENT single dimension, must be REFUSED a single
@@ -29,8 +27,8 @@
  *   5. `expires_in` is capped at the presented token's own remaining TTL,
  *      never extended — `/assume` changes WHO you are, never HOW LONG.
  *
- * NOT covered here (left to the Java suite per ACCESS-MATRIX.md §10 — not
- * constructible against a live deploy): the freshness guard (409), which
+ * NOT covered here (left to the server-side unit suite — not constructible
+ * against a live deploy): the freshness guard (409), which
  * requires racing a role/profile edit against a token's `iat` with
  * millisecond precision.
  */
@@ -188,9 +186,9 @@ describe('token assume', () => {
             // Only orgA/orgB/clientA/clientB — no separate "never granted" entity.
             // orgAId itself already has that property: it's only ever used as the
             // caller's CURRENT identity value (never listed in any role's
-            // `assumable` map below), and TokenAssumeHandler has no special case
+            // `assumable` map below), and the assume path has no special case
             // that admits a requested value merely for matching the caller's
-            // current identity (verified against unitAdmitsAll's call site) — so
+            // current identity (verified against the admission check itself) — so
             // assuming orgAId is refused exactly like a value the caller never
             // held at all. The "not granted" test below reuses it instead of a
             // dedicated fixture.

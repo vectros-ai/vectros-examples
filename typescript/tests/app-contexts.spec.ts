@@ -24,7 +24,7 @@
  */
 import { client, getScopedClient } from '../src/client';
 import type { VectrosClient } from '@vectros-ai/sdk';
-import { uniqueTag, tryCleanup, sleep, SKIP_SLOW } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep, SKIP_SLOW, withRateLimitRetry } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 
@@ -71,10 +71,14 @@ async function pollUntilLeftActive(
     contextId: string,
     timeoutMs = 30_000,
 ): Promise<string> {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     let last = 'active';
     while (Date.now() < deadline) {
-        last = (await tenantClient.auth.getAppContext({ contextId })).status ?? 'active';
+        // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+        // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+        // timeout that looks like the thing never happening. Extend by exactly what was paid.
+        last = (await withRateLimitRetry(() => tenantClient.auth.getAppContext({ contextId }),
+            (waitedMs) => { deadline += waitedMs; })).status ?? 'active';
         if (last !== 'active') return last;
         await sleep(1_000);
     }
@@ -93,17 +97,13 @@ async function pollUntilLeftActive(
  * Also used for the app-context ROW ITSELF (pass `() =>
  * tenantClient.auth.getAppContext({contextId})`, `CONTEXT_GONE_TIMEOUT_MS`) —
  * the full teardown convergence, one level past a per-row check. The
- * context-teardown registry loop (mirroring the platform's own tenant-wide
- * teardown) hardened exactly the gate that proves:
- * `ContextTeardownSupport.contextContentEmpty` must
- * read EVERY context-scoped model — the four DATA models AND the two ACCESS
- * models (RoleDB/AccessProfileDB) — as truly empty before a self-tick can
- * flip the row to `deleted` and remove it; a model silently unprobed would
- * leave the context stuck in `purging` forever (the "loop" in the issue
- * title). That self-tick runs on a >=60s interval
- * (`AppContextDB.CONTEXT_TEARDOWN_INTERVAL_MS`), and each tick advances only
- * ONE phase (audit-history drain, then usage-ledger drain, then
- * `contextContentEmpty`) before rescheduling — convergence is several
+ * context-teardown emptiness gate proves that EVERY context-scoped model — the
+ * four DATA models AND both ACCESS models (roles and access profiles) — must
+ * read as truly empty before the background self-tick can flip the row to
+ * `deleted` and remove it. A model left silently unprobed would leave the
+ * context stuck in `purging` forever. That self-tick runs on a >=60s interval,
+ * and each tick advances only ONE phase (audit-history drain, then
+ * usage-ledger drain, then the emptiness check) — convergence is several
  * sequential >=60s ticks, not one. Measured live: ~3 minutes end-to-end from
  * an accepted delete to a 404; a 150s budget genuinely timed out on a real,
  * eventually-successful run, hence the wide default margin.
@@ -122,11 +122,14 @@ async function pollUntilGone(
     maxTransientErrors = 5,
 ): Promise<void> {
     const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     let transientErrors = 0;
     while (Date.now() < deadline) {
         try {
-            await read();
+            // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+            // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+            // timeout that looks like the thing never happening. Extend by exactly what was paid.
+            await withRateLimitRetry(read, (waitedMs) => { deadline += waitedMs; });
         } catch (err) {
             const status = (err as { statusCode?: number })?.statusCode;
             if (status === 404) return;
@@ -435,9 +438,8 @@ describe('app-contexts', () => {
             // … and finally, the full convergence: once every registered model
             // reads empty, the background self-tick flips the context to
             // `deleted` and removes the row itself. This is the end-to-end proof
-            // `contextContentEmpty`'s registry-driven loop actually
-            // reaches a terminal state, not just that it correctly holds the gate
-            // open while content remains. Genuinely sequential after the above —
+            // that the emptiness gate actually reaches a terminal state, not just
+            // that it correctly holds the gate open while content remains. Genuinely sequential after the above —
             // the context row can't be removed until every model above already
             // reads empty.
             await pollUntilGone(

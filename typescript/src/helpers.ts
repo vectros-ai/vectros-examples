@@ -346,6 +346,56 @@ export async function pollUntilSearchHitGone(
 }
 
 /**
+ * Polls `probe` until it returns something truthy, extending its own deadline by every
+ * rate-limit wait actually paid. The generic sibling of {@link pollUntilSearchable} for
+ * anything that is not a search: an async trigger firing, a background convergence, any
+ * "wait for this to appear" loop.
+ *
+ * ⚠️ WHY THIS LIVES HERE RATHER THAN IN EACH SPEC. Two spec files had hand-rolled copies of
+ * this loop on a FIXED deadline, and the bug that hides in that shape is nasty: the partner
+ * API's rate limiter is a SHARED per-tenant 60s window, and `rateLimitAwareFetch` pays a
+ * 429's `Retry-After` SILENTLY inside a single `await`, up to three times. So ONE probe call
+ * can consume ~120s of a 150s budget without the loop ever knowing, leaving it a couple of
+ * real attempts before it reports a timeout that reads exactly like "the thing never
+ * happened" — a false RED against a working platform, on whichever spec happens to run last
+ * and inherit the hottest limiter.
+ *
+ * Measured 2026-09-06: a trigger cell timed out at 150s in a full-file run and passed in
+ * 3.8s in isolation, with the platform behaving correctly in both.
+ *
+ * The search polls already solved this; a new spec writing its own loop had no reason to
+ * know that. One shared implementation is what stops the next one re-introducing it.
+ */
+export async function pollUntil<T>(
+    label: string,
+    probe: () => Promise<T | undefined>,
+    timeoutMs = 150_000,
+    intervalMs = 3_000,
+): Promise<T> {
+    let deadline = Date.now() + timeoutMs;
+    let rateLimitedTotalMs = 0;
+    let attempts = 0;
+    for (;;) {
+        attempts++;
+        const hit = await withRateLimitRetry(probe, (waitedMs) => {
+            deadline += waitedMs;
+            rateLimitedTotalMs += waitedMs;
+        });
+        if (hit) return hit;
+        if (Date.now() > deadline) {
+            throw new Error(
+                `timed out after ${timeoutMs}ms (${attempts} attempts) waiting for ${label}` +
+                (rateLimitedTotalMs > 0
+                    ? ` — NOTE: ${rateLimitedTotalMs}ms of that was spent waiting out the shared ` +
+                      `per-tenant rate limiter, and the deadline was extended by exactly that much, ` +
+                      `so this is a genuine miss AFTER the wait rather than a limiter artifact.`
+                    : '.'));
+        }
+        await sleep(intervalMs);
+    }
+}
+
+/**
  * Collects all SSE events from a streaming inference response. Returns a list
  * of {event, data} objects in arrival order. Used by chat / rag / documents-ask
  * spec files to assert the event sequence + done payload.

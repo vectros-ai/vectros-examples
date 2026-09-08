@@ -304,10 +304,10 @@ describe('issuers + token exchange', () => {
             }
         });
 
-        // DELETE-refused-if-bound (409, PartnerIssuerHandler.assertNoBoundMembership) — a
+        // DELETE is refused while a user is still bound to the issuer (409) — a
         // JWKS-free path: a real bound-user row needs no live signature verify.
-        // TokenExchangeHandler composes externalSubject as `${issuerId}#${sub}` at a real
-        // exchange, but the same field is independently settable via the invitation-
+        // A token exchange composes `externalSubject` as `${issuerId}#${sub}`, but the
+        // same field is independently settable via the invitation-
         // ACTIVATION request (UserRequest.externalSubject — the one call site where it's
         // actually honored; an ordinary update ignores it). A prior investigation attempted
         // this exact flow (createInvite with sendEmail:false, then updateUser with
@@ -431,10 +431,10 @@ describe('issuers + token exchange', () => {
         }
 
         test('a differing trust-anchor OR routing-pin field (issuer/jwksUri/audience/contextId) is rejected with 400, naming the field', async () => {
-            // contextId isn't part of the "trust anchor" strictly speaking (it's
-            // the routing pin, IssuerUpdateService.rejectIfContextIdChanged is a
-            // separate check from rejectIfTrustAnchorChanged) but is immutable via
-            // this route for the same reason and rejected the same way — covered
+            // contextId isn't part of the "trust anchor" strictly speaking — it is
+            // the routing pin, and the API validates it as a check separate from the
+            // trust-anchor fields — but it is immutable via this route for the same
+            // reason and is rejected the same way — covered
             // alongside issuer/jwksUri/audience rather than as a separate test.
             const otherCtxId = ('updxctx' + uniqueTag()).slice(0, 31);
             await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'issuer PUT contextId-immutable spec' } });

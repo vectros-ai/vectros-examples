@@ -26,9 +26,15 @@ needed — and resolves the SDK from Maven Central. Requires a JDK 21+ on
 | `EnvelopeSmokeTest` | The uniform `{ data, nextCursor }` list envelope and cursor paging. |
 | `ErrorContractSmokeTest` | The error contract — asserting structured error bodies. |
 | `CrossContextSmokeTest` | App-context data isolation within a tenant. |
+| `AccessProfilesSmokeTest` | The `profiles:c/u/d` principal-qualifier axis — a literal `usr_<id>`, or the `self` sentinel. |
+| `CapabilitiesSmokeTest` | `granted_capabilities` on a scope clause: named platform capabilities that reach across a partition boundary, which `allowed_actions` cannot express. |
+| `NamespacesSmokeTest` | Namespace placement (tenant-wide vs context-owned, fixed at registration) and namespace membership. |
+| `IssuersTokenExchangeSmokeTest` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
+| `LogsSmokeTest` | `delegationChain` on `GET /v1/admin/logs` entries — present on delegate-minted traffic, null on ordinary traffic. |
 
-`CrossContextSmokeTest` needs `VECTROS_LIVE_TENANT_ID` and is skipped when it's
-unset (see `../.env.example`); the rest run with just your API key.
+`CrossContextSmokeTest` needs `VECTROS_LIVE_TENANT_ID` and is skipped when it's unset (see
+`../.env.example`). `CapabilitiesSmokeTest` and `LogsSmokeTest` need it too and **fail** rather
+than skip without it — set it before running the full suite. The rest run with just your API key.
 
 ## Pinning a version
 

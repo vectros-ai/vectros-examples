@@ -7,7 +7,7 @@
  * with documents). Each test demonstrates a real application workflow.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, sleep } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, sleep, withRateLimitRetry } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 
@@ -326,12 +326,16 @@ describe('records', () => {
         // Version rows are written asynchronously (typically 1-3s after
         // updateRecord returns). Poll until the second version lands; 30s
         // deadline is generous headroom that still fails fast on regression.
-        const deadline = Date.now() + 30_000;
+        let deadline = Date.now() + 30_000;
         let list: RecordVersion[] = [];
         while (Date.now() < deadline) {
             // getRecordVersions returns the { data, nextCursor } page envelope;
             // unwrap .data to the version rows.
-            const page = await client.records.getRecordVersions({ id: rec.id! });
+            // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+            // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+            // timeout that looks like the thing never happening. Extend by exactly what was paid.
+            const page = await withRateLimitRetry(() => client.records.getRecordVersions({ id: rec.id! }),
+                (waitedMs) => { deadline += waitedMs; });
             list = (page.data ?? []) as unknown as RecordVersion[];
             if (list.length >= 2) break;
             await sleep(2_000);

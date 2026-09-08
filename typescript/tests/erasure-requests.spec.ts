@@ -55,7 +55,7 @@
  * below) skips it for a faster local iteration loop.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup, sleep, SKIP_SLOW } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep, SKIP_SLOW, withRateLimitRetry } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 interface ErasureResponse {
@@ -82,10 +82,14 @@ interface ErasureResponse {
 const ERASURE_DONE_TIMEOUT_MS = 1_200_000;
 
 async function pollErasureUntilDone(requestId: string): Promise<ErasureResponse> {
-    const deadline = Date.now() + ERASURE_DONE_TIMEOUT_MS;
+    let deadline = Date.now() + ERASURE_DONE_TIMEOUT_MS;
     let last: ErasureResponse = {};
     while (Date.now() < deadline) {
-        last = (await client.compliance.getErasureRequest({ id: requestId })) as ErasureResponse;
+        // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+        // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+        // timeout that looks like the thing never happening. Extend by exactly what was paid.
+        last = (await withRateLimitRetry(() => client.compliance.getErasureRequest({ id: requestId }),
+            (waitedMs) => { deadline += waitedMs; })) as ErasureResponse;
         if (last.status === 'completed' || last.status === 'failed') return last;
         await sleep(10_000);
     }

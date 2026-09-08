@@ -12,7 +12,7 @@
 import { VectrosClient } from '@vectros-ai/sdk';
 import { client } from '../src/client';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
-import { uniqueTag, sleep, tryCleanup } from '../src/helpers';
+import { uniqueTag, sleep, tryCleanup, withRateLimitRetry } from '../src/helpers';
 
 // getAdminLogs returns Record<string, unknown> in the SDK; this local
 // interface narrows the response shape for assertions.
@@ -53,10 +53,14 @@ async function pollLogs(
     req: Record<string, unknown>,
     predicate: (r: AdminLogsResponse) => boolean = (r) => r.entries.length > 0,
 ): Promise<AdminLogsResponse> {
-    const deadline = Date.now() + POLL_DEADLINE_MS;
+    let deadline = Date.now() + POLL_DEADLINE_MS;
     let last: AdminLogsResponse;
     do {
-        last = (await client.auth.getAdminLogs({ startTime: windowStart(), ...req })) as unknown as AdminLogsResponse;
+        // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+        // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+        // timeout that looks like the thing never happening. Extend by exactly what was paid.
+        last = (await withRateLimitRetry(() => client.auth.getAdminLogs({ startTime: windowStart(), ...req }),
+            (waitedMs) => { deadline += waitedMs; })) as unknown as AdminLogsResponse;
         if (predicate(last)) return last;
         await sleep(5_000);
     } while (Date.now() < deadline);
@@ -154,13 +158,35 @@ describe('admin logs', () => {
             (r) => r.entries.some((e) => e.errorCode != null),
         );
         expect(response.entries.length).toBeGreaterThan(0);
+        // This allowlist is deliberately OVER-inclusive, not a tight enumeration of what
+        // this one query can return. A failed call's errorCode is, for a wide swath of
+        // endpoints, the name of a typed failure reason enum — any member of it can reach
+        // the log entry a caller reads back, and a hand-curated subset silently drifts
+        // behind that enum every time a new reason is added elsewhere in the platform.
+        // So: every reason-enum member goes in here, including ones a given endpoint or
+        // code path may never actually emit — an allowlist entry nothing produces is inert,
+        // while a real code missing from it is a false failure on this assertion. Plus a
+        // handful of standalone typed codes that are not enum members at all.
         const CODED_REASONS = [
+            // pre-existing, endpoint-specific coded reasons.
             'RATE_LIMITED', 'SUBSCRIPTION_LIMIT_EXCEEDED', 'INSUFFICIENT_BALANCE',
             'RESOURCE_IN_USE', 'VERSION_CONFLICT', 'SESSION_REFRESH_REQUIRED',
-            'WRITE_FROZEN',
             // 0.38.0: an unrecognized Vectros-Version request header (see
             // vectros-version-header.spec.ts).
             'UNSUPPORTED_WIRE_VERSION',
+            // 0.43.0: the full set of trigger/script-execution failure reasons — a script
+            // execution's errorCode is that enum member's own name, whichever one fired
+            // (see scripts-execute.spec.ts and trigger-firing.spec.ts).
+            'RULE_DELETED', 'RULE_RETARGETED', 'TRIGGERS_DISABLED',
+            'CASCADE_DEPTH_EXCEEDED', 'INPUT_TOO_LARGE', 'PRINCIPAL_UNRESOLVED',
+            'GRANT_UNRESOLVED', 'SCRIPT_NOT_FOUND', 'WRITE_FROZEN',
+            'CREDIT_LIMIT_EXCEEDED', 'PRINCIPAL_QUOTA_EXCEEDED',
+            'TENANT_CONCURRENCY_LIMIT', 'TIMEOUT', 'RESOURCE_LIMIT_EXCEEDED',
+            'WRITE_BUFFER_CAP_EXCEEDED', 'MANIFEST_VIOLATION', 'AUTHORIZATION_DENIED',
+            'CONCURRENT_MODIFICATION', 'SCRIPT_ERROR', 'INTERNAL_ERROR',
+            // 0.43.0: not reason-enum members — standalone typed codes a script-execution
+            // or record/document call can also return.
+            'RESULT_TOO_LARGE', 'AMBIGUOUS_RECORD_TYPE',
         ];
         for (const entry of response.entries) {
             expect(entry.status).toBeGreaterThanOrEqual(400);

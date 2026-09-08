@@ -18,7 +18,26 @@
  * every other namespace test in this file uses.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep, withRateLimitRetry } from '../src/helpers';
+
+/**
+ * Every namespace, draining `nextCursor` rather than trusting the default page.
+ *
+ * A namespace registration is tenant-wide and the shared smoke tenant accumulates them, so a
+ * single-page read finds a freshly registered namespace only while the tenant happens to be small.
+ * That is not a property any assertion should depend on: it fails as the tenant grows, and it fails
+ * on whichever spec happens to run after a busy one.
+ */
+async function allNamespaces(): Promise<any[]> {
+    const out: any[] = [];
+    let cursor: string | undefined;
+    do {
+        const page: any = await client.identity.listNamespaces({ limit: 100, ...(cursor ? { startFrom: cursor } : {}) });
+        out.push(...(page.data ?? []));
+        cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return out;
+}
 
 interface MintedToken {
     token: string;
@@ -66,8 +85,7 @@ describe('namespaces', () => {
                 });
                 expect(updated.specificityRank).toBe(rank + 1);
 
-                const list = await client.identity.listNamespaces();
-                const names = (list.data ?? []).map((n) => n.namespace);
+                const names = (await allNamespaces()).map((n) => n.namespace);
                 expect(names).toContain(namespace);
             } finally {
                 await tryCleanup('namespace', () => client.identity.deleteNamespace({ namespace }));
@@ -155,10 +173,18 @@ describe('namespaces', () => {
                 // flake rate). Poll instead of asserting on the first read — same pattern the
                 // sibling "update record → version history includes both versions" test in
                 // records.spec.ts uses for identical reasons.
-                const deadline = Date.now() + 30_000;
+                let deadline = Date.now() + 30_000;
+                // Captured before the loop: the poll's callback is a closure, and TypeScript drops
+                // the narrowing on an outer `let` inside one.
+                const versionsEntityId = entityId!;
                 let ownVersions: { data?: unknown[] } = {};
                 while (Date.now() < deadline) {
-                    ownVersions = await client.identity.getEntityVersions({ namespace, id: entityId, contextId: ctxA });
+                    // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+                    // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+                    // timeout that looks like the thing never happening. Extend by exactly what was paid.
+                    ownVersions = await withRateLimitRetry(
+                        () => client.identity.getEntityVersions({ namespace, id: versionsEntityId, contextId: ctxA }),
+                        (waitedMs) => { deadline += waitedMs; });
                     if ((ownVersions.data ?? []).length > 0) break;
                     await sleep(2_000);
                 }
@@ -237,9 +263,9 @@ describe('namespaces', () => {
             // asserting `true` would be asserting this tenant's history, not the behavior.
             // entityBacked + specificityRank are the actual invariants under test, and hold
             // regardless of provenance.
-            const list = await client.identity.listNamespaces();
-            const org = (list.data ?? []).find((n) => n.namespace === 'org');
-            const clientNs = (list.data ?? []).find((n) => n.namespace === 'client');
+            const all = await allNamespaces();
+            const org = all.find((n) => n.namespace === 'org');
+            const clientNs = all.find((n) => n.namespace === 'client');
             expect(org?.entityBacked).toBe(true);
             expect(org?.specificityRank).toBe(1000);
             expect(org?.contextId).toBeUndefined();

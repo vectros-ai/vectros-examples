@@ -21,7 +21,9 @@ the MCP client. Requires Node.js ≥ 20.
 The handshake and tool catalog; `hybrid_search`; `rag_ask` and `document_ask`
 (streaming, with progress notifications); `document_ingest` (text and file) and
 `document_query`; the record lifecycle (`record_create` → `record_get` →
-`record_query` → `record_update` → `record_delete`); folder CRUD; `list_schemas`,
+`record_query` → `record_update` → `record_delete`); `record_batch_write` (both commit
+modes, and the all-items-failed shape the endpoint answers `200` for); `record_query`'s
+`folderId` and account-wide `recent` list modes; folder CRUD; `list_schemas`,
 `lookup_principal`, `version_history`, and `current_identity`.
 
 ## Using the server with your own MCP client

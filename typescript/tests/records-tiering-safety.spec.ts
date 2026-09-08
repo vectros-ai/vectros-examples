@@ -26,7 +26,7 @@
  * request (a sibling of `id`/`body`) — used directly below.
  */
 import { client } from '../src/client';
-import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep, withRateLimitRetry } from '../src/helpers';
 
 interface ErrorBody { message?: string; requestId?: string; [k: string]: unknown; }
 
@@ -113,14 +113,18 @@ describe('records (payload tiering + PUT truncation guard)', () => {
      * store.
      */
     async function listItem(id: string, includePayload = false) {
-        const deadline = Date.now() + 10_000;
+        let deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
             let cursor: string | null | undefined;
             do {
                 const req: any = { type: recordType, limit: 100 };
                 if (cursor) req.startFrom = cursor;
                 if (includePayload) req.includePayload = 'true';
-                const page = await client.records.listRecords(req);
+                // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
+                // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
+                // timeout that looks like the thing never happening. Extend by exactly what was paid.
+                const page = await withRateLimitRetry(() => client.records.listRecords(req),
+                    (waitedMs) => { deadline += waitedMs; });
                 const hit = (page.data ?? []).find((r) => r.id === id);
                 if (hit) return hit;
                 cursor = page.nextCursor;
@@ -149,6 +153,52 @@ describe('records (payload tiering + PUT truncation guard)', () => {
         expect(item!.payloadExternalized).toBe(true);
         expect((item!.payload as { category?: string }).category).toBe('projection');
         expect((item!.payload as Record<string, unknown>).bulk).toBeUndefined();
+    });
+
+    test('an `inline: true` field survives the list projection, exactly as a filterable one does', async () => {
+        // `inline: true` (0.43.0) is the OTHER way to keep a field on the row when the payload is
+        // externalized — and unlike `filterable` it buys no query capability, so surviving the
+        // projection is the whole of what it promises. The trigger specs cover the projection into
+        // `input.record`; this covers the half a partner uses with no trigger anywhere in sight.
+        //
+        // Its own schema, deliberately: bolting a third field onto the shared fixture above would
+        // change the projected set every other cell in this file asserts against.
+        const type = `smoke_inlineproj_${uniqueTag()}`.replace(/-/g, '_');
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: type,
+            displayName: 'Smoke Inline Projection',
+            storageProfile: 'LARGE_PAYLOAD',   // always externalize — no threshold arithmetic
+            indexMode: 'NONE',
+            allowedSurfaces: ['record'],
+            fields: [
+                { fieldId: 'kept', fieldType: 'string', inline: true },
+                { fieldId: 'bulk', fieldType: 'string' },
+            ],
+        } });
+        try {
+            const rec = await client.records.createRecord({ body: {
+                typeName: type, schemaId: schema.id!, payload: { kept: 'stays-on-the-row', bulk: BULK },
+            } });
+            try {
+                // By-id hydrates everything, so it cannot distinguish the two fields — the LIST read
+                // is the only place the projection is observable.
+                const byId = await client.records.getRecord({ id: rec.id! });
+                expect(byId.payloadExternalized).toBe(true);
+
+                const page = await client.records.listRecords({ type, limit: 100 });
+                const item = (page.data ?? []).find((r) => r.id === rec.id!);
+                expect(item).toBeDefined();
+                expect(item!.payloadPartial).toBe(true);
+                // The inline field rode the row down...
+                expect((item!.payload as { kept?: string }).kept).toBe('stays-on-the-row');
+                // ...and the plain one did not, which is what makes the assertion above mean something.
+                expect((item!.payload as Record<string, unknown>).bulk).toBeUndefined();
+            } finally {
+                await tryCleanup(`delete inline-proj record`, () => client.records.deleteRecord({ id: rec.id! }));
+            }
+        } finally {
+            await tryCleanup('delete inline-proj schema', () => client.schemas.deleteSchema({ id: schema.id! }));
+        }
     });
 
     test('PUT built from the projected read is rejected 400 naming the omitted field, and does NOT write', async () => {

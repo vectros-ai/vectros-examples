@@ -10,6 +10,13 @@ describe('folders', () => {
     let subFolderId: string;
     let userOwnedFolderId: string;
     const folderIds: string[] = [];
+    // Contents must be registered too, and drained BEFORE folderIds. These are the only tests
+    // here whose own failure leaves a folder NON-EMPTY, and a non-empty folder is now exactly what
+    // afterAll cannot delete: tryCleanup swallows the 400 and the folder is stranded in staging for
+    // good. Inline cleanup on the happy path is not enough — it is the failure path that strands.
+    const documentIds: string[] = [];
+    const recordIds: string[] = [];
+    const schemaIds: string[] = [];
 
     beforeAll(async () => {
         const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
@@ -20,8 +27,19 @@ describe('folders', () => {
         // Delete in reverse-create order — children first, then parents,
         // then user. tryCleanup swallows errors so a half-failed cleanup
         // doesn't mask a real test failure.
+        // Contents first — a folder that still holds a document or a record cannot be deleted,
+        // so draining these is what keeps the folder loop below able to do its job.
+        for (const id of documentIds) {
+            await tryCleanup(`delete document ${id}`, () => client.documents.deleteDocument({ id }));
+        }
+        for (const id of recordIds) {
+            await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
+        }
         for (const id of [...folderIds].reverse()) {
             await tryCleanup(`delete folder ${id}`, () => client.folders.deleteFolder({ id }));
+        }
+        for (const id of schemaIds) {
+            await tryCleanup(`delete schema ${id}`, () => client.schemas.deleteSchema({ id }));
         }
         await tryCleanup('delete user', () => client.identity.deleteUser({ id: userId }));
     });
@@ -112,6 +130,65 @@ describe('folders', () => {
         await expect(client.folders.deleteFolder({ id: parent.id! })).rejects.toMatchObject({
             statusCode: 400,
         });
+    });
+
+    // The emptiness guard used to count only the folder's file-tree children, so the sub-folder case
+    // above was the ONLY one it actually covered. A text-ingested document and a record have no
+    // file-tree node at all, so a folder full of either deleted with a 204 and left them behind a
+    // folderId that no longer resolved. These two run over the real wire, which is where that
+    // regression would have reached a caller.
+
+    test('cannot delete a folder holding a text document (400)', async () => {
+        const folder = await client.folders.createFolder({ body: { name: 'Doc Holder ' + uniqueTag() } });
+        folderIds.push(folder.id!);
+        const doc = await client.documents.ingestDocument({ body: {
+            title: 'Smoke Text ' + uniqueTag(),
+            text: 'a text-ingested document has no file-tree node',
+            indexMode: 'NONE',
+            folderId: folder.id!,
+        } });
+        // Registered BEFORE the first assertion, so a failure below still tears down cleanly.
+        documentIds.push(doc.id!);
+
+        await expect(client.folders.deleteFolder({ id: folder.id! })).rejects.toMatchObject({
+            statusCode: 400,
+        });
+
+        // The document is still filed where it was — the delete refused instead of orphaning it.
+        const readBack = await client.documents.getDocument({ id: doc.id! });
+        expect(readBack.folderId).toBe(folder.id);
+
+        // Empty it the way the 400's own message tells you to, and the folder deletes. afterAll's
+        // tryCleanup swallows the now-redundant repeat deletes, so no splice bookkeeping is needed.
+        await client.documents.deleteDocument({ id: doc.id! });
+        await client.folders.deleteFolder({ id: folder.id! });
+    });
+
+    test('cannot delete a folder holding a record (400)', async () => {
+        const typeName = `smoke_folder_guard_${uniqueTag()}`;
+        const schema = await client.schemas.createSchema({ body: {
+            typeName,
+            displayName: 'Smoke Folder Guard',
+            allowedSurfaces: ['record'],
+        } });
+        schemaIds.push(schema.id!);
+        const folder = await client.folders.createFolder({ body: { name: 'Rec Holder ' + uniqueTag() } });
+        folderIds.push(folder.id!);
+        const record = await client.records.createRecord({ body: {
+            typeName,
+            schemaId: schema.id!,
+            folderId: folder.id!,
+            payload: { note: 'filed' },
+        } });
+        recordIds.push(record.id!);
+
+        await expect(client.folders.deleteFolder({ id: folder.id! })).rejects.toMatchObject({
+            statusCode: 400,
+        });
+        expect((await client.records.getRecord({ id: record.id! })).folderId).toBe(folder.id);
+
+        await client.records.deleteRecord({ id: record.id! });
+        await client.folders.deleteFolder({ id: folder.id! });
     });
 
     test('listFolders shows tenant-root folder with isProtected=true', async () => {

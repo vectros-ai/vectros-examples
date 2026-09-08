@@ -137,6 +137,51 @@ describe('records (ARCHIVED lifecycle)', () => {
         // phase-specific assertion error, not a generic jest timeout.
     }, 240_000);
 
+    test('re-sending ARCHIVED on an already-archived record is accepted and leaves it retracted', async () => {
+        // 0.43.0 made re-sending the archive RE-ASSERT the retraction rather than doing nothing —
+        // the documented repair for an item found archived-but-still-searchable, which previously
+        // needed a hard delete. This cell pins the half that is reachable from outside: the second
+        // archive is ACCEPTED and leaves the record archived and unsearchable.
+        //
+        // ⚠️ WHAT THIS CELL DOES **NOT** PROVE, and the honest label matters more than the coverage.
+        // The repair only shows its work on a record that is archived AND STILL INDEXED, and that
+        // state cannot be constructed through public endpoints — the write paths that produced it
+        // are exactly what was fixed. So this is NOT coverage of the repair: a second archive
+        // returning 200 was already true before the fix, and a cell built only on that passes
+        // identically against unfixed code. What it DOES pin is the idempotence the repair path
+        // depends on — re-archiving is ACCEPTED rather than refused as a no-op, and does not
+        // resurrect the record into the index. The repair proper is unit-tested; claiming it here
+        // would be a false green.
+        // Its own searchable marker, so the retraction assertion below is about THIS record.
+        const reMarker = `rearchive_${uniqueTag()}`.replace(/-/g, '_');
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            payload: { title: `Re-archived ${reMarker}`, body: `carries ${reMarker} for the search assertion` },
+            userId,
+            scopes: [`org:${orgEntityId}`],
+        } });
+        recordIds.push(rec.id!);
+        await pollUntilIndexed(rec.id!, 'record');
+        // Establish the POSITIVE before asserting its absence: without proving the record was
+        // searchable to begin with, the retraction assertion below passes on a record that never
+        // entered the index at all. The anchor cell above does the same two steps in the same order.
+        await pollUntilSearchable(reMarker, rec.id!, 60_000, 'HYBRID', testStartedAt);
+
+        const first = await client.records.patchRecord({ id: rec.id!, body: { status: 'ARCHIVED' } });
+        expect(first.status).toBe('ARCHIVED');
+        const second = await client.records.patchRecord({ id: rec.id!, body: { status: 'ARCHIVED' } });
+        expect(second.status).toBe('ARCHIVED');
+
+        // The title says "leaves it retracted", so ASSERT it rather than assuming it — the previous
+        // version of this cell claimed unsearchability and never checked any search.
+        await pollUntilSearchHitGone(reMarker, rec.id!, 30_000, 'HYBRID', testStartedAt);
+
+        // Still stored, still archived, still listed — the re-assert is not a delete.
+        const loaded = await client.records.getRecord({ id: rec.id! });
+        expect(loaded.status).toBe('ARCHIVED');
+        expect(await listContainsRecord(recordType, rec.id!)).toBe(true);
+    }, 180_000);
+
     test('archived record is still findable by GET /v1/records list', async () => {
         // A second, independent record archived at rest (no search round-trip) —
         // isolates the "archived stays listed" contract from the search-flip

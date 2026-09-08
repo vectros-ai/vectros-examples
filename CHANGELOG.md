@@ -5,6 +5,49 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.0 — 2026-09-07
+
+### Added
+
+- **The TypeScript examples cover the 0.43.0 surface**, roughly doubling what they
+  demonstrate about writing several things at once:
+
+  - **Batch record writes** — both commit modes of `POST /v1/records/batch` and the
+    difference between them, the per-item result list (which is what you inspect,
+    since the response is HTTP 200 even when every item failed), and the two item
+    outcomes that only exist in this release: `forbidden`, meaning the fix is to
+    your credential rather than to the item, and `not_committed`, meaning the item
+    was fine and a different one aborted the batch. Also shown: an item may depend
+    on a row an earlier item wrote in the same `all_or_nothing` batch.
+  - **Running a stored script** — `POST /v1/scripts/execute`, including what a
+    script sees of its own uncommitted writes: a list subtracts what it deleted and
+    shows what it updated, a second write to one row builds on the first, and a
+    uniqueness guard sees a row staged moments earlier. Plus the `Idempotency-Key`
+    replay.
+  - **Storing scripts and declaring trigger rules** — version immutability, the
+    schema opt-in a rule requires, the manifest vocabulary, and the couplings that
+    stop a schema being deleted or reconfigured out from under a live rule.
+  - **The scope qualifier grammar** — which resources take a `:<qualifier>` on which
+    operations, including the new `scripts:x:<name>`, and why an entry whose
+    qualifier would be ignored is refused when you mint it rather than accepted and
+    quietly disregarded.
+  - **Schema field ids the platform reserves** in the search index, and the ways
+    that check deliberately does not over-reach.
+  - **Browser preflight** — the headers a browser-hosted SDK caller needs permitted
+    in order to read an API error at all.
+  - **`resolvedScope` and `scopeFilters`**, **`status` validation on the update
+    paths**, and **`externalId` collisions** on document re-type and entity update.
+
+### Changed
+
+- **Every language example now targets Vectros SDK 0.43.0** (`^0.43.0` for TypeScript,
+  `>=0.43.0,<0.44.0` for Python, `0.43.0` for Java). One thing to know before you
+  upgrade a project built from these examples: 0.43.0 removes `PENDING` from the
+  accepted values of the `status` field on a user *request*, which narrows a
+  generated enum. Code that names the `PENDING` member of the request type will no
+  longer compile — switch to the response type's enum, or to the string literal.
+  Nothing in these examples used it.
+
 ## 0.17.0 — 2026-08-30
 
 ### Added
