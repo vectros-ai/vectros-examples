@@ -7,7 +7,7 @@
  * with documents). Each test demonstrates a real application workflow.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, sleep, withRateLimitRetry } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, sleep, withRateLimitRetry, expectReject } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 
@@ -450,5 +450,190 @@ describe('records', () => {
         expect(tomb).toBeDefined();
         const tombObj = tomb as { id?: string; recordId?: string };
         expect(tombObj.id ?? tombObj.recordId ?? rec.id).toBeTruthy();
+    });
+
+    // The tombstone response was narrowed in this release to exactly the
+    // fields that describe the deletion fact itself. Everything about who
+    // owned the deleted record, or the platform's internal audit/retention
+    // bookkeeping for it, is no longer served — see this release's
+    // CHANGELOG migration note for the full list of removed fields.
+    test('tombstone response is narrowed to exactly the documented deletion-fact fields', async () => {
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: {
+                name: 'Tombstone Shape Test ' + uniqueTag(),
+                notes: 'soon to be deleted',
+                department: 'general',
+                email: `${uniqueTag()}@test.com`,
+            },
+            userId,
+            scopes: [`org:${orgEntityId}`],
+        } });
+        await pollUntilIndexed(rec.id!, 'record');
+        await client.records.deleteRecord({ id: rec.id! });
+        await sleep(2_000);
+
+        const tomb = await client.records.getRecordTombstone({ id: rec.id! });
+        const tombObj = tomb as Record<string, unknown>;
+
+        // (a) the six documented fields are present with truthy values.
+        expect(tombObj.id).toBeTruthy();
+        expect(tombObj.recordType).toBe(recordType);
+        expect(tombObj.deletedBy).toBeTruthy();
+        expect(tombObj.deleteVersionId).toBeTruthy();
+        expect(tombObj.deletionReason).toBeTruthy();
+        expect(tombObj.deletedAt).toBeTruthy();
+
+        // (b) none of the fields this narrowing removed are present.
+        const removedFields = [
+            'ownerKey', 'eraseOwnerKey', 'eraseClientKey', 'eraseContextId',
+            'auditDisposition', 'retainUntil', 'tenantId', 'callerId', 'traceId',
+        ];
+        for (const field of removedFields) {
+            expect(tombObj).not.toHaveProperty(field);
+        }
+    });
+
+    // A scoped credential now needs a grant for the DELETED RECORD'S OWN
+    // type to read its tombstone — a credential scoped to a different type
+    // gets the same uniform 404 as a nonexistent id (no existence oracle).
+    test('scoped credential needs a grant for the deleted record\'s own type — a different type 404s', async () => {
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: {
+                name: 'Tombstone Type-Scope Test ' + uniqueTag(),
+                notes: 'soon to be deleted',
+                department: 'general',
+                email: `${uniqueTag()}@test.com`,
+            },
+            userId,
+            scopes: [`org:${orgEntityId}`],
+        } });
+        await pollUntilIndexed(rec.id!, 'record');
+        await client.records.deleteRecord({ id: rec.id! });
+        await sleep(2_000);
+
+        // Sanity: the tombstone genuinely exists (root client) before proving
+        // the wrongly-scoped credential can't reach it.
+        await client.records.getRecordTombstone({ id: rec.id! });
+
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: [`records:r:smoke_other_type_${uniqueTag()}`] },
+        })) as MintedToken;
+        const wrongTypeClient = getScopedClient(minted.token);
+        await expectReject(wrongTypeClient.records.getRecordTombstone({ id: rec.id! }), 404);
+    });
+
+    // Positive control for the two denial tests here: a SCOPED credential
+    // (not the unscoped root client the earlier ANCHOR tombstone test uses)
+    // carrying the right type-qualified grant and no data_scope restriction
+    // at all can still read the tombstone.
+    test('scoped credential with records:r:<type> and no data_scope CAN read the tombstone', async () => {
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: {
+                name: 'Tombstone No-Restriction Test ' + uniqueTag(),
+                notes: 'soon to be deleted',
+                department: 'general',
+                email: `${uniqueTag()}@test.com`,
+            },
+            userId,
+            scopes: [`org:${orgEntityId}`],
+        } });
+        await pollUntilIndexed(rec.id!, 'record');
+        await client.records.deleteRecord({ id: rec.id! });
+        await sleep(2_000);
+
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: [`records:r:${recordType}`] },
+        })) as MintedToken;
+        const unrestricted = getScopedClient(minted.token);
+        const tomb = await unrestricted.records.getRecordTombstone({ id: rec.id! });
+        expect(tomb).toBeDefined();
+    });
+
+    // A credential whose grant carries ANY data_scope restriction can no
+    // longer read tombstones at all — even one that would ordinarily ADMIT
+    // the record's real owner on a live read. The tombstone route has no
+    // live row left to check ownership against, so it denies uniformly
+    // rather than reconstruct ownership from what it does still have.
+    test('a data_scope restriction denies tombstone reads even when it matches the record\'s real owner', async () => {
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: {
+                name: 'Tombstone Data-Scope Test ' + uniqueTag(),
+                notes: 'soon to be deleted',
+                department: 'general',
+                email: `${uniqueTag()}@test.com`,
+            },
+            userId,
+            scopes: [`org:${orgEntityId}`],
+        } });
+        await pollUntilIndexed(rec.id!, 'record');
+        await client.records.deleteRecord({ id: rec.id! });
+        await sleep(2_000);
+
+        // This restriction genuinely matches the deleted record's real owner
+        // (userId) — an ordinary read of the LIVE record with this exact
+        // data_scope would have been admitted. Still denied here.
+        const minted = (await client.auth.mintToken({
+            scope: {
+                allowedActions: [`records:r:${recordType}`],
+                dataScope: { userId: [userId] },
+            },
+        })) as MintedToken;
+        const restricted = getScopedClient(minted.token);
+        await expectReject(restricted.records.getRecordTombstone({ id: rec.id! }), 404);
+    });
+
+    // DELETE /v1/schemas/{id} refuses with 409 while a document is still
+    // bound to the schema (a document's schemaId), separately from the
+    // existing "records of this type still exist" guard. Own throwaway
+    // schema + document: the ANCHOR schema above only declares the `record`
+    // surface, and this test's own delete-schema call must not race the
+    // shared schema's afterAll cleanup.
+    test('DELETE /v1/schemas/{id} refuses 409 while a document is bound, then permits after it is deleted', async () => {
+        const docSchema = await client.schemas.createSchema({ body: {
+            typeName: `smoke_docbind_${uniqueTag()}`.replace(/-/g, '_'),
+            displayName: 'Smoke Test Document Binding Schema',
+            indexMode: 'NONE',
+            allowedSurfaces: ['document'],
+            fields: [{ fieldId: 'note', fieldType: 'string', required: false }],
+        } });
+        const docSchemaId = docSchema.id!;
+        let boundDocId: string | undefined;
+
+        try {
+            const doc = await client.documents.ingestDocument({ body: {
+                title: 'Schema Binding Test ' + uniqueTag(),
+                text: 'A document bound to a schema, used to prove the delete-schema guard.',
+                indexMode: 'NONE',
+                schemaId: docSchemaId,
+            } });
+            boundDocId = doc.id!;
+
+            // A document is still bound — deleteSchema must refuse.
+            await expectReject(client.schemas.deleteSchema({ id: docSchemaId }), 409);
+
+            // Unbind by deleting the document, then confirm the guard lifts —
+            // proving it isn't a permanent lock on the schema.
+            await client.documents.deleteDocument({ id: doc.id! });
+            boundDocId = undefined;
+            await sleep(2_000);
+            await client.schemas.deleteSchema({ id: docSchemaId });
+        } finally {
+            // Best-effort: if an assertion above threw before either delete
+            // landed, don't leave the throwaway schema/document behind.
+            if (boundDocId) {
+                await tryCleanup('delete document-binding doc', () =>
+                    client.documents.deleteDocument({ id: boundDocId! }));
+            }
+            await tryCleanup('delete document-binding schema', () =>
+                client.schemas.deleteSchema({ id: docSchemaId }));
+        }
     });
 });

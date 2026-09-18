@@ -34,7 +34,7 @@
 import { VectrosClient } from '@vectros-ai/sdk';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, sleep, pollUntil, pollUntilIndexed, collectStream } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
 
@@ -867,6 +867,150 @@ describe('capabilities (granted_capabilities)', () => {
             } finally {
                 await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
                 await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // accounting-of-disclosures — GET /v1/admin/access-log's per-disclosure
+    // `subjects[]` array: a disclosed row reports EVERY ownership dimension it
+    // carries (not a single winner), and the accounting query answers on ANY
+    // of them.
+    // -----------------------------------------------------------------------
+
+    describe('accounting-of-disclosures', () => {
+        interface DisclosureSubject { type: string; id: string; }
+        interface DisclosureRow {
+            id: string;
+            subjects?: DisclosureSubject[];
+            action?: string;
+            resourceType?: string;
+            resourceId?: string;
+        }
+        interface DisclosurePage { data: DisclosureRow[]; }
+
+        test('a read of a row owned in TWO dimensions reports both subjects, and is found by querying EITHER one', async () => {
+            const recordType = `smoke_disclosure_${uniqueTag()}`;
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const org = await client.identity.createEntity({ namespace: 'org', body: {
+                externalId: uniqueTag(), name: 'Disclosure Org',
+            } });
+            let schemaId: string | undefined;
+            let recordId: string | undefined;
+            try {
+                // Read-access logging is opt-in per schema — enable it here so the read below
+                // actually writes a row.
+                const schema = await client.schemas.createSchema({ body: {
+                    typeName: recordType, displayName: 'Disclosure Probe', indexMode: 'NONE',
+                    allowedSurfaces: ['record'], capabilities: { readAccessLog: true },
+                } });
+                schemaId = schema.id!;
+                const record = await client.records.createRecord({ body: {
+                    typeName: recordType, schemaId, userId: user.id, scopes: [`org:${org.id}`],
+                } });
+                recordId = record.id!;
+
+                // A single governed read discloses BOTH ownership dimensions at once.
+                await client.records.getRecord({ id: recordId });
+
+                const fixedRecordId = recordId!;
+                const row = await pollUntil<DisclosureRow>('disclosure row queryable by the user subject', async () => {
+                    const page = (await client.auth.getAccessLog({
+                        subjectType: 'user', subjectId: user.id!, contextId: 'default',
+                        resourceId: fixedRecordId, limit: 10,
+                    })) as unknown as DisclosurePage;
+                    return page.data.find((r) => r.resourceId === fixedRecordId);
+                }, 30_000, 2_000);
+
+                const subjectKinds = (row.subjects ?? []).map((s) => `${s.type}:${s.id}`);
+                expect(subjectKinds).toContain(`user:${user.id}`);
+                expect(subjectKinds).toContain(`org:${org.id}`);
+
+                // The SAME disclosure must be found by querying the OTHER ownership dimension —
+                // previously only one dimension's query would have matched.
+                const byOrg = (await client.auth.getAccessLog({
+                    subjectType: 'org', subjectId: org.id!, contextId: 'default',
+                    resourceId: fixedRecordId, limit: 10,
+                })) as unknown as DisclosurePage;
+                const rowByOrg = byOrg.data.find((r) => r.resourceId === fixedRecordId);
+                expect(rowByOrg).toBeDefined();
+                expect(rowByOrg!.id).toBe(row.id);
+            } finally {
+                if (recordId) await tryCleanup('disclosure record', () => client.records.deleteRecord({ id: recordId! }));
+                if (schemaId) await tryCleanup('disclosure schema', () => client.schemas.deleteSchema({ id: schemaId! }));
+                await tryCleanup('disclosure user', () => client.identity.deleteUser({ id: user.id! }));
+                await tryCleanup('disclosure org', () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
+            }
+        });
+
+        test('POST /v1/documents/{id}/ask is now recorded in the read-access log', async () => {
+            const docSchema = await client.schemas.createSchema({ body: {
+                typeName: `smoke_askdisclosure_${uniqueTag()}`.replace(/-/g, '_'),
+                displayName: 'Ask Disclosure Probe', indexMode: 'NONE',
+                allowedSurfaces: ['document'], capabilities: { readAccessLog: true },
+            } });
+            let docId: string | undefined;
+            try {
+                const doc = await client.documents.ingestDocument({ body: {
+                    title: 'Ask disclosure doc ' + uniqueTag(),
+                    text: 'ACE inhibitors are a first-line treatment for hypertension.',
+                    indexMode: 'HYBRID',
+                    schemaId: docSchema.id!,
+                } });
+                docId = doc.id!;
+                const fixedDocId = docId!;
+                await pollUntilIndexed(fixedDocId, 'document');
+
+                // Previously this call left no access-log row at all, unlike the equivalent
+                // /v1/rag retrieval — the row must now show up under this document's resourceId,
+                // distinguishable by its `action`.
+                const stream = await client.inference.documentAsk({
+                    id: fixedDocId, prompt: 'What drug class does this describe?', maxTokens: 32,
+                });
+                await collectStream(stream);
+
+                const row = await pollUntil<DisclosureRow>('ask disclosure row queryable by resourceId', async () => {
+                    const page = (await client.auth.getAccessLog({
+                        // This axis requires resourceType AND resourceId TOGETHER --
+                        // resourceId alone matches nothing, no matter how long you poll.
+                        resourceType: 'document', resourceId: fixedDocId, contextId: 'default', limit: 10,
+                    })) as unknown as DisclosurePage;
+                    return page.data.find((r) => r.resourceId === fixedDocId && r.action === 'rag');
+                }, 30_000, 2_000);
+
+                expect(row.resourceType).toBe('document');
+            } finally {
+                if (docId) {
+                    await tryCleanup('ask disclosure doc', () => client.documents.deleteDocument({ id: docId! }));
+                    await sleep(2_000); // let the doc↔schema unbind propagate before deleting the schema
+                }
+                await tryCleanup('ask disclosure schema', () => client.schemas.deleteSchema({ id: docSchema.id! }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // readAccessLogDefault — AppContextResponse's read-access-logging
+    // coverage-signal field: whether PHI read-access logging is on by default
+    // for a context (a schema's own capability flag still overrides it).
+    // -----------------------------------------------------------------------
+
+    describe('readAccessLogDefault', () => {
+        test('GET/POST /v1/app-contexts carry readAccessLogDefault, null on a freshly created context', async () => {
+            const ctx = ('capr' + uniqueTag()).slice(0, 31);
+            const created = await client.auth.createAppContext({
+                body: { contextId: ctx, name: 'readAccessLogDefault probe' },
+            });
+            try {
+                // This surface exposes the field for reading, but as of this release there is no
+                // request field on create/update that sets it — so every context this API can
+                // create reports it as null (no context default set). Assert the shape rather
+                // than a value this API has no way to produce.
+                expect(created.readAccessLogDefault ?? null).toBeNull();
+                const fetched = await client.auth.getAppContext({ contextId: ctx });
+                expect(fetched.readAccessLogDefault ?? null).toBeNull();
+            } finally {
+                await tryCleanup('readAccessLogDefault context', () => client.auth.deleteAppContext({ contextId: ctx, confirm: ctx }));
             }
         });
     });

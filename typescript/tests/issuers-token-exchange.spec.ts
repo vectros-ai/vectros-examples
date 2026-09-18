@@ -30,7 +30,7 @@
  *     this suite.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup, expectReject } from '../src/helpers';
+import { uniqueTag, tryCleanup, expectReject, pollUntil, SKIP_SLOW } from '../src/helpers';
 
 /** Base64url-encode without padding (Buffer's 'base64url' covers Node ≥ 15.7). */
 function b64url(input: string | Buffer): string {
@@ -277,6 +277,48 @@ describe('issuers + token exchange', () => {
                 issuerId, issuer: `https://${uniqueTag()}.example.com/`,
                 jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
                 audience: `aud-${uniqueTag()}`, contextId: 'no-such-context-' + uniqueTag(),
+            }), 400);
+        });
+
+        // 0.44.0 — an on-path attacker who can substitute a plaintext fetch's response could swap
+        // the signing keys this platform trusts for the issuer, so jwksUri is validated https://-only
+        // at registration. Any host works here — this is refused at validation, before any real
+        // fetch is ever attempted.
+        test('jwksUri must use the https:// scheme — an http:// value is rejected at registration', async () => {
+            await expectReject(client.auth.registerIssuer({
+                issuerId: ('httpjwks' + uniqueTag()).slice(0, 31),
+                issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'http://example.com/.well-known/jwks.json',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId,
+            }), 400);
+        });
+
+        // 0.44.0 — userinfoUri carries the presented token as a bearer credential, so the identical
+        // plaintext-fetch exposure applies: an on-path attacker could both harvest that token and
+        // control the response this platform trusts back. Reuses a real https:// jwksUri so this
+        // proves userinfoUri's OWN validation, not a jwksUri rejection landing first.
+        test('userinfoUri must use the https:// scheme — an http:// value is rejected at registration', async () => {
+            await expectReject(client.auth.registerIssuer({
+                issuerId: ('httpuinfo' + uniqueTag()).slice(0, 31),
+                issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                userinfoUri: 'http://example.com/userinfo',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId,
+            }), 400);
+        });
+
+        // 0.44.0 — restrictedToDomain's full contract (domain-scoped uniqueness + `hd`-claim matching
+        // at exchange time) needs a real DNS-TXT-verified domain via the separate, owner-authenticated
+        // developer-portal flow, which this suite cannot construct. What IS reachable here: an
+        // unverified domain name is refused outright, before any of that domain-scoped machinery
+        // (the uniqueness re-scoping, the physical claim) is ever reached.
+        test('restrictedToDomain naming a domain that is not VERIFIED for the account is rejected at registration', async () => {
+            await expectReject(client.auth.registerIssuer({
+                issuerId: ('unverdom' + uniqueTag()).slice(0, 31),
+                issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId,
+                restrictedToDomain: `unverified-${uniqueTag()}.example.com`,
             }), 400);
         });
 
@@ -551,6 +593,48 @@ describe('issuers + token exchange', () => {
             }
         });
 
+        // 0.44.0 — subClaim names which verified claim becomes a bound user's identity key, so a
+        // genuine CHANGE (not a round-trip of the current value) is refused once the issuer has ever
+        // bound a real user — the same "bound" predicate DELETE already gates on, above. This reuses
+        // that exact login-free construction (invitation activation's externalSubject field is the
+        // one call site that honors a caller-supplied value — no live JWKS/OIDC round trip needed to
+        // reach a genuinely bound state).
+        test('subClaim change is refused with 400 once a real user is bound via this issuer', async () => {
+            const reg = await registerThrowawayIssuer();
+            const invite = await client.auth.createInvite({
+                email: `smoke-subclaim-bound-${uniqueTag()}@example.com`,
+                contextId: ctxId,
+                accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                sendEmail: false,
+            });
+            const userId = invite.userId!;
+            try {
+                await client.identity.updateUser({
+                    id: userId,
+                    body: {
+                        externalId: userId,
+                        status: 'ACTIVE',
+                        inviteToken: invite.inviteToken!,
+                        externalSubject: `${reg.issuerId}#sub-${uniqueTag()}`,
+                        emailVerifiedAttestation: true,
+                    },
+                });
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, subClaim: 'preferred_username',
+                }), 400);
+                // Unchanged after the rejection — still the (unset) default.
+                const stillOriginal = await client.auth.getIssuer({ issuerId: reg.issuerId });
+                expect(stillOriginal.subClaim).toBe('sub');
+            } finally {
+                // Delete the bound user FIRST — "bound" is determined by a live scan for a user
+                // still carrying this issuer's identity prefix, so once it's gone the issuer is no
+                // longer bound and can itself be deregistered (same ordering the DELETE-409 test
+                // above uses).
+                await tryCleanup('bound user', () => client.identity.deleteUser({ id: userId }));
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
+            }
+        });
+
         test('PUT 403 is the capability gate ONLY — an ordinary scoped token is refused even though the issuer genuinely exists', async () => {
             const reg = await registerThrowawayIssuer();
             try {
@@ -577,6 +661,102 @@ describe('issuers + token exchange', () => {
                 issuerId: missing, subClaim: 'x',
             }), 404);
         });
+    });
+
+    // -----------------------------------------------------------------------
+    // DELETE /v1/app-contexts/{contextId} cascades to a bound issuer registration
+    // -----------------------------------------------------------------------
+
+    describe('deleting an app context permanently retires a bound issuer registered under it', () => {
+        // 0.44.0 — deleting an app context now tears down every issuer registration still bound to
+        // it, and if that registration ever had a bound user, its issuerId is PERMANENTLY retired
+        // (the same "was permanently retired" invariant/message the pre-existing operator
+        // force-release path already carries): a fresh registration attempt under a NEW context with
+        // the same issuerId stays refused forever, because the users bound through this issuerId are
+        // tenant-wide and survive the context teardown untouched — re-registering the slug under a
+        // new trust anchor would silently re-point them.
+        //
+        // A login-free way to reach a genuinely bound state exists on this suite already (see
+        // "DELETE is refused with 409 once a real user is bound" above, and the subClaim test in the
+        // PUT describe block): invitation activation's externalSubject field is the one call site
+        // that honors a caller-supplied value, so no live JWKS/OIDC round trip is needed.
+        //
+        // The teardown itself is an async, per-tick background drain (same convergence primitive as
+        // app-contexts.spec.ts's own SLOW destroy-path test, measured there at ~3 minutes) — so this
+        // polls rather than asserting immediately. Until the drain has actually deleted the old row,
+        // a re-registration attempt with the same issuerId hits the ordinary tenant-wide idempotent
+        // echo instead (200, echoing the OLD, now-deleted-context row) — that is treated as "not yet
+        // converged", not a test failure; only a genuine 4xx or an unexpected status ends the poll.
+        (!SKIP_SLOW ? test : test.skip)(
+            "deleting a context permanently retires its bound issuer's issuerId — a fresh " +
+            'registration under a new context stays refused (SLOW — background teardown drain)',
+            async () => {
+                const throwawayCtxId = ('retctx' + uniqueTag()).slice(0, 31);
+                await client.auth.createAppContext({ body: { contextId: throwawayCtxId, name: 'issuer retirement spec' } });
+                const issuerId = ('retire' + uniqueTag()).slice(0, 31);
+                const issuer = `https://${uniqueTag()}.example.com/`;
+                const audience = `aud-${uniqueTag()}`;
+                await client.auth.registerIssuer({
+                    issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience, contextId: throwawayCtxId,
+                });
+
+                const invite = await client.auth.createInvite({
+                    email: `smoke-retire-bound-${uniqueTag()}@example.com`,
+                    contextId: throwawayCtxId,
+                    accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+                    sendEmail: false,
+                });
+                const userId = invite.userId!;
+                await client.identity.updateUser({
+                    id: userId,
+                    body: {
+                        externalId: userId,
+                        status: 'ACTIVE',
+                        inviteToken: invite.inviteToken!,
+                        externalSubject: `${issuerId}#sub-${uniqueTag()}`,
+                        emailVerifiedAttestation: true,
+                    },
+                });
+
+                // Deliberately do NOT delete the issuer or the user first — the whole point under
+                // test is that context teardown itself tears this bound registration down.
+                await client.auth.deleteAppContext({ contextId: throwawayCtxId, confirm: throwawayCtxId });
+
+                const replacementCtxId = ('retctx2' + uniqueTag()).slice(0, 31);
+                await client.auth.createAppContext({
+                    body: { contextId: replacementCtxId, name: 'issuer retirement spec replacement' },
+                });
+                try {
+                    const rejection = await pollUntil(
+                        'issuerId permanently retired after its bound context is torn down',
+                        async () => {
+                            try {
+                                await client.auth.registerIssuer({
+                                    issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                                    audience, contextId: replacementCtxId,
+                                });
+                                // A 200/201 here means the drain hasn't deleted+retired the old row
+                                // yet (root still gets the tenant-wide idempotent echo of the OLD
+                                // throwawayCtxId row) — not yet converged, keep polling.
+                                return undefined;
+                            } catch (e) {
+                                const err = e as { statusCode?: number; body?: unknown };
+                                if (err.statusCode === 400) return err;
+                                throw e;
+                            }
+                        },
+                        240_000, 5_000,
+                    );
+                    expect(JSON.stringify(rejection.body)).toMatch(/permanently retired/i);
+                } finally {
+                    await tryCleanup('bound user', () => client.identity.deleteUser({ id: userId }));
+                    await tryCleanup('replacement context', () =>
+                        client.auth.deleteAppContext({ contextId: replacementCtxId, confirm: replacementCtxId }));
+                }
+            },
+            260_000,
+        );
     });
 
     // -----------------------------------------------------------------------

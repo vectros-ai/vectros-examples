@@ -226,7 +226,127 @@ describe('script execution time is charged, and itemised as well as counted', ()
             `vectros.records.create({ typeName: '${workType}', payload: { note: input.params.tag } });`,
         );
 
-        // More work, less execution-time charge.
-        expect(working).toBeLessThanOrEqual(bare);
+        // More work, less execution-time charge -- with the SAME +/-2mC tolerance the sibling
+        // assertion above already applies, and for the identical reason: this value is a floor
+        // against a shared, per-tenant running total that every concurrent execution on the
+        // account also increments, so a concurrent script can shift either side by a milli-credit
+        // even though nothing about this run's own billable time changed. The comparison still
+        // fails loudly on the thing it exists to catch -- a naive implementation charging MORE for
+        // more work -- because that failure shows up as a gap far wider than 2mC.
+        expect(working).toBeLessThanOrEqual(bare + 2);
     }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// 0.44.0 — POST-shaped reads now meter identically to their GET equivalents.
+//
+// A handful of read endpoints happen to arrive as POST (a body-based lookup, a batch-get, a
+// full-text/semantic search) rather than GET. Before this release the read meter keyed purely on
+// HTTP verb, so every one of these accrued NOTHING at all — not a smaller charge, no charge — no
+// matter what the request actually read. They now take the same metered-read path their GET
+// equivalent already used, moving the same account-level read-call counter (`reads.calls.used`) a
+// GET does. `/v1/search` has no GET form at all, so it was an entirely unmetered surface.
+//
+// Asserted as a NONZERO delta rather than an exact one, and deliberately so: this spec's own
+// getUsage() calls are themselves GETs, so each one nudges the very counter under test — the same
+// self-measurement effect the top-of-file comment already notes for `credits.usedMilli`. "was
+// always zero, now moves" is the falsifiable claim this release makes; the exact increment isn't.
+// ---------------------------------------------------------------------------
+
+describe('POST-shaped reads meter the same read counter as their GET equivalent (0.44.0)', () => {
+    let schemaId: string;
+    let recordType: string;
+    let recordId: string;
+
+    beforeAll(async () => {
+        recordType = `smoke_postread_${uniqueTag()}`;
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: recordType,
+            displayName: 'POST-Shaped Read Probe',
+            indexMode: 'NONE',
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'tag', fieldType: 'string', required: false }],
+            lookupFields: [{ fieldName: 'tag', unique: false }],
+        } });
+        schemaId = schema.id!;
+        const rec = await client.records.createRecord({ body: {
+            typeName: recordType,
+            schemaId,
+            payload: { tag: 'post-read-probe' },
+        } });
+        recordId = rec.id!;
+    });
+
+    afterAll(async () => {
+        await tryCleanup('delete record', () => client.records.deleteRecord({ id: recordId }));
+        await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
+    });
+
+    test('POST /v1/records/lookup (lookupRecordsByBody) now meters a read, where it used to meter nothing', async () => {
+        const before = await usageReport();
+        await client.records.lookupRecordsByBody({ type: recordType, field: 'tag', value: 'post-read-probe' });
+        const after = await usageReport();
+        expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
+    });
+
+    test('POST /v1/records/batch-get now meters a read, where it used to meter nothing', async () => {
+        const before = await usageReport();
+        await client.records.batchGetRecords({ ids: [recordId] });
+        const after = await usageReport();
+        expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
+    });
+
+    test('POST /v1/search now meters a read — this surface has no GET form at all, so it was entirely unmetered before', async () => {
+        const before = await usageReport();
+        await client.search.content({ query: uniqueTag(), mode: 'TEXT', limit: 1 });
+        const after = await usageReport();
+        expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
+    });
+
+    test('POST /v1/documents/lookup (lookupDocumentsByBody) now meters a read, where it used to meter nothing', async () => {
+        // externalId needs no schema declaration -- the cheapest fixture for this probe.
+        const extId = uniqueTag();
+        const doc = await client.documents.ingestDocument({ body: {
+            title: 'POST-shaped read probe', text: 'n/a', indexMode: 'NONE', externalId: extId,
+        } });
+        try {
+            const before = await usageReport();
+            await client.documents.lookupDocumentsByBody({ type: 'document', field: 'externalId', value: extId });
+            const after = await usageReport();
+            expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
+        } finally {
+            await tryCleanup('post-read probe document', () => client.documents.deleteDocument({ id: doc.id! }));
+        }
+    });
+
+    // Not covered here: POST /v1/users/lookup and POST /v1/entities/{namespace}/lookup, the
+    // remaining two of the six routes this release re-metered. Both route through the same
+    // schema-declared-lookup-field mechanism as the two record/document probes above, so the
+    // metering wiring itself is unlikely to differ per route -- but building a correct
+    // fixture for either (a user- or entity-surfaced schema with a bound lookup field) is
+    // more setup than this file's existing pattern reaches for, and getting it wrong under
+    // time pressure would be worse than leaving the gap named. Flagging rather than silently
+    // omitting, per this suite's own coverage-table discipline.
+});
+
+// ---------------------------------------------------------------------------
+// 0.44.0 — the reserved batch-lookup stub takes the free-allowance read path too, not the
+// write-credit-ceiling one.
+//
+// The full loosening this release makes to these routes — a caller over its monthly credit
+// ceiling but within its free read allowance now succeeds where it used to get a 402 — needs an
+// over-ceiling tenant to observe directly, and that isn't something a smoke run against a shared
+// staging tenant can construct without draining its real credit balance (see
+// negative-paths.spec.ts's note on the equivalent 402 case for prepaid inference balance — the
+// same non-destructive-tenant constraint applies here). What IS cheap to check, with no credits
+// involved at all: the reserved stub still answers with its documented 501, not a 402/403 a
+// caller on the old write-path could have hit before ever reaching the stub.
+// ---------------------------------------------------------------------------
+
+describe('POST /v1/records/lookup/batch — reserved stub takes the read path, not the write-credit path (0.44.0)', () => {
+    test('returns its documented 501, not a write-path 402/403', async () => {
+        await expect(client.records.batchLookupRecords({
+            requests: [{ ref: 'r1', type: 'smoke_nonexistent_type', field: 'tag', value: 'x' }],
+        })).rejects.toMatchObject({ statusCode: 501 });
+    });
 });

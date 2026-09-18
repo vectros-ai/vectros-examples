@@ -47,7 +47,7 @@ def base_url() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit visibility (gotcha-sdk-silent-429-retry-masks-load-only-flakes)
+# Rate-limit visibility
 # ---------------------------------------------------------------------------
 # The partner API's rate limiter is a SHARED, per-tenant, 60s fixed-window
 # counter -- every concurrent caller against the same tenant counts against
@@ -57,8 +57,8 @@ def base_url() -> str:
 # and indistinguishable from a genuine hang or (worse, as measured while
 # writing test_namespaces.py's membership-revocation test) able to shift a
 # request's real send time late enough to observe a state a request sent
-# promptly would not have. This is the Python analogue of
-# smoke-tests/src/rateLimitFetch.ts: pays the SAME wait but VISIBLY (a
+# promptly would not have. This is the Python analogue of the TypeScript
+# example's rateLimitFetch.ts: pays the SAME wait but VISIBLY (a
 # printed warning, so a slow run is diagnosable) and BOUNDED to a small,
 # fixed attempt count -- not the SDK's opaque retry layered on top of this.
 # Every client this module constructs gets both this transport AND

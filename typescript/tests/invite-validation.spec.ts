@@ -1,6 +1,5 @@
 /**
- * invite-validation.spec.ts — two validation rules around sub-user
- * invitations.
+ * invite-validation.spec.ts — validation rules around sub-user invitations.
  *
  *   1. Email is frozen on a user while an invitation to them is outstanding —
  *      PUT /v1/users/{id} and POST /v1/users?upsert=true must both 400 on an
@@ -8,6 +7,9 @@
  *   2. An access-profile roleId (invite, profile create/upsert, scoped-key
  *      mint bound to such a profile) may not name a role that doesn't exist
  *      in the app context.
+ *   3. An invited user cannot reach ACTIVE except by accepting the
+ *      invitation — moving it to SUSPENDED and back to ACTIVE, with no
+ *      invite token, does not bypass acceptance.
  */
 import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
@@ -137,6 +139,49 @@ describe('invite validation', () => {
                 await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
             }
         });
+    });
+
+    // -------------------------------------------------------------------
+    // 0.44.0 — an invited user cannot reach ACTIVE by way of SUSPENDED,
+    // bypassing invite acceptance
+    // -------------------------------------------------------------------
+    describe('an invited (still-PENDING) user cannot be activated via a SUSPENDED hop', () => {
+        test('PUT /v1/users/{id}: PENDING -> SUSPENDED -> ACTIVE is refused on the second hop', async () => {
+            const email = `${uniqueTag()}@test.com`;
+            const invite = await client.auth.createInvite({
+                email, contextId: ctxId, sendEmail: false,
+                accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+            });
+            const userId = invite.userId!;
+            try {
+                const invited = await client.identity.getUser({ id: userId });
+                expect(invited.status).toBe('PENDING');
+
+                // Hop 1: PENDING -> SUSPENDED is a legitimate transition on its own.
+                const suspended = await client.identity.updateUser({
+                    id: userId, body: { externalId: userId, status: 'SUSPENDED' },
+                });
+                expect(suspended.status).toBe('SUSPENDED');
+
+                // Hop 2: SUSPENDED -> ACTIVE with no invite token presented. This used to
+                // succeed, silently completing an invitation the target never accepted.
+                await expect(client.identity.updateUser({
+                    id: userId, body: { externalId: userId, status: 'ACTIVE' },
+                })).rejects.toMatchObject({ statusCode: 400 });
+
+                const reread = await client.identity.getUser({ id: userId });
+                expect(reread.status).toBe('SUSPENDED');
+            } finally {
+                await tryCleanup('invited user', () => client.identity.deleteUser({ id: userId }));
+            }
+        });
+
+        // Control: a user with no outstanding invite (created directly ACTIVE) can still be
+        // suspended and reactivated freely — this rule targets the invite-acceptance gate
+        // specifically, not a general SUSPENDED -> ACTIVE lockout. status-validation.spec.ts's
+        // 'PUT /v1/users/{id}' block already exercises exactly that transition on its shared
+        // probe user (one cell suspends it; every other cell's cleanup reactivates it with a
+        // plain ACTIVE PUT), so it is not duplicated here.
     });
 
     describe('an access-profile roleId may not name a nonexistent role', () => {

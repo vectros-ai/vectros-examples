@@ -24,6 +24,23 @@ def _unique_rank() -> int:
     return 10_000 + random.randint(0, 900_000)
 
 
+def _all_namespaces(client) -> list:
+    """Every tenant-wide namespace, draining `next_cursor` rather than trusting the
+    default page. A namespace registration is tenant-wide and the shared smoke
+    tenant accumulates them, so a single-page read finds a freshly registered
+    namespace only while the tenant happens to be small -- that is not a property
+    any assertion should depend on, since it fails as the tenant grows. Mirrors
+    `allNamespaces()` in namespaces.spec.ts."""
+    out: list = []
+    cursor = None
+    while True:
+        page = client.identity.list_namespaces(limit=100, **({"start_from": cursor} if cursor else {}))
+        out.extend(page.data or [])
+        cursor = page.next_cursor
+        if not cursor:
+            return out
+
+
 # -----------------------------------------------------------------------
 # Placement
 # -----------------------------------------------------------------------
@@ -43,8 +60,7 @@ def test_tenant_wide_registration_register_get_list_update_delete(client):
         updated = client.identity.update_namespace(namespace, namespace=namespace, specificity_rank=rank + 1)
         assert updated.specificity_rank == rank + 1
 
-        listed = client.identity.list_namespaces()
-        names = [n.namespace for n in (listed.data or [])]
+        names = [n.namespace for n in _all_namespaces(client)]
         assert namespace in names
     finally:
         client.identity.delete_namespace(namespace)

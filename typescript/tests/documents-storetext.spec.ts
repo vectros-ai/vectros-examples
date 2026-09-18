@@ -25,18 +25,18 @@
  */
 import * as fs from 'fs';
 import { client } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, withRateLimitRetry } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, withRateLimitRetry, presignedUploadHeaders } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE } from '../src/fixtures';
 
 const BASE_URL = process.env.VECTROS_API_BASE_URL!;
 const API_KEY = process.env.VECTROS_API_KEY!;
 
-async function putPdf(uploadUrl: string): Promise<void> {
+async function putPdf(upload: { uploadUrl?: string }): Promise<void> {
     const bytes = fs.readFileSync(SAMPLE_PDF_PATH);
-    const putResp = await fetch(uploadUrl, {
+    const putResp = await fetch(upload.uploadUrl!, {
         method: 'PUT',
         body: bytes,
-        headers: { 'Content-Type': 'application/pdf' },
+        headers: { 'Content-Type': 'application/pdf', ...presignedUploadHeaders(upload) },
     });
     expect(putResp.status).toBe(200);
 }
@@ -89,7 +89,7 @@ describe('documents (storeText retention contract)', () => {
             indexMode: 'TEXT',
         });
         docIds.push(upload.id!);
-        await putPdf(upload.uploadUrl!);
+        await putPdf(upload);
         await pollUntilIndexed(upload.id!, 'document', 120_000);
 
         const text = await client.documents.getDocumentText({ id: upload.id! });
@@ -108,7 +108,7 @@ describe('documents (storeText retention contract)', () => {
         });
         const id = upload.id!;
         docIds.push(id);
-        await putPdf(upload.uploadUrl!);
+        await putPdf(upload);
         await pollUntilIndexed(id, 'document', 120_000);
 
         // The retention choice persisted.

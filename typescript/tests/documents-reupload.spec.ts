@@ -12,7 +12,7 @@
  * spec is the regression gate. (The `upsert:true` variant of the same inherit
  * is covered by the backend unit tests.)
  */
-import { client } from '../src/client';
+import { client, getScopedClient } from '../src/client';
 import {
     uniqueTag,
     pollUntilIndexed,
@@ -20,7 +20,11 @@ import {
     pollUntilSearchHitGone,
     sleep,
     tryCleanup,
+    presignedUploadHeaders,
+    expectReject,
 } from '../src/helpers';
+
+interface MintedToken { token: string; expiresAt: number; }
 
 describe('documents (re-upload inherits indexMode)', () => {
     let testStartedAt: string;
@@ -58,7 +62,7 @@ describe('documents (re-upload inherits indexMode)', () => {
         const putOld = await fetch(first.uploadUrl!, {
             method: 'PUT',
             body: `Original file body. Marker ${OLD_MARKER}. Lorem ipsum dolor.`,
-            headers: { 'Content-Type': 'text/plain' },
+            headers: { 'Content-Type': 'text/plain', ...presignedUploadHeaders(first) },
         });
         expect(putOld.status).toBe(200);
 
@@ -82,7 +86,7 @@ describe('documents (re-upload inherits indexMode)', () => {
         const putNew = await fetch(second.uploadUrl!, {
             method: 'PUT',
             body: `Replacement file body. Marker ${NEW_MARKER}. Sit amet consectetur.`,
-            headers: { 'Content-Type': 'text/plain' },
+            headers: { 'Content-Type': 'text/plain', ...presignedUploadHeaders(second) },
         });
         expect(putNew.status).toBe(200);
 
@@ -187,5 +191,75 @@ describe('documents (re-upload inherits indexMode)', () => {
                 }
             });
         }
+    });
+});
+
+/**
+ * A re-upload is an update to an existing document, so it requires the
+ * `documents:u` scope — even against a document whose FIRST upload never
+ * completed (no bytes ever landed for its externalId). This closes a prior
+ * gap where that specific case could go through on `documents:c` alone,
+ * since re-initiating an upload against an existing externalId is
+ * "supplying an existing document's body" regardless of whether anything
+ * was ever actually uploaded to it.
+ */
+describe('documents (re-upload always requires documents:u)', () => {
+    let ownerUserId: string;
+    const docIds: string[] = [];
+
+    beforeAll(async () => {
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        ownerUserId = user.id!;
+    });
+
+    afterAll(async () => {
+        for (const id of docIds) {
+            await tryCleanup(`delete doc ${id}`, () => client.documents.deleteDocument({ id }));
+        }
+        await tryCleanup('delete user', () => client.identity.deleteUser({ id: ownerUserId }));
+    });
+
+    test('re-initiating an upload against an existing externalId (first upload never completed) requires documents:u, not just documents:c', async () => {
+        const externalId = `reupload-scope-${uniqueTag()}`;
+
+        // First upload: mint the presigned URL but never PUT any bytes — the
+        // externalId now identifies an existing document with no completed
+        // upload behind it.
+        const first = await client.documents.uploadDocument({
+            fileName: 'reupload-scope-smoke.txt',
+            fileType: 'text/plain',
+            indexMode: 'HYBRID',
+            userId: ownerUserId,
+            externalId,
+        });
+        docIds.push(first.id!);
+        expect(first.created).toBe(true);
+
+        // A token holding ONLY documents:c, correlated to this document's own
+        // owner, must still be refused — no bytes ever landed, but re-initiating
+        // against an existing externalId is an update, not a create.
+        const createOnly = (await client.auth.mintToken({
+            scope: { allowedActions: ['documents:c'], dataScope: { userId: [ownerUserId] } },
+        })) as MintedToken;
+        const createOnlyClient = getScopedClient(createOnly.token);
+        await expectReject(createOnlyClient.documents.uploadDocument({
+            fileName: 'reupload-scope-smoke.txt',
+            fileType: 'text/plain',
+            externalId,
+        }), 403);
+
+        // The identical re-upload succeeds once the token also holds documents:u.
+        const createAndUpdate = (await client.auth.mintToken({
+            scope: { allowedActions: ['documents:c', 'documents:u'], dataScope: { userId: [ownerUserId] } },
+        })) as MintedToken;
+        const createAndUpdateClient = getScopedClient(createAndUpdate.token);
+        const second = await createAndUpdateClient.documents.uploadDocument({
+            fileName: 'reupload-scope-smoke.txt',
+            fileType: 'text/plain',
+            externalId,
+        });
+        expect(second.created).toBe(false);
+        expect(second.id).toBe(first.id);
+        expect(second.uploadUrl).toMatch(/^https:\/\//);
     });
 });

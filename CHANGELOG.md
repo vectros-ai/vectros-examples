@@ -5,6 +5,46 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.1 — 2026-09-17
+
+### Added
+
+- **The TypeScript examples now demonstrate more of the Vectros API's behavior, not just its
+  happy path.** New coverage: script version listing (the `sourceOmitted`/`includeSource` split
+  and the `latest`-version lookup), a trigger rule's capability-gated grants (a control-plane
+  scope or a different principal both need an explicit capability), a deleted record's tombstone
+  (its narrowed response shape and its own scope requirements), why a credential bound to a
+  deleted user or a tearing-down app context stops working, invite acceptance being required
+  before an invited account can go active, idempotent delete handling, referential guards on
+  deleting a script or schema still in use, hardened issuer registration (rejecting an insecure
+  `http://` endpoint, locking a claim-defining field once real users are bound, restricting a
+  registration to a verified company domain), single-use presigned upload URLs, forced-download
+  responses, the accounting-of-disclosures `subjects` shape, and filtering the admin log by
+  resource. No existing example's documented behavior changed.
+
+### Fixed
+
+- **The TypeScript document-upload examples send the header a presigned upload URL requires.**
+  An API that makes presigned upload URLs single-use bakes a conditional-write header into the
+  URL's signature and names it in the upload response (`requiredHeaderName` /
+  `requiredHeaderValue`); a PUT without it is rejected by storage with a 403. The upload,
+  re-upload and `storeText` examples now read that header from the response and send it, and send
+  no extra header when the response names none, so they work against API versions on either side
+  of the change. The shared `presignedUploadHeaders` helper does the reading.
+
+- **The Java and Python rate-limit-visibility comments named an internal doc filename and
+  internal monorepo-relative file paths** instead of describing the mechanism and referring to
+  sibling examples by name. Reworded both; no behavioral change.
+
+### Changed
+
+- **The API-logs example checks a failed call's `errorCode` by its shape, not against a fixed
+  list.** It used to require every `errorCode` to be one of a hand-kept list of failure reasons,
+  and failed whenever the platform added a new one. It now checks what the API promises: an
+  upper-case token, with at least one present on a run that deliberately provokes a coded failure.
+
+- **Dependency maintenance** — repinned the TypeScript, Python, and Java examples to `0.44.0`.
+
 ## 0.18.0 — 2026-09-07
 
 ### Added

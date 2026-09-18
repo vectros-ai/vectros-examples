@@ -28,8 +28,11 @@
  *
  * ── SCOPE ────────────────────────────────────────────────────────────────────────────────────
  *
- * Declare-time only: every cell here is a synchronous accept or refusal, so this file stays in the
- * fast lane. Nothing here fires a rule (that is `trigger-firing.spec.ts`, slow lane).
+ * Declare-time only, with ONE deliberate exception: every other cell here is a synchronous accept
+ * or refusal, so this file stays in the fast lane. Nothing else here fires a rule (that is
+ * `trigger-firing.spec.ts`, slow lane) — except the "execution-time: an unreadable firing row..."
+ * cell near the end, which pins a projection-adjacent disclosure property that is only observable
+ * once a rule actually fires, and so pays the slow lane's real async wait for that one case.
  *
  * ⚠️ NOT COVERED, and deliberately: the 224 KB `record` + `previous` cap (`INPUT_TOO_LARGE`). It is
  * an EXECUTION-time failure, not a declare-time refusal, and reaching it needs a >224 KB inline
@@ -37,7 +40,7 @@
  * staging tenant, for a limit whose enforcement is unit-tested. Called out rather than faked.
  */
 import { client } from '../src/client';
-import { uniqueTag, tryCleanup, expectReject } from '../src/helpers';
+import { uniqueTag, tryCleanup, expectReject, pollUntil } from '../src/helpers';
 
 describe('triggers: the fields projection declaration', () => {
     const tag = uniqueTag().replace(/-/g, '_');
@@ -356,5 +359,102 @@ describe('triggers: the fields projection declaration', () => {
         } });
         expect(updated.displayName).toBe('Smoke Trigger Projection Source (renamed)');
         expect((updated.fields ?? []).find((f) => f.fieldId === 'note')!.inline).toBe(true);
+    });
+
+    // ── Execution-time: a fields:[] declaration alone does not protect a row the grant can't read ──
+    //
+    // Every cell above is declare-time. This one is the file's deliberate exception (see the header
+    // comment): a rule that declares `fields: []` used to still receive the firing row's ownership
+    // axis (`userId`, `scope.<namespace>`) as part of its input even when the rule's own grant could
+    // not read that row — an empty projection is not the same guarantee as "this rule cannot see
+    // this row at all". Observing the fix needs a real firing, so this cell pays the slow lane.
+    describe('execution-time: an unreadable firing row withholds its ownership dims', () => {
+        async function drainFolders(): Promise<any[]> {
+            const out: any[] = [];
+            let cursor: string | null | undefined;
+            do {
+                const page: any = await client.folders.listFolders(
+                    cursor ? { startFrom: cursor, limit: 100 } : { limit: 100 });
+                out.push(...(page.data ?? []));
+                cursor = page.nextCursor;
+            } while (cursor);
+            return out;
+        }
+
+        test('a fields:[] rule whose grant cannot read the firing row gets no userId/scope in its input', async () => {
+            // A real identity + org entity that OWN the firing row, distinct from anything the rule's
+            // grant below is scoped to — the row this rule fires on sits entirely outside what its
+            // grant can read.
+            const outsider = await client.identity.createUser({ body: {
+                externalId: `smoke-outsider-${uniqueTag()}`,
+            } });
+            const org = await client.identity.createEntity({ namespace: 'org', body: {
+                externalId: uniqueTag(), name: 'Smoke Trigger Disclosure Org',
+            } });
+
+            const marker = uniqueTag().replace(/-/g, '_');
+            const scriptName2 = `smoke_disclose_${uniqueTag().replace(/-/g, '_')}`;
+            const pushed = await client.scripts.createScript({ name: scriptName2, source:
+                // input.userId is always PRESENT on the guest object (a withheld value reads as
+                // null, never as a missing key) -- so the leak check must be a null check, not an
+                // undefined check, or it reports "leaked" unconditionally regardless of redaction.
+                `const leaked = (input.userId != null) || ` +
+                `(input.scope && input.scope.org !== undefined); ` +
+                `vectros.folders.create({ name: (leaked ? 'trig7-leaked-' : 'trig7-redacted-') + '${marker}' });`,
+            });
+            scriptIds.push(pushed.id!);
+
+            const rule2 = await client.triggers.createTrigger({ body: {
+                name: `smoke_disclose_rule_${uniqueTag().replace(/-/g, '_')}`,
+                firingSource: { schemaId, event: 'CREATE' },
+                fields: [],   // identity-only projection — the case this cell shows is NOT enough
+                scriptRef: { name: scriptName2, version: 'latest' },
+                principalId: servicePrincipalId,
+                scopes: [
+                    { allowed_actions: ['folders:cr'] },   // unconstrained — the write the script performs
+                    // Deliberately scoped to a userId that is NOT the firing row's owner, so this
+                    // clause genuinely cannot read the row — the case a `fields: []` declaration
+                    // alone does not protect against.
+                    { allowed_actions: [`records:r:${recordType}`],
+                      data_scope: { userId: ['00000000-0000-0000-0000-000000000000'] } as unknown as Record<string, Record<string, unknown>> },
+                ],
+            } });
+            triggerIds.push(rule2.id!);
+
+            const rec = await client.records.createRecord({ body: {
+                typeName: recordType,
+                payload: { note: 'disclosure-check' },
+                userId: outsider.id!,
+                scopes: [`org:${org.id!}`],
+            } as any });
+
+            const expected = `trig7-redacted-${marker}`;
+            const leakedName = `trig7-leaked-${marker}`;
+            // try/finally rather than registering into an outer array: this is the one test in the
+            // file that writes a record/folder/user, and a poll timeout must not leak them into the
+            // shared tenant just because it never reached the tail end of a straight-line test body.
+            let folder: any;
+            try {
+                folder = await pollUntil(
+                    'the fields:[] rule to fire without leaking ownership dims',
+                    async () => {
+                        const page = await drainFolders();
+                        return page.find((f: any) => f.name === expected || f.name === leakedName);
+                    },
+                    150_000, 3_000,
+                );
+                // 'trig7-leaked-...' would mean input.userId or input.scope.org reached the script
+                // despite the grant being unable to read the row — the exact regression this pins.
+                expect(folder.name).toBe(expected);
+            } finally {
+                if (folder) {
+                    await tryCleanup('delete disclosure folder', () => client.folders.deleteFolder({ id: folder.id }));
+                }
+                await tryCleanup('delete disclosure record', () => client.records.deleteRecord({ id: rec.id! }));
+                await tryCleanup('delete disclosure outsider user', () => client.identity.deleteUser({ id: outsider.id! }));
+                await tryCleanup('delete disclosure org entity',
+                    () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
+            }
+        }, 210_000);
     });
 });

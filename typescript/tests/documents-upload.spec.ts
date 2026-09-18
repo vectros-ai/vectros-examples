@@ -5,7 +5,7 @@
  */
 import * as fs from 'fs';
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, presignedUploadHeaders } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE, SAMPLE_PDF_SEMANTIC_PHRASE } from '../src/fixtures';
 
 interface MintedToken { token: string; expiresAt: number; }
@@ -33,6 +33,7 @@ describe('documents (upload)', () => {
     // they should learn this pattern.
     test('presigned upload handshake: request URL → PUT bytes → poll INDEXED', async () => {
         // Step 1: request a presigned URL
+        const requestedAt = Date.now();
         const upload = await client.documents.uploadDocument({
             fileName: 'smoke-test-clinical-note.pdf',
             fileType: 'application/pdf',
@@ -49,15 +50,21 @@ describe('documents (upload)', () => {
         docIds.push(upload.id!);
         expect(upload.uploadUrl).toMatch(/^https:\/\//);
         // expiresAt is ISO-8601 UTC (Vectros uses LLM-friendly timestamps),
-        // not epoch-seconds. Assert it parses to a future Date.
-        expect(new Date(upload.expiresAt!).getTime()).toBeGreaterThan(Date.now());
+        // not epoch-seconds. The presign window is a fixed 15 minutes — assert
+        // it lands in a tight band around that (not just "some time in the
+        // future") so a regression back to a much longer window is caught.
+        // The lower bound leaves room for real request latency; the upper
+        // bound is still well short of the old 60-minute window.
+        const expiresAtMinutesFromNow = (new Date(upload.expiresAt!).getTime() - requestedAt) / 60_000;
+        expect(expiresAtMinutesFromNow).toBeGreaterThan(13);
+        expect(expiresAtMinutesFromNow).toBeLessThan(16);
 
         // Step 2: PUT raw bytes to the presigned URL — NO Authorization header
         const body = fs.readFileSync(SAMPLE_PDF_PATH);
         const putResp = await fetch(upload.uploadUrl!, {
             method: 'PUT',
             body,
-            headers: { 'Content-Type': 'application/pdf' },
+            headers: { 'Content-Type': 'application/pdf', ...presignedUploadHeaders(upload) },
         });
         expect(putResp.status).toBe(200);
 
@@ -82,6 +89,59 @@ describe('documents (upload)', () => {
         });
         const hit = (results.results ?? []).find((r) => r.documentId === upload.id);
         expect(hit).toBeDefined();
+    });
+
+    // ANCHOR's positive path above always sends the required precondition
+    // header. These two tests cover the negative side: the presigned URL's
+    // signature is only valid WITH that exact header/value, so a PUT missing
+    // it (or sending the wrong value) fails at the storage layer before the
+    // request ever reaches this API — hence a raw status check, not the
+    // SDK's typed error.
+    test('presigned upload URL rejects a PUT missing the required precondition header, or sending the wrong value', async () => {
+        const upload = await client.documents.uploadDocument({
+            fileName: 'smoke-missing-header.pdf',
+            fileType: 'application/pdf',
+            indexMode: 'NONE',
+        });
+        docIds.push(upload.id!);
+        const body = fs.readFileSync(SAMPLE_PDF_PATH);
+
+        const missingHeaderResp = await fetch(upload.uploadUrl!, {
+            method: 'PUT',
+            body,
+            headers: { 'Content-Type': 'application/pdf' },
+        });
+        expect(missingHeaderResp.status).toBe(403);
+
+        const wrongValueResp = await fetch(upload.uploadUrl!, {
+            method: 'PUT',
+            body,
+            headers: { 'Content-Type': 'application/pdf', [upload.requiredHeaderName!]: 'not-the-required-value' },
+        });
+        expect(wrongValueResp.status).toBe(403);
+    });
+
+    test('presigned upload URL is single-use: replaying it after a successful PUT is rejected', async () => {
+        const upload = await client.documents.uploadDocument({
+            fileName: 'smoke-single-use.pdf',
+            fileType: 'application/pdf',
+            indexMode: 'NONE',
+        });
+        docIds.push(upload.id!);
+        const body = fs.readFileSync(SAMPLE_PDF_PATH);
+        const headers = { 'Content-Type': 'application/pdf', ...presignedUploadHeaders(upload) };
+
+        const firstPut = await fetch(upload.uploadUrl!, { method: 'PUT', body, headers });
+        expect(firstPut.status).toBe(200);
+
+        // Same URL, same bytes, same headers — the object now already exists at
+        // this key, so the upload target's own conditional-write precondition
+        // baked into the signature rejects the replay. 412 is the expected outcome (the object
+        // still exists); 409 is also acceptable if this PUT genuinely raced a
+        // concurrent delete of the same object. Either way it must not succeed.
+        const replayPut = await fetch(upload.uploadUrl!, { method: 'PUT', body, headers });
+        expect(replayPut.status).not.toBe(200);
+        expect([409, 412]).toContain(replayPut.status);
     });
 
     test('search HYBRID — both scores > 0, contextText may be set if multi-chunk', async () => {
@@ -194,7 +254,7 @@ describe('documents (upload)', () => {
         // ANCHOR doc is a file-backed PDF. Round-trip via the SDK's typed
         // getDocumentDownloadUrl, then GET the presigned URL directly via
         // fetch to confirm it actually serves the file. Exercises both the
-        // signed-URL minting path and the S3 GET permissions.
+        // signed-URL minting path and the storage layer's own read permissions.
         const resp = await client.documents.getDocumentDownloadUrl({ id: docIds[0] });
         expect(resp.downloadUrl).toBeTruthy();
         expect(resp.id).toBe(docIds[0]);
@@ -204,6 +264,13 @@ describe('documents (upload)', () => {
         // assert after the toBeTruthy gate above so fetch() gets a string.
         const dl = await fetch(resp.downloadUrl!);
         expect(dl.status).toBe(200);
+
+        // The signed URL always forces a download rather than rendering
+        // inline, regardless of content type — assert the disposition header
+        // names the file as an attachment.
+        const disposition = dl.headers.get('content-disposition');
+        expect(disposition).toBeTruthy();
+        expect(disposition!.toLowerCase()).toMatch(/^attachment/);
     });
 });
 
@@ -259,7 +326,7 @@ describe('documents (upload — scope ownership)', () => {
         const putResp = await fetch(upload.uploadUrl!, {
             method: 'PUT',
             body,
-            headers: { 'Content-Type': 'application/pdf' },
+            headers: { 'Content-Type': 'application/pdf', ...presignedUploadHeaders(upload) },
         });
         expect(putResp.status).toBe(200);
 

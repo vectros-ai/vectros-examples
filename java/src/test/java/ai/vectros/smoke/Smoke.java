@@ -31,9 +31,8 @@ final class Smoke {
     private Smoke() {}
 
     // -------------------------------------------------------------------
-    // Rate-limit visibility (gotcha-sdk-silent-429-retry-masks-load-only-
-    // flakes). Same mechanism as smoke-tests/src/rateLimitFetch.ts and its
-    // Python port in smoke-tests/sdk-python/support.py: the partner API's
+    // Rate-limit visibility. Same mechanism as the TypeScript example's
+    // rateLimitFetch.ts and its Python port in support.py: the partner API's
     // rate limiter is a SHARED, per-tenant, 60s fixed-window counter, so a
     // full-suite run can trip it even though no single test is at fault.
     // Left alone, the SDK's own default retry pays the Retry-After wait

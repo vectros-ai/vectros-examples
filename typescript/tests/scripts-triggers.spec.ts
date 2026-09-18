@@ -105,6 +105,140 @@ describe('scripts and triggers', () => {
             expect(unchanged.source).toContain('input.params.typeName');
             expect(unchanged.source).not.toContain('rewritten');
         });
+
+        // -------------------------------------------------------------------
+        // A list row's `source` is projected differently than a by-id read
+        // -------------------------------------------------------------------
+
+        test('list rows omit `source` by default (`sourceOmitted: true`); ?includeSource=true restores it', async () => {
+            const page: any = await client.scripts.listScripts({ name: scriptName });
+            expect((page.data ?? []).length).toBeGreaterThan(0);
+            for (const row of page.data ?? []) {
+                expect(row.sourceOmitted).toBe(true);
+                expect(row.source).toBeUndefined();
+            }
+
+            const withSource: any = await client.scripts.listScripts(
+                { name: scriptName, includeSource: true } as any);
+            const full = (withSource.data ?? []).find((s: any) => s.id === scriptIds[0]);
+            expect(full).toBeDefined();
+            expect(full.sourceOmitted).toBeUndefined();
+            expect(full.source).toContain('input.params.typeName');
+        });
+
+        test('a by-id GET and the create response are unaffected — full `source`, never `sourceOmitted`', async () => {
+            const byId: any = await client.scripts.getScript({ id: scriptIds[0] });
+            expect(byId.sourceOmitted).toBeUndefined();
+            expect(byId.source).toContain('input.params.typeName');
+
+            // The create response itself, from a fresh push — proves the create path too, not only
+            // by-id GET, is exempt from the list projection.
+            const pushed: any = await client.scripts.createScript({
+                name: scriptName,
+                source: 'vectros.records.query({ typeName: input.params.typeName, limit: 2 });',
+            });
+            scriptIds.push(pushed.id!);
+            expect(pushed.sourceOmitted).toBeUndefined();
+            expect(pushed.source).toContain('limit: 2');
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // ?name=&latest=true — one bounded read instead of draining a name's history
+    // -------------------------------------------------------------------------
+
+    describe('scripts?name=&latest=true — the single-newest-version shortcut', () => {
+        let newestId: string;
+        let newestVersion: number;
+
+        beforeAll(async () => {
+            const pushed = await client.scripts.createScript({
+                name: scriptName,
+                source: 'vectros.records.query({ typeName: input.params.typeName, limit: 3 });',
+            });
+            scriptIds.push(pushed.id!);
+            newestId = pushed.id!;
+            newestVersion = pushed.scriptVersion!;
+        });
+
+        test('returns the newest version directly — a single object, not a {data,nextCursor} page', async () => {
+            const result: any = await client.scripts.listScripts({ name: scriptName, latest: true } as any);
+            // The page envelope has a top-level `data` array; the single-object form does not.
+            expect(result.data).toBeUndefined();
+            expect(result.id).toBe(newestId);
+            expect(result.scriptVersion).toBe(newestVersion);
+            expect(result.name).toBe(scriptName);
+        });
+
+        test('respects ?includeSource=true the same way the list does', async () => {
+            const withoutSource: any = await client.scripts.listScripts(
+                { name: scriptName, latest: true } as any);
+            expect(withoutSource.source).toBeUndefined();
+            expect(withoutSource.sourceOmitted).toBe(true);
+
+            const withSource: any = await client.scripts.listScripts(
+                { name: scriptName, latest: true, includeSource: true } as any);
+            expect(withSource.sourceOmitted).toBeUndefined();
+            expect(withSource.source).toContain('limit: 3');
+        });
+
+        test('400s when latest=true is passed without name', async () => {
+            await expect(client.scripts.listScripts({ latest: true } as any))
+                .rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        test('404s when no version of name exists', async () => {
+            const missingName = `smoke_missing_${uniqueTag().replace(/-/g, '_')}`;
+            await expect(client.scripts.listScripts({ name: missingName, latest: true } as any))
+                .rejects.toMatchObject({ statusCode: 404 });
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // provisionedBy — may be set on absent, inherits forward, never silently changed
+    // -------------------------------------------------------------------------
+
+    describe('provisionedBy — provenance marker inheritance', () => {
+        const provName = `smoke_provscript_${uniqueTag().replace(/-/g, '_')}`;
+        const marker = `smoke-test-marker-${uniqueTag()}`;
+        const provScriptIds: string[] = [];
+
+        afterAll(async () => {
+            for (const id of provScriptIds) {
+                await tryCleanup(`delete provisioned script ${id}`,
+                    () => client.scripts.deleteScript({ id }));
+            }
+        });
+
+        test('v1 sets the marker; v2 with a DIFFERENT value is refused; v3 with none inherits v1\'s marker', async () => {
+            const v1: any = await client.scripts.createScript({
+                name: provName,
+                source: 'vectros.records.query({ typeName: input.params.typeName });',
+                provisionedBy: marker,
+            } as any);
+            provScriptIds.push(v1.id!);
+            expect(v1.provisionedBy).toBe(marker);
+
+            // A different value than the one recorded on the current latest version is refused —
+            // and refused BEFORE persisting, which the v3 assertion below confirms.
+            await expect(client.scripts.createScript({
+                name: provName,
+                source: 'vectros.records.query({ typeName: input.params.typeName, limit: 1 });',
+                provisionedBy: `${marker}-different`,
+            } as any)).rejects.toMatchObject({
+                statusCode: 400,
+                body: expect.objectContaining({ message: expect.stringContaining(marker) }),
+            });
+
+            const v3: any = await client.scripts.createScript({
+                name: provName,
+                source: 'vectros.records.query({ typeName: input.params.typeName, limit: 2 });',
+            } as any);
+            provScriptIds.push(v3.id!);
+            // Still version 2, not 3 — the rejected push above never persisted a version at all.
+            expect(v3.scriptVersion).toBe(2);
+            expect(v3.provisionedBy).toBe(marker);
+        });
     });
 
     // -------------------------------------------------------------------------
@@ -170,6 +304,118 @@ describe('scripts and triggers', () => {
             await expect(client.triggers.createTrigger({
                 body: rule({ scopes: undefined }),
             })).rejects.toMatchObject({ statusCode: 400 });
+        });
+
+        // ── A trigger's grant may not carry a control-plane verb without a dedicated capability ──
+
+        test('a control-plane verb in the grant is refused without the capability, naming it', async () => {
+            // A plain triggers:c token, no granted_capabilities at all — the ordinary shape of a
+            // partner-authored role that only ever meant to author ordinary resource triggers.
+            const minted = (await client.auth.mintToken({
+                scope: { allowedActions: ['triggers:c'] },
+            })) as { token: string };
+            const scoped = getScopedClient(minted.token);
+
+            await expect(scoped.triggers.createTrigger({
+                body: rule({ scopes: [{ allowed_actions: ['users:r'] }] }),
+            })).rejects.toMatchObject({
+                statusCode: 403,
+                body: expect.objectContaining({ message: expect.stringContaining('trigger-control-plane-grant') }),
+            });
+        });
+
+        test('the bare wildcard "*" is refused the same way — it grants every control-plane resource too', async () => {
+            const minted = (await client.auth.mintToken({
+                scope: { allowedActions: ['triggers:c'] },
+            })) as { token: string };
+            const scoped = getScopedClient(minted.token);
+
+            await expect(scoped.triggers.createTrigger({
+                body: rule({ scopes: [{ allowed_actions: ['*'] }] }),
+            })).rejects.toMatchObject({
+                statusCode: 403,
+                body: expect.objectContaining({ message: expect.stringContaining('trigger-control-plane-grant') }),
+            });
+        });
+
+        test('a grant declaring only ordinary resource scopes is unaffected by the control-plane gate', async () => {
+            // No regression on the common case — the default `rule()` grant (`records:r`) must keep
+            // working, including for a caller that holds no capability at all.
+            const created = await client.triggers.createTrigger({
+                body: rule({ scopes: [{ allowed_actions: ['records:r'] }] }),
+            });
+            triggerIds.push(created.id!);
+            expect(created.id).toBeTruthy();
+        });
+
+        // ── principalId: only the caller's own identity is free; a different one needs a capability ──
+
+        describe('the principalId delegate-stamp capability', () => {
+            let selfUserId: string;
+            let otherUserId: string;
+            let selfPrincipalId: string;
+            let otherPrincipalId: string;
+
+            beforeAll(async () => {
+                const selfUser = await client.identity.createUser({ body: {
+                    externalId: `smoke-selfprin-${uniqueTag()}`, type: 'SERVICE',
+                } });
+                selfUserId = selfUser.id!;
+                selfPrincipalId = `usr_${selfUserId}`;
+                await client.auth.createAccessProfile({
+                    contextId: 'default',
+                    body: { principalId: selfPrincipalId, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+
+                const otherUser = await client.identity.createUser({ body: {
+                    externalId: `smoke-otherprin-${uniqueTag()}`, type: 'SERVICE',
+                } });
+                otherUserId = otherUser.id!;
+                otherPrincipalId = `usr_${otherUserId}`;
+                await client.auth.createAccessProfile({
+                    contextId: 'default',
+                    body: { principalId: otherPrincipalId, scopes: [{ allowed_actions: ['records:r'] }] },
+                });
+            });
+
+            afterAll(async () => {
+                await tryCleanup('delete self profile', () => client.auth.deleteAccessProfile({
+                    contextId: 'default', principalId: selfPrincipalId,
+                }));
+                await tryCleanup('delete self user', () => client.identity.deleteUser({ id: selfUserId }));
+                await tryCleanup('delete other profile', () => client.auth.deleteAccessProfile({
+                    contextId: 'default', principalId: otherPrincipalId,
+                }));
+                await tryCleanup('delete other user', () => client.identity.deleteUser({ id: otherUserId }));
+            });
+
+            /** A triggers:c + records:r token bound to `selfUserId`'s own identity — no
+             *  granted_capabilities at all, matching the ordinary partner-authored shape. */
+            async function scopedAsSelf() {
+                const minted = (await client.auth.mintToken({
+                    scope: { allowedActions: ['triggers:c', 'records:r'], identity: { userId: selfUserId } },
+                })) as { token: string };
+                return getScopedClient(minted.token);
+            }
+
+            test('setting principalId to a DIFFERENT principal is refused without delegate-principal-stamp', async () => {
+                const scoped = await scopedAsSelf();
+                await expect(scoped.triggers.createTrigger({
+                    body: rule({ principalId: otherPrincipalId }),
+                })).rejects.toMatchObject({
+                    statusCode: 403,
+                    body: expect.objectContaining({ message: expect.stringContaining('delegate-principal-stamp') }),
+                });
+            });
+
+            test('setting principalId to the CALLER\'S OWN identity needs no capability', async () => {
+                const scoped = await scopedAsSelf();
+                const created = await scoped.triggers.createTrigger({
+                    body: rule({ principalId: selfPrincipalId }),
+                });
+                triggerIds.push(created.id!);
+                expect(created.principalId).toBe(selfPrincipalId);
+            });
         });
     });
 
@@ -252,6 +498,99 @@ describe('scripts and triggers', () => {
             expect((relaxed.capabilities as any)?.triggersEnabled).toBe(false);
             // Restore the opt-in so the shared fixture is left as the other cells expect it.
             await updateFiringSchema({ triggersEnabled: true });
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // A script version cannot be deleted out from under a live rule
+    // -------------------------------------------------------------------------
+
+    describe('deleting a script version referenced by a live rule', () => {
+        // Its own name, separate from the top-level fixture's `scriptName` — this describe pushes
+        // several versions of its own and does not want its version numbering (or the "current
+        // latest") entangled with what other describes in this file have already pushed.
+        const delScriptName = `smoke_delscript_${uniqueTag().replace(/-/g, '_')}`;
+        let v1Id: string;
+        let v2Id: string;
+
+        beforeAll(async () => {
+            const v1 = await client.scripts.createScript({
+                name: delScriptName, source: 'vectros.folders.create({ name: "noop-v1" });',
+            });
+            v1Id = v1.id!;
+            scriptIds.push(v1Id);
+            const v2 = await client.scripts.createScript({
+                name: delScriptName, source: 'vectros.folders.create({ name: "noop-v2" });',
+            });
+            v2Id = v2.id!;
+            scriptIds.push(v2Id);
+        });
+
+        test('a rule PINNED to a specific version blocks deleting that exact version', async () => {
+            const pinned = await client.triggers.createTrigger({ body: {
+                name: `smoke_pin_v1_${uniqueTag().replace(/-/g, '_')}`,
+                firingSource: { schemaId: firingSchemaId, event: 'CREATE' },
+                fields: [],
+                scriptRef: { name: delScriptName, version: '1' },
+                scopes: [{ allowed_actions: ['records:r'] }],
+            } as any });
+            triggerIds.push(pinned.id!);
+
+            await expect(client.scripts.deleteScript({ id: v1Id })).rejects.toMatchObject({
+                statusCode: 409,
+                body: expect.objectContaining({ message: expect.stringContaining(pinned.name!) }),
+            });
+            // Still there — the refusal did not half-delete it.
+            const still = await client.scripts.getScript({ id: v1Id });
+            expect(still.id).toBe(v1Id);
+
+            // Re-point the rule at a different version — the 409 is not a permanent lock, only a
+            // consequence of the CURRENT reference.
+            await client.triggers.updateTrigger({ id: pinned.id!, body: {
+                name: pinned.name,
+                firingSource: { schemaId: firingSchemaId, event: 'CREATE' },
+                scriptRef: { name: delScriptName, version: '2' },
+                fields: [],
+                scopes: [{ allowed_actions: ['records:r'] }],
+            } as any });
+
+            await client.scripts.deleteScript({ id: v1Id });
+            await expect(client.scripts.getScript({ id: v1Id })).rejects.toMatchObject({ statusCode: 404 });
+
+            // Clean up this rule now rather than at the describe's afterAll — the next test needs v2
+            // to have exactly ONE rule referencing it (its own "latest" rule), or the 409 message
+            // below would be attributable to either rule and the assertion on its name would be
+            // unreliable.
+            await client.triggers.deleteTrigger({ id: pinned.id! });
+        });
+
+        test('a rule referencing "latest" blocks deleting the CURRENT newest version', async () => {
+            // v2 is the current latest of delScriptName at this point (v1 was deleted above).
+            const latestRule = await client.triggers.createTrigger({ body: {
+                name: `smoke_latest_${uniqueTag().replace(/-/g, '_')}`,
+                firingSource: { schemaId: firingSchemaId, event: 'CREATE' },
+                fields: [],
+                scriptRef: { name: delScriptName, version: 'latest' },
+                scopes: [{ allowed_actions: ['records:r'] }],
+            } as any });
+            triggerIds.push(latestRule.id!);
+
+            await expect(client.scripts.deleteScript({ id: v2Id })).rejects.toMatchObject({
+                statusCode: 409,
+                body: expect.objectContaining({ message: expect.stringContaining(latestRule.name!) }),
+            });
+
+            // Push a newer version — v2 is no longer the newest of its name, so the "latest" rule no
+            // longer pins IT specifically (it now floats to v3), and the delete of v2 succeeds. Proves
+            // the 409 tracks "is this the current newest", not a lock on the row that happened to be
+            // newest when the rule was declared.
+            const v3 = await client.scripts.createScript({
+                name: delScriptName, source: 'vectros.folders.create({ name: "noop-v3" });',
+            });
+            scriptIds.push(v3.id!);
+
+            await client.scripts.deleteScript({ id: v2Id });
+            await expect(client.scripts.getScript({ id: v2Id })).rejects.toMatchObject({ statusCode: 404 });
         });
     });
 

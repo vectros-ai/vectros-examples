@@ -5,6 +5,7 @@ import ai.vectros.resources.identity.requests.DeleteEntityRequest;
 import ai.vectros.resources.identity.requests.DeleteNamespaceRequest;
 import ai.vectros.resources.identity.requests.GetEntityRequest;
 import ai.vectros.resources.identity.requests.GetNamespaceRequest;
+import ai.vectros.resources.identity.requests.ListNamespacesRequest;
 import ai.vectros.resources.identity.requests.RegisterNamespaceRequest;
 import ai.vectros.resources.records.requests.ListRecordsRequest;
 import ai.vectros.types.AppContextRequest;
@@ -60,6 +61,27 @@ class NamespacesSmokeTest {
         return 10_000 + ThreadLocalRandom.current().nextInt(900_000);
     }
 
+    /**
+     * Every tenant-wide namespace, draining {@code nextCursor} rather than trusting the
+     * default page. A namespace registration is tenant-wide and the shared smoke tenant
+     * accumulates them, so a single-page read finds a freshly registered namespace only
+     * while the tenant happens to be small -- that is not a property any assertion should
+     * depend on, since it fails as the tenant grows. Mirrors {@code allNamespaces()} in
+     * namespaces.spec.ts.
+     */
+    private static List<String> allNamespaces() {
+        List<String> out = new java.util.ArrayList<>();
+        String cursor = null;
+        do {
+            var reqBuilder = ListNamespacesRequest.builder().limit(100L);
+            if (cursor != null) reqBuilder.startFrom(cursor);
+            var page = Smoke.live().identity().listNamespaces(reqBuilder.build());
+            page.getData().orElseThrow().forEach(n -> out.add(n.getNamespace().orElse(null)));
+            cursor = page.getNextCursor().orElse(null);
+        } while (cursor != null);
+        return out;
+    }
+
     @BeforeAll
     void setUp() {
         recordType = "smoke_member_java_" + Smoke.uniqueTag();
@@ -103,9 +125,7 @@ class NamespacesSmokeTest {
                 NamespaceRequest.builder().namespace(namespace).specificityRank(rank + 1).build());
             assertEquals(rank + 1, updated.getSpecificityRank().orElse(-1));
 
-            var listed = Smoke.live().identity().listNamespaces();
-            var names = listed.getData().orElseThrow().stream().map(n -> n.getNamespace().orElse(null)).toList();
-            assertTrue(names.contains(namespace));
+            assertTrue(allNamespaces().contains(namespace));
         } finally {
             Smoke.live().identity().deleteNamespace(namespace);
         }

@@ -152,6 +152,7 @@ describe('negative paths', () => {
     // scoped/unscoped and across revoked-vs-never-existed (non-oracle).
     // =======================================================================
     test('403 — invalid scoped key (ssk_*) → actionable INVALID_KEY, no IAM leak', async () => {
+        // nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key,generic.secrets.security.detected-picatic-api-key.detected-picatic-api-key -- deliberately-invalid test fixture asserting the platform's own rejection contract; "invalid" + zero-padding, not a real credential (base64-collides with semgrep's generic Stripe/Picatic shape)
         const bad = badKeyClient('ssk_live_invalid000000000000000000000000000000');
         const { statusCode, body } = await captureError(bad.auth.ping());
         expect(statusCode).toBe(403);
@@ -162,6 +163,7 @@ describe('negative paths', () => {
     });
 
     test('403 — invalid root key (sk_*) → same uniform INVALID_KEY contract', async () => {
+        // nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key,generic.secrets.security.detected-picatic-api-key.detected-picatic-api-key -- deliberately-invalid test fixture, same reasoning as the ssk_* cell above
         const bad = badKeyClient('sk_live_invalid0000000000000000000000000000000');
         const { statusCode, body } = await captureError(bad.auth.ping());
         expect(statusCode).toBe(403);

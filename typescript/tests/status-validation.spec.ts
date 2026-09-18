@@ -24,8 +24,18 @@
  * defect was a write that silently broke sign-in later, and the fix is a write-path guard whose
  * value only shows up somewhere else.
  */
-import { client } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { client, getScopedClient } from '../src/client';
+import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
+
+interface MintedToken { token: string; expiresAt: number; }
+
+/** The isolated exact-billing counter — see billing-exact.spec.ts for the full rationale. Used
+ *  here only as a bounded (not exact) check: this file isn't run in that spec's exclusive lane,
+ *  so a little cross-talk from other concurrently-running specs is expected. */
+const usedMilli = async (): Promise<number> => {
+    const u = (await client.auth.getUsage()) as unknown as { credits: { usedMilli: number } };
+    return u.credits.usedMilli;
+};
 
 describe('status validation on the update paths', () => {
     // -------------------------------------------------------------------------
@@ -195,5 +205,161 @@ describe('status validation on the update paths', () => {
                 body: { externalId: `ent-new-${uniqueTag()}`, name: 'new', status: 'nonsense' as any },
             })).rejects.toMatchObject({ statusCode: 400 });
         });
+    });
+
+    // -------------------------------------------------------------------------
+    // 0.44.0 — DELETE under concurrency: a duplicate delete no longer records
+    // an extra change-history entry for the same removal, and a delete racing
+    // a concurrent update resolves cleanly instead of silently recording
+    // whichever version happened to be current at that moment.
+    // -------------------------------------------------------------------------
+
+    describe('DELETE under concurrency', () => {
+        test('two concurrent DELETEs of the same user settle cleanly — no crash, no double-delete', async () => {
+            const externalId = `smoke-del-race-${uniqueTag()}`;
+            const user = await client.identity.createUser({ body: { externalId, type: 'HUMAN' } });
+            const userId = user.id!;
+
+            // A same-shape control, deleted once and NOT raced, gives the fee ONE delete of an
+            // identical row costs — the number the race below must not double. Measured fresh in
+            // this test rather than pinned to a literal: the exact fee is an implementation detail
+            // this spec doesn't otherwise depend on, and the two users are identical in every way
+            // fee computation looks at (freshly created, HUMAN, no other fields).
+            const controlExternalId = `smoke-del-race-control-${uniqueTag()}`;
+            const control = await client.identity.createUser({ body: { externalId: controlExternalId, type: 'HUMAN' } });
+            const beforeControl = await usedMilli();
+            await client.identity.deleteUser({ id: control.id! });
+            const oneDeleteFee = (await usedMilli()) - beforeControl;
+            expect(oneDeleteFee).toBeGreaterThan(0);
+
+            // Dispatched with no await in between so both requests are genuinely in flight at
+            // once. A duplicate delete that finds the row already gone is itself a SUCCESSFUL
+            // no-op (deleting something already deleted is not an error) rather than a conflict —
+            // so the shape asserted here is "both settle cleanly", not "one wins, one is
+            // refused". The only legitimate rejection for the loser is a 404, and only when its
+            // own initial lookup happens to run after the winner has already fully committed.
+            const beforeRace = await usedMilli();
+            const results = await Promise.allSettled([
+                client.identity.deleteUser({ id: userId }),
+                client.identity.deleteUser({ id: userId }),
+            ]);
+            const raceFee = (await usedMilli()) - beforeRace;
+
+            for (const r of results) {
+                if (r.status === 'rejected') {
+                    expect((r.reason as { statusCode?: number }).statusCode).toBe(404);
+                }
+            }
+
+            // Whatever the settling order, the user is gone exactly once and stays gone.
+            await expect(client.identity.getUser({ id: userId })).rejects.toMatchObject({ statusCode: 404 });
+
+            // ...and it was billed exactly once, not twice. A generous upper bound rather than
+            // exact equality: unlike billing-exact.spec.ts's exclusive lane, this file runs
+            // alongside other specs writing to the same shared tenant and can pick up a small
+            // amount of unrelated noise in the gap between snapshots. A charge that actually
+            // doubled would still fail this comfortably; a few stray milli-credits from a
+            // concurrent spec would not.
+            expect(raceFee).toBeGreaterThan(0);
+            expect(raceFee).toBeLessThan(oneDeleteFee * 2);
+        });
+
+        test('a DELETE racing concurrent UPDATEs on the same user never corrupts state', async () => {
+            // The stricter contention outcome — a retryable 409 (errorCode VERSION_CONFLICT)
+            // when the row keeps changing across the delete's own internal retry budget — is
+            // real, but exhausting that budget needs the row to move on EVERY one of a small,
+            // fast internal retry sequence. A handful of concurrently-fired HTTP updates can
+            // land inside that window, but far more often a single well-timed update is simply
+            // picked up by the delete's own retry and the delete still succeeds (204). So this
+            // asserts the narrow VERSION_CONFLICT claim ONLY when it is actually observed, and
+            // otherwise accepts the other legitimate outcomes — the invariant under test is that
+            // nothing comes back malformed (no 500) and the end state is well-defined.
+            const externalId = `smoke-del-upd-race-${uniqueTag()}`;
+            const user = await client.identity.createUser({ body: { externalId, type: 'HUMAN' } });
+            const userId = user.id!;
+
+            const [deleteResult, ...updateResults] = await Promise.allSettled([
+                client.identity.deleteUser({ id: userId }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `a-${uniqueTag()}@test.com` } }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `b-${uniqueTag()}@test.com` } }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `c-${uniqueTag()}@test.com` } }),
+            ]);
+
+            if (deleteResult.status === 'rejected') {
+                const err = deleteResult.reason as { statusCode?: number; body?: { errorCode?: string } };
+                expect([404, 409]).toContain(err.statusCode);
+                if (err.statusCode === 409) {
+                    expect(err.body?.errorCode).toBe('VERSION_CONFLICT');
+                }
+            }
+
+            // A losing update racing the delete sees the same thing a losing duplicate delete
+            // does: the row is gone.
+            for (const r of updateResults) {
+                if (r.status === 'rejected') {
+                    expect((r.reason as { statusCode?: number }).statusCode).toBe(404);
+                }
+            }
+
+            // End state is well-defined either way: deleted, or alive with one of the raced
+            // updates (or the original) applied — never a hang, never a 500.
+            let survived = false;
+            try {
+                await client.identity.getUser({ id: userId });
+                survived = true;
+            } catch (e) {
+                expect((e as { statusCode?: number }).statusCode).toBe(404);
+            }
+            if (survived) {
+                await tryCleanup('surviving user', () => client.identity.deleteUser({ id: userId }));
+            }
+        });
+    });
+});
+
+/**
+ * A user's version history is retained after the user itself is deleted — the audit trail is
+ * never dropped just because the row it describes is gone. Who can still read it depends on the
+ * credential shape: an account-level API key can, because it isn't confined to any one app
+ * context; a context-confined credential (a scoped API key or a scoped token) gets a 404,
+ * identical to the response for an id that never existed, because the access profile that would
+ * have proven it could reach this user is itself deleted along with the user.
+ */
+describe('GET /v1/users/{id}/versions after deletion', () => {
+    test('an account-level API key can still read it; a context-confined credential cannot', async () => {
+        const externalId = `smoke-deleted-user-history-${uniqueTag()}`;
+        const user = await client.identity.createUser({ body: { externalId, type: 'HUMAN' } });
+        const userId = user.id!;
+
+        // One update beyond the initial create, so there is more than a single CREATE entry to
+        // read back.
+        await client.identity.updateUser({ id: userId, body: { externalId, status: 'SUSPENDED' } });
+
+        // Version rows are written asynchronously — poll the still-live user until the UPDATE
+        // entry lands, so the delete below can't race the write and leave history incomplete.
+        let deadline = Date.now() + 30_000;
+        let versions: Array<{ changeType?: string }> = [];
+        while (Date.now() < deadline) {
+            const page = await client.identity.getUserVersions({ id: userId }) as { data?: Array<{ changeType?: string }> };
+            versions = page.data ?? [];
+            if (versions.some((v) => v.changeType === 'UPDATE')) break;
+            await sleep(2_000);
+        }
+        expect(versions.some((v) => v.changeType === 'UPDATE')).toBe(true);
+
+        await client.identity.deleteUser({ id: userId });
+
+        // (a) An account-level API key reads the deleted user's version history unchanged.
+        const afterDelete = await client.identity.getUserVersions({ id: userId }) as { data?: unknown[] };
+        expect(afterDelete.data ?? []).not.toHaveLength(0);
+
+        // (b) A context-confined credential gets a uniform 404 — indistinguishable from the id
+        // never having existed, even though the same history is sitting right there for the
+        // account-level key above.
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: ['users:r'] },
+        })) as MintedToken;
+        const scoped = getScopedClient(minted.token);
+        await expect(scoped.identity.getUserVersions({ id: userId })).rejects.toMatchObject({ statusCode: 404 });
     });
 });
