@@ -66,7 +66,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 |---|---|
 | `scripts-execute` | `POST /v1/scripts/execute` — push a stored script, run it as one atomic transaction, and read back what it created. The reference example for composing several writes into one call. |
 | `scripts-triggers` | Storing script versions (`/v1/scripts`), declaring the rules that run them (`/v1/triggers`), and the failure surface (`GET /v1/trigger-failures`). |
-| `trigger-firing` | A declared rule actually fires: a record write on a triggers-enabled schema dispatches its script asynchronously under the rule's own grant. |
+| `trigger-firing` | A declared rule actually fires: a record write on a triggers-enabled schema dispatches its script asynchronously under the rule's own grant. Also that a chain is bounded: a rule whose script writes a record that fires it again recurses a few times and stops, with no failure recorded. |
 | `triggers-projection` | The declare-time half of a rule's field projection — which fields a rule may name in `fields`, and why. |
 | `triggers-input-cap` | The 224 KB ceiling on a trigger's projected input, and the `INPUT_TOO_LARGE` failure that names the size and the limit. |
 
@@ -92,6 +92,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | Example | Demonstrates |
 |---|---|
 | `app-contexts` | App-context CRUD, the confirm-gated destroy cascade that drains a context's data, and minting a root-key token targeted at a non-default context via `contextId`. |
+| `deleted-user-context-refusal` | A scoped key bound to a deleted user is not immediately revoked (cached scope resolution, not instant); no new credential or access grant can be issued in an app context that is mid-teardown, while an already-existing access profile in it can still be updated. |
 | `cross-context-isolation` | An object in one app context is invisible to a sibling context, on every read path. |
 | `schema-lineage` | `basedOn` schema customization (a shared base + owner-specific variants), `specificityRank` namespace tie-breaks, and the `userId`/`scope` selectors on schema and document-lookup resolution. |
 | `residency` | Data-residency confinement (fail-closed). |
@@ -114,8 +115,8 @@ Two more drive specific examples and are skipped cleanly when unset:
 - `VECTROS_LIVE_TENANT_ID` — your tenant id. Needed by every example that mints a
   scoped key against a specific context: `cross-context-isolation`, `app-contexts`,
   `access-profiles`, `capabilities`, `token-assume`, `erasure-requests`, `invite-validation`,
-  `identity` and `logs`. Three of those skip cleanly without it — `cross-context-isolation`, `app-contexts` and
-  `token-assume`; **the other six fail**, so set it before running the full suite.
+  `identity`, `logs` and `deleted-user-context-refusal`. Three of those skip cleanly without it — `cross-context-isolation`, `app-contexts` and
+  `token-assume`; **the other seven fail**, so set it before running the full suite.
 
 ## Cleanup
 

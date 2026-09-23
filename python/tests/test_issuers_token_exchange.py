@@ -10,15 +10,24 @@ needs a subject_token signed by a JWKS whose PRIVATE key this suite
 controls, at a PUBLICLY reachable URL (the exchange endpoint fail-closed
 rejects loopback/link-local/private-range JWKS hosts, so no local mock
 server can stand in). No such fixture is available; standing one up is out
-of scope here. This covers the full issuer-registry CRUD contract plus
-every exchange() rejection reachable without one, including a real 401
-(registered against Google's real, stable public JWKS, presented with a
-signature that can never verify against it).
+of scope here.
+
+A successful exchange also needs an ACTIVE registration. One made without
+restricted_to_domain starts as pending_verification and is activated only by
+POST /v1/auth/issuers/{issuerId}/verify with a real login token from the IdP,
+which this suite cannot produce -- so everything that needs an active
+registration (a real 401 from a signature that fails to verify,
+suspend/reinstate, context_id disambiguation) is covered by backend unit
+tests, not here. This covers the issuer-registry CRUD contract, the pending
+state and its uniform 404 at exchange, every rejection verify can produce,
+and every exchange() rejection reachable without an active registration.
 """
 from __future__ import annotations
 
 import base64
 import json
+import urllib.error
+import urllib.request
 import uuid
 
 import pytest
@@ -52,6 +61,32 @@ def fake_jwt(iss: str | None = None, aud=None, sub: str | None = None) -> str:
 
 def slug(prefix: str) -> str:
     return (prefix + support.unique_tag())[:31]
+
+
+# Raw, AUTHENTICATED HTTP for the issuer-registry calls whose newest members the
+# installed SDK build may not model yet (the verify call, the verification*
+# fields, a PUT of `status`). Same bearer key the SDK client uses. POST reuses
+# support.raw_post; PUT has no shared helper.
+def _raw_put(path: str, body: dict) -> support.RawResponse:
+    req = urllib.request.Request(
+        f"{support.base_url()}{path}",
+        data=json.dumps(body).encode("utf-8"),
+        method="PUT",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {support.require_env('VECTROS_API_KEY')}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:  # noqa: S310 - fixed https base
+            status, raw = resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read().decode("utf-8")
+    return support.RawResponse(status=status, raw_body=raw, parsed=json.loads(raw) if raw else None)
+
+
+def _verify_body(token: str) -> str:
+    return json.dumps({"token": token})
 
 
 @pytest.fixture
@@ -162,31 +197,46 @@ def test_registering_same_issuer_id_twice_is_idempotent(client, ctx_id):
             pass
 
 
-def test_second_issuer_id_cannot_claim_an_already_registered_pair(client, ctx_id):
+def test_same_pair_registered_without_a_domain_under_different_contexts_yields_two_pending_registrations(client, ctx_id):
+    # A registration made without restricted_to_domain does not claim its (issuer, audience)
+    # pair when registered -- the pair is claimed only once the registration is verified, which
+    # this suite cannot do. So pair-uniqueness between two domain-less registrations is not
+    # observable here: the same pair under two DIFFERENT contexts registers twice, both pending.
+    # (The same pair under the SAME context is still refused, but by the
+    # one-active-IdP-per-context rule, which the next test isolates.)
+    other_ctx_id = slug("pr2")
+    client.auth.create_app_context(context_id=other_ctx_id, name="pair-uniqueness spec 2 (python)")
     issuer = f"https://{support.unique_tag()}.example.com/"
     audience = f"aud-{support.unique_tag()}"
-    first_id = slug("paira")
-    second_id = slug("pairb")
+    first_id = slug("pr2a")
+    second_id = slug("pr2b")
     try:
-        client.auth.register_issuer(
+        first = client.auth.register_issuer(
             issuer_id=first_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
         )
-        with pytest.raises(vectros.core.api_error.ApiError) as exc:
-            client.auth.register_issuer(
-                issuer_id=second_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
-            )
-        assert support.status_of(exc.value) == 400
+        second = client.auth.register_issuer(
+            issuer_id=second_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=other_ctx_id,
+        )
+        assert first.created is True
+        assert first.status == "pending_verification"
+        assert second.created is True
+        assert second.status == "pending_verification"
     finally:
+        for issuer_id in (first_id, second_id):
+            try:
+                client.auth.delete_issuer(issuer_id)
+            except vectros.core.api_error.ApiError:
+                pass
         try:
-            client.auth.delete_issuer(first_id)
+            client.auth.delete_app_context(other_ctx_id, confirm=other_ctx_id)
         except vectros.core.api_error.ApiError:
             pass
 
 
 def test_second_distinct_issuer_in_same_context_refused_one_active_idp_per_context(client, ctx_id):
-    # 0.40.0: a context has exactly one ACTIVE issuer, independent of pair
-    # uniqueness. DIFFERENT (issuer, audience) pair, SAME context, so
-    # pair-uniqueness (tested above) can never be what fires here.
+    # A context has exactly one active issuer, and a pending registration already holds its
+    # context, so a second registration is refused before the first is ever verified.
+    # DIFFERENT (issuer, audience) pair, SAME context.
     first_id = slug("oneidp1")
     second_id = slug("oneidp2")
     try:
@@ -260,23 +310,47 @@ def test_exchange_unregistered_issuer_404(client):
     assert support.status_of(exc.value) == 404
 
 
-def test_exchange_registered_issuer_unverifiable_signature_401_then_deregistered_404(client, ctx_id):
-    issuer_id = slug("verify")
-    issuer = "https://accounts.google.com"
+# Not covered here: the optional context_id disambiguation field (a context_id naming a context
+# the issuer is not registered against -> 404). It is only distinguishable from an unrecognized
+# issuer when the registration is ACTIVE; a pending registration already 404s at exchange whatever
+# context_id is sent. An active registration requires proving control of a real IdP, so that path
+# is covered by backend unit tests rather than this suite.
+
+
+# -----------------------------------------------------------------------
+# A registration made without a verified domain starts pending_verification: it accepts no
+# token exchange until its registrant proves control of the IdP with
+# POST /v1/auth/issuers/{issuerId}/verify. That call needs a real login token from the IdP,
+# which this suite cannot obtain -- so what is provable here is the pending state, its uniform
+# 404 at exchange, and every way verify refuses. (The 401 a registered issuer returns for a
+# signature that fails to verify needs an ACTIVE registration, so it is covered by backend unit
+# tests rather than this suite.)
+# -----------------------------------------------------------------------
+
+def test_registration_without_domain_is_pending_verification_with_challenge_and_its_iss_aud_404s_at_exchange(client, ctx_id):
+    issuer_id = slug("pend")
+    issuer = f"https://{support.unique_tag()}.example.com/"
     audience = f"aud-{support.unique_tag()}"
-    client.auth.register_issuer(
-        issuer_id=issuer_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
-    )
     try:
+        # Raw, so the verification* fields are read off the wire whatever the installed SDK
+        # build models.
+        r = support.raw_post("/v1/auth/issuers", json.dumps({
+            "issuerId": issuer_id, "issuer": issuer, "jwksUri": GOOGLE_JWKS,
+            "audience": audience, "contextId": ctx_id,
+        }))
+        assert r.status == 201
+        assert r.parsed["status"] == "pending_verification"
+        assert r.parsed["verificationClaim"] == "https://vectros.ai/claims/issuer_challenge"
+        assert isinstance(r.parsed["verificationNonce"], str) and r.parsed["verificationNonce"]
+        assert isinstance(r.parsed["verificationExpiresAt"], str) and r.parsed["verificationExpiresAt"]
+
+        assert client.auth.get_issuer(issuer_id).status == "pending_verification"
+
+        # Deliberately uniform with the "never registered" 404 (not a 401): a caller cannot tell an
+        # unverified registration from an unregistered issuer.
         jwt = fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")
         with pytest.raises(vectros.core.api_error.ApiError) as exc:
             client.auth.exchange_token(grant_type=GRANT_TYPE, subject_token=jwt, subject_token_type=JWT_TYPE)
-        assert support.status_of(exc.value) == 401
-
-        client.auth.delete_issuer(issuer_id)
-        jwt2 = fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")
-        with pytest.raises(vectros.core.api_error.ApiError) as exc:
-            client.auth.exchange_token(grant_type=GRANT_TYPE, subject_token=jwt2, subject_token_type=JWT_TYPE)
         assert support.status_of(exc.value) == 404
     finally:
         try:
@@ -285,34 +359,94 @@ def test_exchange_registered_issuer_unverifiable_signature_401_then_deregistered
             pass
 
 
-def test_exchange_context_id_naming_a_context_the_issuer_is_not_registered_against_404(client, ctx_id):
-    # 0.40.0: the optional context_id disambiguation field -- a mismatch (naming
-    # a context this issuer is NOT registered against) is refused identically to
-    # an unrecognized issuer, no distinguishing information.
-    issuer_id = slug("ctxid")
+# A registration still pending verification can be neither activated nor suspended through PUT --
+# activation happens only via verify, and suspending an unverified registration is meaningless.
+# (Suspend/reinstate of an ACTIVE registration is not reachable from this suite: an active
+# registration requires proving control of a real IdP, so that path is covered by backend unit
+# tests.)
+def test_status_cannot_be_changed_on_a_pending_registration(client, ctx_id):
+    issuer_id = slug("pendput")
+    client.auth.register_issuer(
+        issuer_id=issuer_id, issuer=f"https://{support.unique_tag()}.example.com/", jwks_uri=GOOGLE_JWKS,
+        audience=f"aud-{support.unique_tag()}", context_id=ctx_id,
+    )
+    try:
+        assert client.auth.get_issuer(issuer_id).status == "pending_verification"
+
+        assert _raw_put(f"/v1/auth/issuers/{issuer_id}", {"status": "active"}).status == 400
+        assert _raw_put(f"/v1/auth/issuers/{issuer_id}", {"status": "suspended"}).status == 400
+
+        # Unchanged after both rejected attempts.
+        assert client.auth.get_issuer(issuer_id).status == "pending_verification"
+    finally:
+        try:
+            client.auth.delete_issuer(issuer_id)
+        except vectros.core.api_error.ApiError:
+            pass
+
+
+# verify runs against Google's real, stable, publicly-reachable OpenID configuration, so the
+# server-side discovery fetch genuinely succeeds -- the refusals are the verification checks
+# themselves, not "couldn't reach the IdP at all".
+def test_verify_with_a_token_whose_signature_cannot_verify_400_and_registration_stays_pending(client, ctx_id):
+    issuer_id = slug("vfybad")
     issuer = "https://accounts.google.com"
     audience = f"aud-{support.unique_tag()}"
     client.auth.register_issuer(
         issuer_id=issuer_id, issuer=issuer, jwks_uri=GOOGLE_JWKS, audience=audience, context_id=ctx_id,
     )
-    other_ctx_id = slug("ctxid2")
-    client.auth.create_app_context(context_id=other_ctx_id, name="exchange context_id spec (python)")
     try:
-        jwt = fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")
-        with pytest.raises(vectros.core.api_error.ApiError) as exc:
-            client.auth.exchange_token(
-                grant_type=GRANT_TYPE, subject_token=jwt, subject_token_type=JWT_TYPE, context_id=other_ctx_id,
-            )
-        assert support.status_of(exc.value) == 404
+        r = support.raw_post(
+            f"/v1/auth/issuers/{issuer_id}/verify",
+            _verify_body(fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")),
+        )
+        assert r.status == 400
+        # The refusal must come from the SIGNATURE check, not from failing to reach the issuer's discovery
+        # document: both are a 400, and only the first shows verification can work at all.
+        assert "could not be verified against the issuer" in r.raw_body, r.raw_body
+        assert "could not be fetched" not in r.raw_body, r.raw_body
+        assert client.auth.get_issuer(issuer_id).status == "pending_verification"
     finally:
         try:
             client.auth.delete_issuer(issuer_id)
         except vectros.core.api_error.ApiError:
             pass
+
+
+# verify trusts the keys the issuer PUBLISHES, not the ones the registration names: the registered
+# jwks_uri must equal the jwks_uri in the issuer's own OpenID configuration, or a registrant could
+# point verification at keys of their own.
+def test_verify_when_jwks_uri_differs_from_the_published_one_400_naming_the_published_one(client, ctx_id):
+    issuer_id = slug("vfyjwks")
+    issuer = "https://accounts.google.com"
+    audience = f"aud-{support.unique_tag()}"
+    client.auth.register_issuer(
+        issuer_id=issuer_id, issuer=issuer, jwks_uri="https://www.googleapis.com/oauth2/v1/certs",
+        audience=audience, context_id=ctx_id,
+    )
+    try:
+        r = support.raw_post(
+            f"/v1/auth/issuers/{issuer_id}/verify",
+            _verify_body(fake_jwt(iss=issuer, aud=audience, sub=f"smoke-{support.unique_tag()}")),
+        )
+        assert r.status == 400
+        assert GOOGLE_JWKS in r.raw_body
+    finally:
         try:
-            client.auth.delete_app_context(other_ctx_id, confirm=other_ctx_id)
+            client.auth.delete_issuer(issuer_id)
         except vectros.core.api_error.ApiError:
             pass
+
+
+def test_verify_on_a_never_registered_issuer_id_404():
+    r = support.raw_post(
+        f"/v1/auth/issuers/{slug('nosuch')}/verify",
+        _verify_body(fake_jwt(
+            iss="https://accounts.google.com", aud=f"aud-{support.unique_tag()}",
+            sub=f"smoke-{support.unique_tag()}",
+        )),
+    )
+    assert r.status == 404
 
 
 # -----------------------------------------------------------------------
@@ -348,7 +482,12 @@ def test_exchange_404_uses_oauth_envelope_not_message():
     assert "message" not in r.parsed
 
 
-def test_exchange_401_uses_oauth_envelope_not_message(client, ctx_id):
+# The 401 (a registered issuer whose token signature fails) has no reachable path from this
+# suite: it needs an ACTIVE registration, and activating one requires proving control of a real
+# IdP, so that envelope is covered by backend unit tests. A registration still pending
+# verification is the closest reachable case -- it answers with the same uniform 404 as an
+# unregistered issuer, and must carry the same OAuth envelope.
+def test_exchange_pending_registration_404_uses_oauth_envelope_not_message(client, ctx_id):
     issuer_id = slug("envl")
     issuer = "https://accounts.google.com"
     audience = f"aud-{support.unique_tag()}"
@@ -360,7 +499,7 @@ def test_exchange_401_uses_oauth_envelope_not_message(client, ctx_id):
         r = support.raw_post("/v1/auth/token/exchange", json.dumps({
             "grant_type": GRANT_TYPE, "subject_token": jwt, "subject_token_type": JWT_TYPE,
         }))
-        assert r.status == 401
+        assert r.status == 404
         assert isinstance(r.parsed.get("error"), str) and r.parsed["error"]
         assert isinstance(r.parsed.get("error_description"), str) and r.parsed["error_description"]
         assert "message" not in r.parsed

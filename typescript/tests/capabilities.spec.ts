@@ -996,21 +996,63 @@ describe('capabilities (granted_capabilities)', () => {
     // -----------------------------------------------------------------------
 
     describe('readAccessLogDefault', () => {
-        test('GET/POST /v1/app-contexts carry readAccessLogDefault, null on a freshly created context', async () => {
+        test('a freshly created context reports null: the field is set on UPDATE only', async () => {
             const ctx = ('capr' + uniqueTag()).slice(0, 31);
             const created = await client.auth.createAppContext({
                 body: { contextId: ctx, name: 'readAccessLogDefault probe' },
             });
             try {
-                // This surface exposes the field for reading, but as of this release there is no
-                // request field on create/update that sets it — so every context this API can
-                // create reports it as null (no context default set). Assert the shape rather
-                // than a value this API has no way to produce.
+                // `create` accepts no value for this field, so a new context always reports null (no
+                // context default set). The update call below is the only way a value gets in.
                 expect(created.readAccessLogDefault ?? null).toBeNull();
                 const fetched = await client.auth.getAppContext({ contextId: ctx });
                 expect(fetched.readAccessLogDefault ?? null).toBeNull();
             } finally {
                 await tryCleanup('readAccessLogDefault context', () => client.auth.deleteAppContext({ contextId: ctx, confirm: ctx }));
+            }
+        });
+
+        test('an update sets it and it reads back; an update that omits it leaves it alone; false is stored, not "unset"', async () => {
+            const ctx = ('capr' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({
+                body: { contextId: ctx, name: 'readAccessLogDefault setter probe' },
+            });
+            try {
+                // SET: the update response AND a fresh read both carry the new value. Reading it back
+                // through a second call is what separates "the server stored it" from "the server
+                // echoed the request".
+                const on = await client.auth.updateAppContext({
+                    contextId: ctx, body: { contextId: ctx, name: 'setter probe', readAccessLogDefault: true },
+                });
+                expect(on.readAccessLogDefault).toBe(true);
+                expect((await client.auth.getAppContext({ contextId: ctx })).readAccessLogDefault).toBe(true);
+
+                // PARTIAL UPDATE: a call that omits the field must not reset it (the SDK's request type requires
+                // `name` on every update, so the omission under test is this field, not the name). Without this, the cell
+                // above would pass against an implementation that overwrites the field on every update.
+                const renamed = await client.auth.updateAppContext({
+                    contextId: ctx, body: { contextId: ctx, name: 'renamed while the default is on' },
+                });
+                expect(renamed.name).toBe('renamed while the default is on');
+                expect(renamed.readAccessLogDefault).toBe(true);
+
+                // TURN IT OFF: an explicit false is a real, stored value, distinct from the null a new
+                // context reports. (The field is only ever moved between true and false: an update that
+                // omits it, or sends null, keeps the current value, so there is no way to send it back
+                // to null.) Strict `false`, not merely falsy.
+                const off = await client.auth.updateAppContext({
+                    contextId: ctx, body: { contextId: ctx, name: 'setter probe', readAccessLogDefault: false },
+                });
+                expect(off.readAccessLogDefault).toBe(false);
+                expect((await client.auth.getAppContext({ contextId: ctx })).readAccessLogDefault).toBe(false);
+
+                // ...and it stays false across a further update that omits it.
+                const again = await client.auth.updateAppContext({
+                    contextId: ctx, body: { contextId: ctx, name: 'setter probe', description: 'still off' },
+                });
+                expect(again.readAccessLogDefault).toBe(false);
+            } finally {
+                await tryCleanup('readAccessLogDefault setter context', () => client.auth.deleteAppContext({ contextId: ctx, confirm: ctx }));
             }
         });
     });

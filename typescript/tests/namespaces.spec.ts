@@ -102,7 +102,7 @@ describe('namespaces', () => {
 
             const created = await client.identity.registerNamespace({
                 contextId: ctxA,
-                body: { namespace, specificityRank: 500, entityBacked: true },
+                body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
             });
             expect(created.contextId).toBe(ctxA);
 
@@ -153,7 +153,7 @@ describe('namespaces', () => {
             await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace versions ctx A' } });
             await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace versions ctx B' } });
             await client.identity.registerNamespace({
-                contextId: ctxA, body: { namespace, specificityRank: 500, entityBacked: true },
+                contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
             });
             let entityId: string | undefined;
             try {
@@ -211,7 +211,7 @@ describe('namespaces', () => {
             await client.auth.createAppContext({ body: { contextId: ctxA, name: 'confine ctx A' } });
             await client.auth.createAppContext({ body: { contextId: ctxB, name: 'confine ctx B' } });
             await client.identity.registerNamespace({
-                contextId: ctxA, body: { namespace, specificityRank: 500, entityBacked: true },
+                contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
             });
 
             try {

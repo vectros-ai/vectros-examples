@@ -1,5 +1,5 @@
 # Vectros Python examples — dependencies.
 # The published Vectros SDK from PyPI (https://pypi.org/project/vectros/) +
 # the pytest runner.
-vectros>=0.44.0,<0.45.0
+vectros>=0.45.0,<0.46.0
 pytest==8.3.4

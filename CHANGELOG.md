@@ -5,6 +5,49 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.2 — 2026-09-22
+
+### Added
+
+- **The TypeScript examples now pin the exact refusal each of four documented limits produces, not just
+  that some refusal happens.** A batch write over 50 items is a `400` naming the limit, the atomicity mode
+  and the count you sent; an `all_or_nothing` batch too large to commit atomically is processed and
+  every item reports `not_committed` with the batch-level reason `batch_refused`, and nothing is
+  written; a script result over the size cap (256 KB, or 16 KB when the call carries an
+  `Idempotency-Key`) is a `400` with `errorCode: RESULT_TOO_LARGE` and the `limit` that applied; a
+  script transaction over 100 storage rows is a `400` with `errorCode: WRITE_BUFFER_CAP_EXCEEDED` and
+  both the `total` and the `limit`. Each has a positive control within its limit that succeeds.
+- **Two behaviours that had no example.** An app context's `readAccessLogDefault` (Vectros 0.44.0 and later) is set with an update,
+  read back, left alone by an update that omits it, and turned off with an explicit `false` (a new
+  context reports `null`). And a trigger rule whose script writes a record of the type it fires on is
+  bounded: the chain recurses a few times and stops, and the platform records no failure for the hop
+  it severs. The trigger example waits out a deliberate quiet window, so it adds roughly a minute and a half to a
+  full run (up to several minutes if the platform is slow; set `SMOKE_SKIP_SLOW=true` to skip it).
+
+### Changed
+
+- **The issuer examples now reflect that a trusted issuer registered without a verified company domain
+  starts as *pending verification*** (Vectros 0.45.0 and later). Such an issuer accepts no token exchange
+  until its registrant proves control of the identity provider, so the examples now check the pending
+  status and its challenge fields, that a token exchange against it is refused like an unregistered
+  issuer, that its status can't be changed by an update, and that verification with an unverifiable token
+  or a `jwksUri` that differs from the one the issuer publishes is refused. Checks that need an
+  already-active issuer (a suspended issuer's exchange, a signature failure against a registered issuer)
+  are no longer part of these examples, because an active issuer can't be created without a real identity
+  provider that completes verification.
+- **Repinned the SDK floor each language example declares to 0.45.0** (TypeScript `^0.45.0`, Python
+  `>=0.45.0,<0.46.0`, Java's assembled `pom.xml` default `0.45.0`) — the wave this release's issuer-
+  verification examples above were written against.
+
+### Fixed
+
+- **The TypeScript examples' README was missing the `deleted-user-context-refusal` example from its
+  spec table.** Documented it, and corrected the `VECTROS_LIVE_TENANT_ID` requirement list it belongs
+  in.
+- **The namespace-registration examples (all three languages) could fail on a repeat run** with a
+  "specificityRank already in use" error, because one example registered its namespace at a fixed
+  rank instead of a fresh one each run. Runs are now independent of each other.
+
 ## 0.18.1 — 2026-09-17
 
 ### Added

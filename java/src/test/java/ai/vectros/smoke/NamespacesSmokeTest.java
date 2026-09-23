@@ -141,7 +141,7 @@ class NamespacesSmokeTest {
         Smoke.live().auth().createAppContext(AppContextRequest.builder().contextId(ctxB).name("namespace ctx B (java)").build());
 
         NamespaceResponse created = Smoke.live().identity().registerNamespace(RegisterNamespaceRequest.builder()
-            .body(NamespaceRequest.builder().namespace(namespace).specificityRank(500).entityBacked(true).build())
+            .body(NamespaceRequest.builder().namespace(namespace).specificityRank(uniqueRank()).entityBacked(true).build())
             .contextId(ctxA)
             .build());
         assertEquals(ctxA, created.getContextId().orElse(null));

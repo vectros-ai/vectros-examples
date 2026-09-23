@@ -78,7 +78,7 @@ def test_context_owned_registration_entities_invisible_from_sibling_context(clie
     client.auth.create_app_context(context_id=ctx_b, name="namespace ctx B (python)")
 
     created = client.identity.register_namespace(
-        namespace=namespace, specificity_rank=500, context_id=ctx_a, entity_backed=True,
+        namespace=namespace, specificity_rank=_unique_rank(), context_id=ctx_a, entity_backed=True,
     )
     assert created.context_id == ctx_a
 

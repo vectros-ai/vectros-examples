@@ -16,7 +16,7 @@
  * or is not — actually there.
  */
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, drainCursor } from '../src/helpers';
 
 describe('records: batch write', () => {
     const tag = uniqueTag();
@@ -368,7 +368,8 @@ describe('records: batch write', () => {
 
 describe('records: batch limits', () => {
     const wideType = `smoke_batch_wide_${uniqueTag()}`;
-    const wideSchemaIds: string[] = [];
+    const narrowType = `smoke_batch_narrow_${uniqueTag()}`;
+    const schemaIds: string[] = [];
     const wideRecordIds: string[] = [];
 
     beforeAll(async () => {
@@ -393,17 +394,30 @@ describe('records: batch limits', () => {
                 { fieldName: 'd', rangeEnabled: true },
             ],
         } });
-        wideSchemaIds.push(schema.id!);
+        schemaIds.push(schema.id!);
+
+        // A PLAIN schema — one string field, no lookups — so a record is one storage row: the shape
+        // that lets 50 items fit in one transaction (the transactional positive control below).
+        const narrow = await client.schemas.createSchema({ body: {
+            typeName: narrowType,
+            displayName: 'Smoke Batch Narrow',
+            indexMode: 'NONE',
+            allowedSurfaces: ['record'],
+            fields: [{ fieldId: 'a', fieldType: 'string' }],
+        } });
+        schemaIds.push(narrow.id!);
     });
 
+    // About 110 sequential deletes: past the default 180 s hook timeout on a 60 req/min rate limiter (a free-tier
+    // key), where a timeout would leave the records and schemas behind for the next run to trip over.
     afterAll(async () => {
         for (const id of wideRecordIds) {
             await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
         }
-        for (const id of wideSchemaIds) {
+        for (const id of schemaIds) {
             await tryCleanup(`delete schema ${id}`, () => client.schemas.deleteSchema({ id }));
         }
-    });
+    }, 900_000);
 
     const wideItems = (n: number, tag: string) =>
         Array.from({ length: n }, (_, i) => ({
@@ -412,15 +426,22 @@ describe('records: batch limits', () => {
             payload: { a: `a${i}`, b: `b${i}`, c: `c${i}`, d: `d${i}` },
         }));
 
-    test('more than 50 items is refused outright, on both atomicity modes', async () => {
+    test('more than 50 items is refused outright, on both atomicity modes, naming the limit, the mode and the count', async () => {
         // A REQUEST-shape refusal: the batch is never processed, so this is a 4xx rather than a 200
         // carrying per-item results. A partner splitting a large import has to be able to tell the
-        // two apart.
+        // two apart — and has to be told WHAT to change, so the message is asserted, not just the
+        // status: a bare 400 passes against any other refusal.
         for (const atomicity of ['best_effort', 'all_or_nothing'] as const) {
-            await expect(client.records.batchWriteRecords({
+            const err: any = await client.records.batchWriteRecords({
                 atomicity,
                 items: wideItems(51, `over-${uniqueTag()}`),
-            })).rejects.toMatchObject({ statusCode: 400 });
+            }).then(() => null, (e: unknown) => e);
+            expect(err).not.toBeNull();
+            expect(err.statusCode).toBe(400);
+            const message = String((err.body ?? {}).message ?? '');
+            expect(message).toContain('exceeds the maximum of 50');
+            expect(message).toContain(`'${atomicity}'`);
+            expect(message).toContain('got 51');
         }
     });
 
@@ -436,28 +457,67 @@ describe('records: batch limits', () => {
         expect(resp.succeeded).toBe(50);
     });
 
+    test('exactly 50 items is accepted under all_or_nothing too, when the records are plain', async () => {
+        // The positive control for the ITEM cap on the transactional mode: 50 plain records (one row
+        // each) fit in one transaction with room to spare, so this commits — and a server that
+        // refused every all_or_nothing batch could not pass it.
+        const tag = `plain-${uniqueTag()}`;
+        const resp: any = await client.records.batchWriteRecords({
+            atomicity: 'all_or_nothing',
+            items: Array.from({ length: 50 }, (_, i) => ({
+                typeName: narrowType, externalId: `${tag}-${i}`, payload: { a: `a${i}` },
+            })),
+        });
+        for (const r of resp.results ?? []) if (r?.id) wideRecordIds.push(r.id);
+        expect(resp.results).toHaveLength(50);
+        expect(resp.succeeded).toBe(50);
+        expect(resp.failed).toBe(0);
+    });
+
+    test('a smaller batch of the SAME wide records commits, so the refusal below is about ROWS, not the schema', async () => {
+        // The positive control for the row limit. Ten wide records are roughly fifty rows: under
+        // the bound, so they commit atomically. Without this, the refusal below would pass equally
+        // well against a server that refused every batch on this schema.
+        const resp: any = await client.records.batchWriteRecords({
+            atomicity: 'all_or_nothing',
+            items: wideItems(10, `few-${uniqueTag()}`),
+        });
+        for (const r of resp.results ?? []) if (r?.id) wideRecordIds.push(r.id);
+        expect(resp.succeeded).toBe(10);
+        expect(resp.failed).toBe(0);
+    });
+
     test('an all_or_nothing batch too large to commit ATOMICALLY is refused, and writes nothing', async () => {
         // Within the item limit and past the row limit. The distinction matters to a partner:
         // splitting by item count alone is not sufficient, because the bound is on underlying rows —
         // and the failure here would otherwise be a PARTIAL write, which is the worst outcome this
         // endpoint has.
+        //
+        // The refusal is PROCESSED, not rejected outright: HTTP 200, and every item reports the same
+        // outcome. Pinned exactly (an earlier version accepted "threw OR succeeded === 0", which
+        // passes for any refusal at all): every result is `not_committed`, carries no id, and carries
+        // the batch-level reason with an actionable message.
         const tag = `rows-${uniqueTag()}`;
-        let refused = false;
-        try {
-            const resp: any = await client.records.batchWriteRecords({
-                atomicity: 'all_or_nothing',
-                items: wideItems(50, tag),
-            });
-            for (const r of resp.results ?? []) if (r?.id) wideRecordIds.push(r.id);
-            refused = resp.succeeded === 0;
-        } catch {
-            refused = true;
+        const resp: any = await client.records.batchWriteRecords({
+            atomicity: 'all_or_nothing',
+            items: wideItems(50, tag),
+        });
+        for (const r of resp.results ?? []) if (r?.id) wideRecordIds.push(r.id);
+        expect(resp.succeeded).toBe(0);
+        expect(resp.failed).toBe(50);
+        expect(resp.results).toHaveLength(50);
+        for (const r of resp.results) {
+            expect(r.status).toBe('not_committed');
+            expect(r.id ?? null).toBeNull();
+            expect(r.error?.code).toBe('batch_refused');
+            // The documented phrase only; the advice that follows it is not a documented contract.
+            expect(r.error?.message).toContain('too large to commit atomically');
         }
-        expect(refused).toBe(true);
 
         // Nothing was written — the assertion that makes this about ATOMICITY rather than about a
         // request being rejected.
-        const page: any = await client.records.listRecords({ type: wideType, limit: 100 });
-        expect((page.data ?? []).some((r: any) => String(r.externalId ?? '').startsWith(tag))).toBe(false);
+        const wide = await drainCursor((startFrom) => client.records.listRecords(
+            startFrom ? { type: wideType, startFrom, limit: 100 } : { type: wideType, limit: 100 }));
+        expect(wide.some((r: any) => String(r.externalId ?? '').startsWith(tag))).toBe(false);
     });
 });

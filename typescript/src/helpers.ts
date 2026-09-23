@@ -95,6 +95,23 @@ export async function pollUntilIndexed(
 }
 
 /**
+ * Every item of a cursor-paged list, following `nextCursor` to the end. A single `limit: 100` page is
+ * not safe on a shared, long-lived tenant that accumulates across runs: an assertion of ABSENCE over
+ * one page silently goes vacuous once the tenant holds more than a page.
+ * `fetchPage` receives the cursor to start from (undefined for the first page).
+ */
+export async function drainCursor(fetchPage: (startFrom?: string) => Promise<any>): Promise<any[]> {
+    const out: any[] = [];
+    let cursor: string | null | undefined;
+    do {
+        const page: any = await fetchPage(cursor ?? undefined);
+        out.push(...(page.data ?? []));
+        cursor = page.nextCursor;
+    } while (cursor);
+    return out;
+}
+
+/**
  * Best-effort cleanup wrapper — logs failures but never throws. Used in
  * afterAll hooks so a failed cleanup doesn't mask the original test failure.
  */

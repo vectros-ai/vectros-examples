@@ -14,7 +14,7 @@
  */
 import { client } from '../src/client';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, drainCursor } from '../src/helpers';
 
 function baseUrl(): string {
     const u = process.env.VECTROS_API_BASE_URL;
@@ -59,6 +59,13 @@ async function executeScript(
     opts: { token?: string; idempotencyKey?: string } = {},
 ): Promise<{ status: number; json: any; headers: Headers }> {
     return rawJson('POST', '/v1/scripts/execute', body, opts);
+}
+
+/** Whether any folder on the tenant has this name, paging through all of them. */
+async function folderNamed(name: string): Promise<boolean> {
+    const folders = await drainCursor((startFrom) =>
+        client.folders.listFolders(startFrom ? { startFrom, limit: 100 } : { limit: 100 }));
+    return folders.some((f: any) => f.name === name);
 }
 
 // The composition every test here runs: a folder plus N text documents filed into it, returned as
@@ -134,11 +141,9 @@ describe('scripts: synchronous execution', () => {
         expect(status).toBe(400);
         expect(json.errorCode).toBe('SCRIPT_ERROR');
         expect(json.message).toContain('deliberate');
-        // Scoped to a page large enough that a concurrent run on the shared tenant cannot push the
-        // row we are asserting the ABSENCE of off the end — a negative assertion that silently goes
-        // vacuous is worse than no assertion.
-        const page = await client.folders.listFolders({ limit: 100 });
-        expect((page.data ?? []).some((f: any) => f.name === 'never-' + tag)).toBe(false);
+        // Drains every page: a negative assertion over ONE page silently goes vacuous once the shared
+        // tenant holds more folders than that page — worse than no assertion.
+        expect(await folderNamed('never-' + tag)).toBe(false);
     });
 
     test('execute needs the scripts:x permission; a data-only token is refused', async () => {
@@ -474,8 +479,15 @@ describe('scripts: the execution budgets', () => {
             scriptRef: { name, version: 'latest' },
             input: { bytes: 300_000 },
         });
-        expect(tooBig.status).toBeGreaterThanOrEqual(400);
-        expect(JSON.stringify(tooBig.json)).toContain('RESULT_TOO_LARGE');
+        // The refusal's SHAPE, not just its occurrence: a bare `>= 400` passes against any other
+        // refusal. It is a 400 carrying the stable `errorCode`, the limit that applied and the size
+        // that breached it (so a caller can decide what to trim). Only the numbers are pinned in the
+        // message, not its wording: the wording is not a documented contract.
+        expect(tooBig.status).toBe(400);
+        expect(tooBig.json.errorCode).toBe('RESULT_TOO_LARGE');
+        expect(tooBig.json.limit).toBe(262_144);
+        expect(tooBig.json.bytes).toBeGreaterThan(262_144);
+        expect(tooBig.json.message).toContain('262144');
 
         // The control, and what makes the refusal a CAP rather than the script being broken: the same
         // script, the same code path, a smaller result, accepted.
@@ -499,8 +511,20 @@ describe('scripts: the execution budgets', () => {
         expect(unkeyed.json.result.blob).toHaveLength(100_000);
 
         const keyed = await executeScript(between, { idempotencyKey: 'smoke-cap-' + uniqueTag() });
-        expect(keyed.status).toBeGreaterThanOrEqual(400);
-        expect(JSON.stringify(keyed.json)).toContain('RESULT_TOO_LARGE');
+        // Same refusal shape as the unkeyed cap, with the KEYED limit in it: 16 KB, not 256 KB.
+        expect(keyed.status).toBe(400);
+        expect(keyed.json.errorCode).toBe('RESULT_TOO_LARGE');
+        expect(keyed.json.limit).toBe(16_384);
+        expect(keyed.json.message).toContain('16384');
+
+        // The positive control for the keyed cap itself: a keyed call whose result is UNDER 16 KB is
+        // accepted, so a suite (or a server) that refused every keyed call could not pass the cell above.
+        const keyedUnder = await executeScript(
+            { scriptRef: { name, version: 'latest' }, input: { bytes: 1_000 } },
+            { idempotencyKey: 'smoke-cap-under-' + uniqueTag() },
+        );
+        expect(keyedUnder.status).toBe(200);
+        expect(keyedUnder.json.result.blob).toHaveLength(1_000);
     });
 
     test('a transaction over 100 storage rows is refused, and nothing is committed', async () => {
@@ -519,16 +543,17 @@ describe('scripts: the execution budgets', () => {
             scriptRef: { name, version: 'latest' },
             input: { tag, count: 120 },
         });
-        expect(over.status).toBeGreaterThanOrEqual(400);
-        // The error names the two numbers a partner needs in order to re-plan the call.
-        const body = JSON.stringify(over.json);
-        expect(body).toContain('total');
-        expect(body).toContain('limit');
+        // A 400 with the stable `errorCode`, and the two numbers a partner needs in order to re-plan
+        // the call as numeric fields: what the execution staged (`total`, after merging) and what one
+        // atomic transaction may carry (`limit`). Asserting the fields, not that the words appear.
+        expect(over.status).toBe(400);
+        expect(over.json.errorCode).toBe('WRITE_BUFFER_CAP_EXCEEDED');
+        expect(over.json.limit).toBe(100);
+        expect(over.json.total).toBeGreaterThan(over.json.limit);
 
         // All-or-nothing holds at the cap too: the folder the script created before it ran out of
         // budget is not left behind.
-        const page: any = await client.folders.listFolders({ limit: 100 });
-        expect((page.data ?? []).some((f: any) => f.name === 'budget-' + tag)).toBe(false);
+        expect(await folderNamed('budget-' + tag)).toBe(false);
 
         // The control: the same script, under the cap, commits.
         const under = await executeScript({

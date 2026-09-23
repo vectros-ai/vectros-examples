@@ -9,15 +9,27 @@
  * reachable URL (the exchange endpoint fail-closed rejects loopback/link-
  * local/private-range JWKS hosts, so no local mock server can stand in). No
  * such fixture is available today, and standing one up is out of scope
- * here. This file covers everything reachable WITHOUT one: the full
- * issuer-registry CRUD contract (including `PUT`'s trust-anchor-vs-
- * safe-field split, `status: suspended`, the 403-vs-404 split), and every
- * validation/routing rejection `exchange()` can produce before or in place
- * of a live signature check (400s, the 404 "unknown issuer" path, and a
- * genuine 401 by registering a REAL public JWKS endpoint and presenting a
- * syntactically-valid JWT with a signature that can never verify against
- * it). Successful exchange + self-signup remain untested by this file —
+ * here.
+ *
+ * It ALSO requires an ACTIVE issuer registration. A registration made
+ * without `restrictedToDomain` starts as `pending_verification` and accepts
+ * no token exchange until its registrant proves control of the IdP with
+ * `POST /v1/auth/issuers/{issuerId}/verify` — which takes a real login token
+ * from that IdP, carrying a claim its administrator configured a rule to
+ * add. This suite cannot produce one, so it can never activate a
+ * registration through the public API. Everything that needs an ACTIVE
+ * registration (a genuine 401 from a signature that fails to verify,
+ * suspend/reinstate, `context_id` disambiguation, successful exchange,
+ * self-signup) is therefore covered by backend unit tests, not by this file —
  * named here, not silently missing.
+ *
+ * This file covers everything reachable WITHOUT an active registration: the
+ * issuer-registry CRUD contract (including `PUT`'s trust-anchor-vs-safe-field
+ * split and its refusal to change a pending registration's `status`, and the
+ * 403-vs-404 split), the `pending_verification` state and its uniform 404 at
+ * exchange, the rejections `verify` can produce, and every validation/routing
+ * rejection `exchange()` can produce before a live signature check (400s and
+ * the 404 "unknown issuer" path).
  *
  * ONE NAMED GAP, deliberately not covered here (see "issuer registry"
  * below for the in-file investigation notes, not just this summary):
@@ -40,9 +52,8 @@ function b64url(input: string | Buffer): string {
 /**
  * Builds a STRUCTURALLY valid but never-verifiable JWT: real header + real
  * claims (so the structural parse and the iss/aud extraction succeed),
- * garbage signature bytes (so cryptographic verification — reached only once
- * a registration is actually found — can never succeed). No signing key
- * needed for any test in this file.
+ * garbage signature bytes (so cryptographic verification can never
+ * succeed). No signing key needed for any test in this file.
  */
 function fakeJwt(claims: Record<string, unknown>): string {
     const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
@@ -52,9 +63,9 @@ function fakeJwt(claims: Record<string, unknown>): string {
 }
 
 // -----------------------------------------------------------------------
-// Raw HTTP for the exchange endpoint — deliberately NOT the SDK. §1.4 of
-// TOKEN-EXCHANGE-CONTRACT.md documents the OAuth envelope ({error,
-// error_description}, RFC 6749 §5.2) as a deliberate deviation from this
+// Raw HTTP for the exchange endpoint — deliberately NOT the SDK. The endpoint
+// answers with the OAuth error envelope ({error, error_description},
+// RFC 6749 §5.2), a deliberate deviation from this
 // API's usual {message} shape; the generated SDK's error type has no typed
 // field for either (no response schema is declared for the 4xx/401/403/404
 // cases), so asserting the wire shape needs the raw body, same pattern as
@@ -74,6 +85,26 @@ async function rawExchange(body: Record<string, unknown>): Promise<{ status: num
     });
     const rawBody = await resp.text();
     return { status: resp.status, parsed: JSON.parse(rawBody) };
+}
+
+// Raw, AUTHENTICATED HTTP for the issuer-registry routes whose newest members
+// the installed SDK build may not model yet (the `verify` call, the
+// `verification*` fields on a pending registration). Same bearer key the SDK
+// client uses; the body is parsed loosely because these tests read fields, not
+// types.
+async function rawAuthedPost(
+    path: string,
+    body: Record<string, unknown>,
+): Promise<{ status: number; parsed: Record<string, unknown> }> {
+    const key = process.env.VECTROS_API_KEY;
+    if (!key) throw new Error('VECTROS_API_KEY required');
+    const resp = await fetch(`${baseUrl()}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(body),
+    });
+    const rawBody = await resp.text();
+    return { status: resp.status, parsed: rawBody ? JSON.parse(rawBody) : {} };
 }
 
 interface OAuthErrorBody {
@@ -202,32 +233,13 @@ describe('issuers + token exchange', () => {
             }
         });
 
-        test('a second issuerId cannot claim an (issuer, audience) pair already registered', async () => {
-            // NOTE: since 0.40.0 this ALSO collides with the one-active-IdP-per-context rule
-            // below (both issuers target the same context) — the two isolating tests that
-            // follow disambiguate which rule actually fires when only one of them applies.
-            const issuer = `https://${uniqueTag()}.example.com/`;
-            const audience = `aud-${uniqueTag()}`;
-            const firstId = ('paira' + uniqueTag()).slice(0, 31);
-            const secondId = ('pairb' + uniqueTag()).slice(0, 31);
-            try {
-                await client.auth.registerIssuer({
-                    issuerId: firstId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                    audience, contextId: ctxId,
-                });
-                await expectReject(client.auth.registerIssuer({
-                    issuerId: secondId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                    audience, contextId: ctxId,
-                }), 400);
-            } finally {
-                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
-            }
-        });
-
-        // Isolates pair-uniqueness (TENANT-wide, independent of context) from the one-active-IdP-
-        // per-context rule tested right below: same pair, but DIFFERENT contexts, so the
-        // per-context rule can never be what fires here.
-        test('the SAME (issuer, audience) pair is still refused across DIFFERENT contexts (tenant-wide pair uniqueness)', async () => {
+        // A registration made without `restrictedToDomain` does not claim its (issuer, audience)
+        // pair when it is registered — the pair is claimed only once the registration is verified,
+        // which this suite cannot do. So pair-uniqueness between two domain-less registrations is
+        // not observable here: the same pair under two DIFFERENT contexts registers twice, both
+        // pending. (The same pair under the SAME context is still refused, but by the one-active-
+        // IdP-per-context rule below, which the test after this one isolates.)
+        test('the SAME (issuer, audience) pair registered without a domain under DIFFERENT contexts yields two pending registrations', async () => {
             const otherCtxId = ('pr2' + uniqueTag()).slice(0, 31);
             await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'pair-uniqueness spec 2' } });
             const issuer = `https://${uniqueTag()}.example.com/`;
@@ -235,23 +247,29 @@ describe('issuers + token exchange', () => {
             const firstId = ('pr2a' + uniqueTag()).slice(0, 31);
             const secondId = ('pr2b' + uniqueTag()).slice(0, 31);
             try {
-                await client.auth.registerIssuer({
+                const first = await client.auth.registerIssuer({
                     issuerId: firstId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
                     audience, contextId: ctxId,
                 });
-                await expectReject(client.auth.registerIssuer({
+                const second = await client.auth.registerIssuer({
                     issuerId: secondId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
                     audience, contextId: otherCtxId,
-                }), 400);
+                });
+                expect(first.created).toBe(true);
+                expect(first.status).toBe('pending_verification');
+                expect(second.created).toBe(true);
+                expect(second.status).toBe('pending_verification');
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
+                await tryCleanup('second issuer', () => client.auth.deleteIssuer({ issuerId: secondId }));
                 await tryCleanup('other context', () =>
                     client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
             }
         });
 
-        // A context has exactly one ACTIVE issuer, independent of pair uniqueness. DIFFERENT
-        // (issuer, audience) pair, SAME context, so pair-uniqueness can never be what fires here.
+        // A context has exactly one active issuer, and a pending registration already holds its
+        // context, so a second registration is refused before the first is ever verified.
+        // DIFFERENT (issuer, audience) pair, SAME context.
         test('a second DISTINCT issuer in the SAME context is refused — one active IdP per context', async () => {
             const firstId = ('oneidp1' + uniqueTag()).slice(0, 31);
             const secondId = ('oneidp2' + uniqueTag()).slice(0, 31);
@@ -455,11 +473,10 @@ describe('issuers + token exchange', () => {
 
     // -----------------------------------------------------------------------
     // PUT /v1/auth/issuers/{issuerId} — update a registered issuer's
-    // SAFE fields (subClaim/emailClaim/status/selfSignupPolicies) while its
+    // SAFE fields (subClaim/emailClaim/selfSignupPolicies) while its
     // trust anchor (issuer/jwksUri/audience) and routing pin (contextId) stay
-    // immutable via this route. `status: suspended` is the concrete,
-    // observable effect of a safe-field change — asserted against a real
-    // subsequent exchangeToken() call, not just the PUT response echo.
+    // immutable via this route. `status` is NOT a free safe field: a
+    // registration still pending verification refuses every status change.
     // -----------------------------------------------------------------------
 
     describe('issuer update (PUT)', () => {
@@ -545,31 +562,25 @@ describe('issuers + token exchange', () => {
             }
         });
 
-        test('status: suspended is now reachable via PUT, and a suspended issuer is rejected identically to unregistered (404) at exchange', async () => {
+        // A registration still pending verification can be neither activated nor suspended through
+        // PUT — activation happens only via `verify`, and suspending an unverified registration is
+        // meaningless. (Suspend/reinstate of an ACTIVE registration is not reachable from this
+        // suite: an active registration requires proving control of a real IdP, so that path is
+        // covered by backend unit tests.)
+        test('status cannot be changed on a pending registration — active and suspended are both refused with 400, and it stays pending_verification', async () => {
             const reg = await registerThrowawayIssuer();
             try {
-                expect((await client.auth.getIssuer({ issuerId: reg.issuerId })).status).toBe('active');
+                expect((await client.auth.getIssuer({ issuerId: reg.issuerId })).status).toBe('pending_verification');
 
-                const suspended = await client.auth.updateIssuer({
-                    issuerId: reg.issuerId, status: 'suspended',
-                });
-                expect(suspended.status).toBe('suspended');
-
-                // Deliberately uniform with the "never registered" 404 — a caller
-                // cannot distinguish "never registered" from "registered then
-                // suspended", the same shape as the existing deregister-then-
-                // exchange test just below.
-                await expectReject(client.auth.exchangeToken({
-                    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-                    subject_token: fakeJwt({ iss: reg.issuer, aud: reg.audience, sub: 'smoke-' + uniqueTag() }),
-                    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-                }), 404);
-
-                // Reversible: reinstating clears the suspension.
-                const reinstated = await client.auth.updateIssuer({
+                await expectReject(client.auth.updateIssuer({
                     issuerId: reg.issuerId, status: 'active',
-                });
-                expect(reinstated.status).toBe('active');
+                }), 400);
+                await expectReject(client.auth.updateIssuer({
+                    issuerId: reg.issuerId, status: 'suspended',
+                }), 400);
+
+                // Unchanged after both rejected attempts.
+                expect((await client.auth.getIssuer({ issuerId: reg.issuerId })).status).toBe('pending_verification');
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: reg.issuerId }));
             }
@@ -820,72 +831,108 @@ describe('issuers + token exchange', () => {
             }), 404);
         });
 
-        // The optional context_id disambiguation field: a mismatch (naming a context this issuer
-        // is not registered against) is refused identically to an unrecognized issuer — no
-        // distinguishing information.
-        test('context_id naming a context this issuer is NOT registered against → 404, identical to an unrecognized issuer', async () => {
-            const issuerId = ('ctxid' + uniqueTag()).slice(0, 31);
-            const issuer = 'https://accounts.google.com';
+        // Not covered here: the optional context_id disambiguation field (a context_id naming a
+        // context the issuer is not registered against → 404). It is only distinguishable from an
+        // unrecognized issuer when the registration is ACTIVE; a pending registration already 404s
+        // at exchange whatever context_id is sent. An active registration requires proving control
+        // of a real IdP, so that path is covered by backend unit tests rather than this suite.
+    });
+
+    // -----------------------------------------------------------------------
+    // A registration made without a verified domain starts pending_verification: it
+    // accepts no token exchange until its registrant proves control of the IdP with
+    // POST /v1/auth/issuers/{issuerId}/verify. That call needs a real login token from the
+    // IdP, which this suite cannot obtain — so what is provable here is the pending state,
+    // its uniform 404 at exchange, and every way `verify` refuses.
+    //
+    // Registers against Google's real, stable, publicly-reachable OpenID configuration so
+    // the server-side discovery fetch genuinely succeeds — the refusals below are the
+    // verification checks themselves, not "couldn't reach the IdP at all".
+    // -----------------------------------------------------------------------
+    describe('issuer pending verification — exchange and verify', () => {
+        const GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
+        const GOOGLE_ISSUER = 'https://accounts.google.com';
+        const GOOGLE_JWKS = 'https://www.googleapis.com/oauth2/v3/certs';
+
+        test('a registration without restrictedToDomain is pending_verification with a challenge, and its iss/aud 404s at exchange', async () => {
+            const issuerId = ('pend' + uniqueTag()).slice(0, 31);
+            const issuer = `https://${uniqueTag()}.example.com/`;
             const audience = `aud-${uniqueTag()}`;
-            await client.auth.registerIssuer({
-                issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                audience, contextId: ctxId,
-            });
-            const otherCtxId = ('ctxid2' + uniqueTag()).slice(0, 31);
-            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'exchange context_id spec' } });
             try {
+                // Raw, so the verification* fields are read off the wire whatever the installed
+                // SDK build models.
+                const { status, parsed } = await rawAuthedPost('/v1/auth/issuers', {
+                    issuerId, issuer, jwksUri: GOOGLE_JWKS, audience, contextId: ctxId,
+                });
+                expect(status).toBe(201);
+                expect(parsed.status).toBe('pending_verification');
+                expect(parsed.verificationClaim).toBe('https://vectros.ai/claims/issuer_challenge');
+                expect(typeof parsed.verificationNonce).toBe('string');
+                expect((parsed.verificationNonce as string).length).toBeGreaterThan(0);
+                expect(typeof parsed.verificationExpiresAt).toBe('string');
+
+                expect((await client.auth.getIssuer({ issuerId })).status).toBe('pending_verification');
+
+                // Deliberately uniform with the "never registered" 404 (not a 401): a caller cannot
+                // tell an unverified registration from an unregistered issuer.
                 await expectReject(client.auth.exchangeToken({
                     grant_type: GRANT_TYPE,
                     subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
                     subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-                    context_id: otherCtxId,
                 }), 404);
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
-                await tryCleanup('other context', () =>
-                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
             }
         });
-    });
 
-    describe('token exchange — a REAL registered issuer, unverifiable signature → 401', () => {
-        // Registers against a real, stable, publicly-reachable JWKS (Google's) so
-        // RemoteJwksVerifier's fetch genuinely succeeds — the failure this proves is
-        // SIGNATURE verification, not "couldn't reach the JWKS at all".
-        let issuerId: string;
-        let issuer: string;
-        let audience: string;
-        const GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
-
-        beforeAll(async () => {
-            issuerId = ('verify' + uniqueTag()).slice(0, 31);
-            issuer = 'https://accounts.google.com';
-            audience = `aud-${uniqueTag()}`;
+        test('verify with a token whose signature cannot verify → 400, and the registration stays pending_verification', async () => {
+            const issuerId = ('vfybad' + uniqueTag()).slice(0, 31);
+            const audience = `aud-${uniqueTag()}`;
             await client.auth.registerIssuer({
-                issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                issuerId, issuer: GOOGLE_ISSUER, jwksUri: GOOGLE_JWKS, audience, contextId: ctxId,
+            });
+            try {
+                const { status, parsed } = await rawAuthedPost(`/v1/auth/issuers/${issuerId}/verify`, {
+                    token: fakeJwt({ iss: GOOGLE_ISSUER, aud: audience, sub: 'smoke-' + uniqueTag() }),
+                });
+                expect(status).toBe(400);
+                // The refusal must come from the SIGNATURE check, not from failing to reach the issuer's
+                // discovery document: both are a 400, and only the first shows verification can work at all.
+                const message = JSON.stringify(parsed);
+                expect(message).toContain('could not be verified against the issuer');
+                expect(message).not.toContain('could not be fetched');
+                expect((await client.auth.getIssuer({ issuerId })).status).toBe('pending_verification');
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+            }
+        });
+
+        // verify trusts the keys the issuer PUBLISHES, not the ones the registration names: the
+        // registered jwksUri must equal the `jwks_uri` in the issuer's own OpenID configuration,
+        // or a registrant could point verification at keys of their own.
+        test('verify on a registration whose jwksUri differs from the issuer\'s published jwks_uri → 400 naming the published one', async () => {
+            const issuerId = ('vfyjwks' + uniqueTag()).slice(0, 31);
+            const audience = `aud-${uniqueTag()}`;
+            await client.auth.registerIssuer({
+                issuerId, issuer: GOOGLE_ISSUER, jwksUri: 'https://www.googleapis.com/oauth2/v1/certs',
                 audience, contextId: ctxId,
             });
+            try {
+                const { status, parsed } = await rawAuthedPost(`/v1/auth/issuers/${issuerId}/verify`, {
+                    token: fakeJwt({ iss: GOOGLE_ISSUER, aud: audience, sub: 'smoke-' + uniqueTag() }),
+                });
+                expect(status).toBe(400);
+                expect(JSON.stringify(parsed)).toContain(GOOGLE_JWKS);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+            }
         });
 
-        afterAll(async () => {
-            await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
-        });
-
-        test('a registered issuer + matching iss/aud, but a signature that cannot verify → 401', async () => {
-            await expectReject(client.auth.exchangeToken({
-                grant_type: GRANT_TYPE,
-                subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
-                subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-            }), 401);
-        });
-
-        test('after deregistering the issuer, the same iss/aud now 404s instead of 401', async () => {
-            await client.auth.deleteIssuer({ issuerId });
-            await expectReject(client.auth.exchangeToken({
-                grant_type: GRANT_TYPE,
-                subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
-                subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-            }), 404);
+        test('verify on a never-registered issuerId → 404', async () => {
+            const { status } = await rawAuthedPost(`/v1/auth/issuers/${('nosuch' + uniqueTag()).slice(0, 31)}/verify`, {
+                token: fakeJwt({ iss: GOOGLE_ISSUER, aud: `aud-${uniqueTag()}`, sub: 'smoke-' + uniqueTag() }),
+            });
+            expect(status).toBe(404);
         });
     });
 
@@ -928,7 +975,12 @@ describe('issuers + token exchange', () => {
             expect(body.message).toBeUndefined();
         });
 
-        test('401 (registered issuer, unverifiable signature) → {error, error_description}, not {message}', async () => {
+        // The 401 (a registered issuer whose token signature fails) has no reachable path from
+        // this suite: it needs an ACTIVE registration, and activating one requires proving control
+        // of a real IdP, so that envelope is covered by backend unit tests. A registration still
+        // pending verification is the closest reachable case — it answers with the same uniform
+        // 404 as an unregistered issuer, and must carry the same OAuth envelope.
+        test('404 (registered issuer still pending verification) → {error, error_description}, not {message}', async () => {
             const issuerId = ('envl' + uniqueTag()).slice(0, 31);
             const issuer = 'https://accounts.google.com';
             const audience = `aud-${uniqueTag()}`;
@@ -942,7 +994,7 @@ describe('issuers + token exchange', () => {
                     subject_token: fakeJwt({ iss: issuer, aud: audience, sub: 'smoke-' + uniqueTag() }),
                     subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
                 });
-                expect(status).toBe(401);
+                expect(status).toBe(404);
                 const body = parsed as OAuthErrorBody;
                 expect(typeof body.error).toBe('string');
                 expect(typeof body.error_description).toBe('string');
