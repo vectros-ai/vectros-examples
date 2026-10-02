@@ -20,9 +20,10 @@ cp .env.example .env
 cd typescript && ./run.sh      # or: python, java, mcp
 ```
 
-Most examples run with your live API key. A couple (tenant isolation,
-cross-context isolation) use your test key or tenant id and **skip themselves
-automatically** when those aren't set — see `.env.example`.
+Most examples run with your live API key. Some use your test key or tenant id:
+a few (tenant isolation, cross-context isolation) **skip themselves automatically**
+when those aren't set, and others **fail** without `VECTROS_LIVE_TENANT_ID` — see
+`.env.example` and the TypeScript README's Credentials section.
 
 ## What's here
 

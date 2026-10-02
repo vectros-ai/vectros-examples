@@ -62,15 +62,14 @@ const API_KEY = process.env.VECTROS_API_KEY!;
  *
  * Raw fetch, not `client.documents.patchDocument`, and the reason is the property under test. The
  * document PATCH is an RFC 7386 merge patch: an absent key means "leave it alone", so a status-only
- * body is the correct — and for a partner, the obvious — way to archive. But the generated SDKs type
- * this endpoint's body as the full document request, in which `title` is REQUIRED, so the typed call
- * `patchDocument({ id, body: { status: 'ARCHIVED' } })` does not compile; a typed caller is pushed
- * into re-sending a title alongside the archive. (The record twin has no such constraint —
- * `patchRecord({ id, body: { status: 'ARCHIVED' } })` compiles, which is why
- * `records-archive.spec.ts` reads more simply than this file.)
+ * body is the correct — and for a partner, the obvious — way to archive. Older generated SDKs typed
+ * this endpoint's body as the full document request, in which `title` was REQUIRED, so a typed
+ * status-only call did not compile and pushed a typed caller into re-sending a title alongside the
+ * archive; current SDKs give the endpoint its own request type. (The record twin never had the
+ * constraint, which is why `records-archive.spec.ts` reads more simply than this file.)
  *
  * Asserting the wire contract directly keeps this spec pinned to what the API actually promises,
- * independent of that SDK shape and of which SDK version a given run installs.
+ * independent of the SDK's request shape and of which SDK version a given run installs.
  */
 async function setLifecycle(id: string, status: 'ACTIVE' | 'ARCHIVED'): Promise<any> {
     // `rateLimitAwareFetch`, not bare `fetch`: every other call in this suite goes through the

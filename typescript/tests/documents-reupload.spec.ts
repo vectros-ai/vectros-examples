@@ -4,9 +4,11 @@
  * re-sending `indexMode` — the existing document already carries one and the
  * re-upload inherits it.
  *
- * Step 2 mirrors the data-plane app's replace-a-file call EXACTLY
- * (DocumentDetailPage's replace mutation): `{ fileName, fileType, externalId }`
- * and nothing else — no indexMode, no upsert. The MCP path cannot gate this
+ * Step 2 mirrors the data-plane app's replace-a-file call for an untyped document
+ * (DocumentDetailPage's replace mutation): `{ fileName, fileType, externalId,
+ * confirmUntyped }` and nothing else — no indexMode, no upsert. `confirmUntyped` is
+ * there because the platform refuses an externalId with no schemaId unless an untyped
+ * document is confirmed as intended. The MCP path cannot gate this
  * bug — its `document_ingest` client-side-defaults untyped docs to HYBRID, so
  * it always sends `indexMode` and masks the omission. Hence this SDK-level
  * spec is the regression gate. (The `upsert:true` variant of the same inherit
@@ -54,6 +56,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             fileType: 'text/plain',
             indexMode: 'HYBRID',
             externalId,
+            confirmUntyped: true,
         });
         docIds.push(first.id!);
         expect(first.created).toBe(true);
@@ -77,6 +80,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             fileName: 'reupload-smoke.txt',
             fileType: 'text/plain',
             externalId,
+            confirmUntyped: true,
         });
         expect(second.created).toBe(false);
         expect(second.id).toBe(first.id);
@@ -112,6 +116,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             fileType: 'text/plain',
             indexMode: 'HYBRID',
             externalId: upsertExternalId,
+            confirmUntyped: true,
         });
         docIds.push(first.id!);
         expect(first.created).toBe(true);
@@ -120,6 +125,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             fileName: 'reupload-upsert-smoke.txt',
             fileType: 'text/plain',
             externalId: upsertExternalId,
+            confirmUntyped: true,
             upsert: true,
             payload: { revision: 'two' },
         });
@@ -231,6 +237,7 @@ describe('documents (re-upload always requires documents:u)', () => {
             indexMode: 'HYBRID',
             userId: ownerUserId,
             externalId,
+            confirmUntyped: true,
         });
         docIds.push(first.id!);
         expect(first.created).toBe(true);
@@ -246,6 +253,7 @@ describe('documents (re-upload always requires documents:u)', () => {
             fileName: 'reupload-scope-smoke.txt',
             fileType: 'text/plain',
             externalId,
+            confirmUntyped: true,
         }), 403);
 
         // The identical re-upload succeeds once the token also holds documents:u.
@@ -257,6 +265,7 @@ describe('documents (re-upload always requires documents:u)', () => {
             fileName: 'reupload-scope-smoke.txt',
             fileType: 'text/plain',
             externalId,
+            confirmUntyped: true,
         });
         expect(second.created).toBe(false);
         expect(second.id).toBe(first.id);

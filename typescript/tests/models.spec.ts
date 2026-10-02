@@ -29,12 +29,17 @@ describe('inference models', () => {
             expect(model.contextWindow).toBeGreaterThan(0);
             expect(model.inputCreditsPer1kTokens).toBeGreaterThan(0);
             expect(model.outputCreditsPer1kTokens).toBeGreaterThan(0);
-            // Output rate is a per-model multiple of the input rate: Anthropic models are 5:1,
-            // Amazon Nova is 4:1 (its output tokens are relatively cheaper). Derive the expected
-            // ratio from the provider so the catalog can carry mixed pricing shapes.
-            const expectedOutputRatio = model.provider === 'Amazon' ? 4 : 5;
-            expect(model.outputCreditsPer1kTokens)
-                .toBeCloseTo(model.inputCreditsPer1kTokens * expectedOutputRatio, 5);
+            // Output rate is a per-model multiple of the input rate. Anthropic models are priced
+            // 5:1; other providers carry their own output:input ratio, which differs per model, so
+            // for those only the floor is pinned: an output token is never cheaper than an input
+            // token. The exact ratios are the catalog's own data; pinning them here would go stale
+            // with every price change, which is how this assertion went stale before.
+            const ratio = model.outputCreditsPer1kTokens / model.inputCreditsPer1kTokens;
+            if (model.provider === 'Anthropic') {
+                expect(ratio).toBeCloseTo(5, 5);
+            } else {
+                expect(ratio).toBeGreaterThanOrEqual(1);
+            }
             // availableOn enumerates which plan tiers can call the model
             expect(Array.isArray(model.availableOn)).toBe(true);
             expect(model.availableOn.length).toBeGreaterThan(0);
@@ -90,20 +95,24 @@ describe('inference models', () => {
         expect(paidOnlyModels.length).toBeGreaterThan(0);
     });
 
-    test('catalog includes claude-haiku-4-5, claude-sonnet-5, claude-opus-4-8 aliases', async () => {
+    test('catalog includes the current aliases and none of the retired ones', async () => {
         const catalog = await client.inference.listInferenceModels();
         const ids = catalog.models.map(m => m.id);
-        // The current generation of aliases. Older aliases (Sonnet 4.5,
-        // Opus 4.7) have been retired and must no longer appear.
+        // The current generation of aliases, including the non-Anthropic tiers.
         for (const expected of [
             'claude-haiku-4-5',
             'claude-sonnet-5',
-            'claude-opus-4-8',
+            'claude-opus-5-5',
+            'amazon-nova-lite',
+            'amazon-nova-2-lite',
+            'meta-llama-4-scout',
+            'meta-llama-4-maverick',
         ]) {
             expect(ids).toContain(expected);
         }
-        // The retired aliases must no longer appear.
+        // Retired aliases must no longer appear.
         expect(ids).not.toContain('claude-sonnet-4-5');
         expect(ids).not.toContain('claude-opus-4-7');
+        expect(ids).not.toContain('claude-opus-4-8');
     });
 });

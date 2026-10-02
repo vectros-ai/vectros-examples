@@ -84,6 +84,8 @@ test('file re-upload re-extracts + re-indexes the new file (same id, old content
           title: `Reupload smoke ${UNIQUE}`,
           filePath: oldFile,
           externalId: EXTERNAL_ID,
+          // An untyped document with an externalId: the platform refuses that unless it is confirmed.
+          confirmUntyped: true,
           indexMode: 'HYBRID',
         },
       }),
@@ -91,6 +93,11 @@ test('file re-upload re-extracts + re-indexes the new file (same id, old content
     docId = first.id as string;
     assert.ok(docId, 'first ingest returns a document id');
     assert.equal(first.indexStatus, 'PENDING_INDEX', 'first ingest is accepted async (PENDING_INDEX)');
+    assert.match(
+      String(first._note),
+      /Poll document_get\(id\) until indexStatus is INDEXED\./,
+      'first-time ingest keeps the simple polling guidance',
+    );
 
     // 2) Wait for INDEXED; the OLD marker must be searchable for THIS doc.
     await pollIndexed(client, docId);
@@ -107,6 +114,7 @@ test('file re-upload re-extracts + re-indexes the new file (same id, old content
           title: `Reupload smoke ${UNIQUE}`,
           filePath: newFile,
           externalId: EXTERNAL_ID,
+          confirmUntyped: true,
           upsert: true,
           indexMode: 'HYBRID',
         },
@@ -115,6 +123,12 @@ test('file re-upload re-extracts + re-indexes the new file (same id, old content
 
     // 4) SAME document id — a re-index of the existing doc, NOT a duplicate.
     assert.equal(second.id, docId, 're-upload targets the SAME document id (no duplicate)');
+    assert.equal(second.created, false, 're-upload reports created:false (it replaced, not minted)');
+    assert.match(
+      String(second._note),
+      /fileItemId/,
+      'replacement note points at fileItemId as the adoption signal, not indexStatus',
+    );
 
     // 5) Re-index completes: NEW content searchable, OLD content gone for this doc.
     // NOTE: indexStatus can transiently read INDEXED from the FIRST index while the

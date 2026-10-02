@@ -217,6 +217,45 @@ describe('inference: /v1/rag', () => {
         }
     });
 
+    // search.limit is bounded to 1-100 and an out-of-range value is REFUSED, never silently narrowed:
+    // a caller asking for more than the ceiling used to get fewer results with no error and no way to
+    // notice the shortfall. The boundary control (100 is accepted) is what stops a 400 from being any
+    // unrelated failure of the route.
+    describe('search.limit bounds', () => {
+        const refusal = async (limit: number): Promise<{ statusCode?: number; body?: { message?: string } } | null> => {
+            try {
+                const stream = await withRateLimitRetry(() => client.inference.ragInference({
+                    query: 'search limit bounds probe',
+                    search: { mode: 'HYBRID', limit, createdAfter: testStartedAt },
+                    maxTokens: 8,
+                }));
+                await collectStream<any>(stream);
+                return null;
+            } catch (err) {
+                return err as { statusCode?: number; body?: { message?: string } };
+            }
+        };
+
+        test.each([101, 0])('limit %i is refused with 400 and names the allowed range', async (limit) => {
+            const rejected = await refusal(limit);
+            expect(rejected).not.toBeNull();
+            expect(rejected!.statusCode).toBe(400);
+            expect(rejected!.body?.message ?? '').toMatch(/between 1 and 100/);
+        });
+
+        test('limit 100, the ceiling itself, is accepted and the results event says whether more exist', async () => {
+            const stream = await withRateLimitRetry(() => client.inference.ragInference({
+                query: 'What treatment is recommended for stage 1 hypertension?',
+                search: { mode: 'HYBRID', limit: 100, createdAfter: testStartedAt },
+                maxTokens: 8,
+            }));
+            const events = await collectStream<any>(stream);
+            const searchResults = events.find((e) => e.event === 'search_results');
+            expect(searchResults).toBeDefined();
+            expect(typeof searchResults.hasMore).toBe('boolean');
+        });
+    });
+
     // Two additional RAG behaviors — "search infrastructure error → 500
     // before stream opens" and "oversized result set emits
     // truncation_warning" — are covered at the unit-test layer rather

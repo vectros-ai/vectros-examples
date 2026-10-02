@@ -13,9 +13,12 @@
  * SAFETY: the subject is a brand-new, uniquely-tagged user created by this
  * test and used by nothing else — erasure only ever removes rows that
  * subject SOLELY owns, and `contextScope` is pinned to a throwaway context
- * this test also creates, rather than left to "discover every context the
- * subject has data in" (harmless here since the subject has data in exactly
- * one context, but pinning it is the deliberate, documented-safe habit).
+ * this test also creates, rather than left to sweep every context of the
+ * account (omitting `contextScope` does exactly that, on a shared account it is
+ * slow, and pinning is the deliberate, documented-safe habit). Because the
+ * request lists only one context, the subject's account-wide identity is
+ * deliberately kept and the certificate reports `identityRetained` — the test
+ * asserts that, then removes the subject itself.
  * Requires a ROOT api key (createErasureRequest 403s any scoped credential).
  *
  * HISTORY: an earlier version of this cascade had a genuine backend bug — a
@@ -66,6 +69,7 @@ interface ErasureResponse {
         contextsSwept?: string[];
         danglingReferences?: number;
         sharedRowsSkipped?: number;
+        identityRetained?: boolean;
     };
 }
 
@@ -97,12 +101,22 @@ async function pollErasureUntilDone(requestId: string): Promise<ErasureResponse>
 }
 
 describe('erasure requests', () => {
+    // Contexts the slow test creates, removed here as well as in its own finally: the setup between creating
+    // them and entering the try can throw, and a context left behind counts against the tenant's context cap.
+    const contextsToRemove: string[] = [];
+    afterAll(async () => {
+        for (const id of contextsToRemove) {
+            await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: id, confirm: id }));
+        }
+    });
+
     // SLOW — real convergence takes ~9.5min against staging; see the file
     // header. Gated per-test (not per-describe) so SKIP_SLOW doesn't also
     // drop the fast 403-refusal test below — mirrors app-contexts.spec.ts's
     // own per-test SLOW gate.
     (SKIP_SLOW ? test.skip : test)('submits, converges to completed, and the certificate\'s claims match the actual post-erasure state', async () => {
         const ctxId = ('erase' + uniqueTag()).slice(0, 31);
+        contextsToRemove.push(ctxId);
         await client.auth.createAppContext({ body: { contextId: ctxId, name: 'erasure-requests spec' } });
 
         const subject = await client.identity.createUser({ body: { externalId: uniqueTag() } });
@@ -133,6 +147,22 @@ describe('erasure requests', () => {
                         data_scope: { userId: [subject.id!], 'scope:org': [org.id!] } as unknown as Record<string, Record<string, unknown>>,
                     },
                 ],
+            },
+        });
+        // A second context the request will NOT name, holding a profile for the same principal. It is the
+        // control for the profile assertion below: it shows the check can tell a swept profile from a
+        // surviving one, and that a partial scope leaves the contexts it did not list alone.
+        const otherCtxId = ('eraseother' + uniqueTag()).slice(0, 31);
+        contextsToRemove.push(otherCtxId);
+        await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'erasure-requests spec (unlisted)' } });
+        await client.auth.createAccessProfile({
+            contextId: otherCtxId,
+            body: {
+                principalId: `usr_${subject.id}`,
+                scopes: [{
+                    allowed_actions: ['records:r'],
+                    data_scope: { userId: [subject.id!] } as unknown as Record<string, Record<string, unknown>>,
+                }],
             },
         });
         const minted = await client.auth.createScopedKey({
@@ -196,9 +226,24 @@ describe('erasure requests', () => {
             const stillThere = await client.records.getRecord({ id: coOwned.id! });
             expect(stillThere.id).toBe(coOwned.id);
 
-            // The subject's own identity row is gone too (erasure removes the
-            // subject's identity + lookup rows, not just their data).
-            await expect(client.identity.getUser({ id: subject.id! })).rejects.toMatchObject({ statusCode: 404 });
+            // The subject's identity is account-wide, and this request named only ONE of the
+            // account's contexts — so the identity must be KEPT, and the certificate must say so.
+            // Deleting it on a partial scope would strand every context the request did not list:
+            // the subject would no longer resolve, so a follow-up request could not reach them.
+            expect(done.certificate?.identityRetained).toBe(true);
+            const stillResolves = await client.identity.getUser({ id: subject.id! });
+            expect(stillResolves.id).toBe(subject.id);
+
+            // The subject's access profile in the context the request DID name is gone. A profile is a
+            // per-context grant keyed by the principal's prefixed id; an erasure that looked it up by the
+            // bare id would match nothing and leave the grant behind, so this is checked against state.
+            await expect(client.auth.getAccessProfile({ contextId: ctxId, principalId: `usr_${subject.id}` }))
+                .rejects.toMatchObject({ statusCode: 404 });
+            // Control: the profile in the context the request did NOT name is untouched.
+            const untouched = await client.auth.getAccessProfile({
+                contextId: otherCtxId, principalId: `usr_${subject.id}`,
+            });
+            expect(untouched.principalId).toBe(`usr_${subject.id}`);
         } finally {
             // Best-effort only, and unconditional even for the subject/solely-owned
             // record: on the HAPPY path a completed erasure has already removed both
@@ -215,6 +260,8 @@ describe('erasure requests', () => {
             await tryCleanup('subject user', () => client.identity.deleteUser({ id: subject.id! }));
             await tryCleanup('org entity', () => client.identity.deleteEntity({ namespace: 'org', id: org.id! }));
             await tryCleanup('context', () => client.auth.deleteAppContext({ contextId: ctxId, confirm: ctxId }));
+            await tryCleanup('unlisted context', () =>
+                client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
         }
     }, ERASURE_DONE_TIMEOUT_MS + 60_000);
 
@@ -226,6 +273,38 @@ describe('erasure requests', () => {
         await expect(scoped.compliance.createErasureRequest({
             subjectType: 'user', subjectId: '00000000-0000-0000-0000-000000000000',
         })).rejects.toMatchObject({ statusCode: 403 });
+    });
+
+    // `purge` removes a subject's audit history, which it can only find for users, orgs and clients.
+    // Accepting it for any other subject type would complete with a
+    // certificate that still said `purge` for a history that was never purged, so it is refused up front,
+    // before anything is resolved or erased. The control is the same `purge` on a supported type: it gets
+    // past that check and fails later, on the subject, with a different message. Neither call creates a job.
+    describe('auditDisposition purge', () => {
+        const unknownSubject = '00000000-0000-0000-0000-000000000000';
+        const refusal = async (subjectType: string): Promise<{ statusCode?: number; body?: { message?: string } }> => {
+            try {
+                await client.compliance.createErasureRequest({
+                    subjectType, subjectId: unknownSubject, auditDisposition: 'purge',
+                });
+            } catch (err) {
+                return err as { statusCode?: number; body?: { message?: string } };
+            }
+            throw new Error('expected the request to be refused');
+        };
+
+        test('is refused with 400 for a subject type whose audit history cannot be purged', async () => {
+            const rejected = await refusal('smoke_custom');
+            expect(rejected.statusCode).toBe(400);
+            expect(rejected.body?.message ?? '').toMatch(/only supported for subjectType/);
+        });
+
+        test('control: the same purge on a supported type gets past that check and fails on the subject', async () => {
+            const rejected = await refusal('user');
+            expect(rejected.statusCode).toBe(400);
+            expect(rejected.body?.message ?? '').toMatch(/No such user subject/);
+            expect(rejected.body?.message ?? '').not.toMatch(/only supported for subjectType/);
+        });
     });
 });
 

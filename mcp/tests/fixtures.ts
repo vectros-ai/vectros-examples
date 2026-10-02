@@ -250,7 +250,7 @@ export async function resolveSmokeDocumentId(): Promise<string | undefined> {
 export async function seedSmokeDocument(): Promise<FixtureOutcome> {
   let doc = await findSmokeDocument();
   if (!doc) {
-    const ingest = await api('POST', '/v1/documents', {
+    const ingest = await api('POST', '/v1/documents?confirmUntyped=true', {
       title: SMOKE_DOC_TITLE,
       externalId: SMOKE_DOC_EXTERNAL_ID,
       text: SMOKE_DOC_TEXT,

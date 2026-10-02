@@ -326,7 +326,7 @@ describe('search', () => {
     test('search hits carry the source item\'s externalId', async () => {
         const marker = 'VECTROS_SMOKE_EXTID_' + uniqueTag().replace(/-/g, '_');
         const externalId = 'smoke-extid-' + uniqueTag();
-        const doc = await client.documents.ingestDocument({ body: {
+        const doc = await client.documents.ingestDocument({ confirmUntyped: true, body: {
             title: 'External ID Search Doc',
             text: marker + ' is the marker for the externalId search case.',
             indexMode: 'TEXT',

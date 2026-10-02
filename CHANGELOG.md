@@ -5,6 +5,55 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.3 — 2026-10-01
+
+### Added
+
+- **A request that names a provider alias the tenant has not configured is refused.** The inference examples send an
+  unknown `providerAlias` on chat, RAG and document ask and check each is a `403` that names the alias, with a
+  control that the same chat call without an alias is served normally.
+- **An `externalId` needs a `schemaId`, or an explicit confirmation.** A new example pins all three outcomes: an
+  `externalId` with no `schemaId` is a `400` naming both ways out; the same request with `confirmUntyped` is
+  created; with a `schemaId` it is created. The file-upload route's refusal is pinned too.
+- **RAG `search.limit` is bounded to 1-100.** The RAG example checks that 101 and 0 are each a `400` that states the
+  range, and that 100 is accepted and the results event carries `hasMore`.
+- **`acceptUrl` on an invitation is validated even when no email is sent.** The invite example checks that a
+  non-https scheme, a plain-http URL and an IP-literal host are each a `400`, and that a valid https URL is accepted.
+  A `javascript:` value is refused by the platform's edge before it reaches that validation, which the example pins
+  separately.
+- **The erasure example covers a partial `contextScope` and the `purge` rule.** An erasure request that lists one
+  context erases that context and keeps the subject's account-wide identity: the certificate reports
+  `identityRetained` and the subject still resolves. The subject's access profile in the listed context is gone and one in an unlisted context
+  survives. `auditDisposition: purge` is a `400` for a subject type whose audit history cannot be purged, with a
+  control showing a supported type gets past that check.
+
+### Changed
+
+- **The examples target SDK 0.46.0.** The TypeScript example's `@vectros-ai/sdk` range is `^0.46.0`, the Python
+  requirement is `vectros>=0.46.0,<0.47.0`, and the Java example builds against `0.46.0`.
+- **The examples that patch a document use the flat request** (`patchDocument({ id, title })`), which the
+  TypeScript SDK 0.46.0 and later require. The `{ id, body: { … } }` shape does not compile against it.
+- **The TypeScript and MCP examples that create an untyped document with an `externalId` pass `confirmUntyped: true`.**
+  The re-upload, search and usage-metering examples and the MCP document-ingest examples create such documents. The
+  MCP examples also show the refusal an agent sees without it.
+- **The MCP file re-upload example checks the replacement signal.** After a file is replaced under an existing document,
+  the ingest response reports `created:false` and points to the document's `fileItemId`, not `indexStatus`, as the
+  signal that the new file has been adopted.
+- **The `residency` example describes inference region.** Requests are served from a US region by default, and a
+  request for the global region from a tenant without the entitlement is refused with a `403`. Its suite name and
+  description say "inference region" and make no claim about where stored data lives.
+- **The model catalog example matches the current lineup.** It expects the current aliases, including the Amazon and
+  Meta models, and checks that the retired ones are absent. Output pricing is checked as exactly 5:1 for Anthropic
+  models and as at least the input price for the others.
+- **The scope-qualifier example treats `documents` like `records` and `entities`.** A `documents` entry takes a
+  qualifier (a document type) on every operation, so `documents:r:<type>` mints; `users` takes one on the
+  sensitive-reveal operation only, which the example checks is refused elsewhere.
+- **The exact-billing example can run against a tenant other people are using.** By default the record cell makes one
+  attempt, and the create and the delete must each read exactly 6 milli-credits. With `SMOKE_SHARED_TENANT=1` it
+  allows up to five attempts and passes only when a single attempt reads exactly 6 for both, printing every attempt
+  on failure.
+- **The namespaces example removes the contexts it creates even when its setup fails.**
+
 ## 0.18.2 — 2026-09-22
 
 ### Added

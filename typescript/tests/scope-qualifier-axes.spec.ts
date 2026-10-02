@@ -8,8 +8,8 @@
  * as a narrowing, and grants everything — so an entry whose qualifier would be ignored is refused at
  * authoring rather than accepted and quietly disregarded.
  *
- *   records / entities     a qualifier on EVERY op          (a record type, a namespace)
- *   documents / users      a qualifier on `s` ONLY          (the sensitive-reveal permit)
+ *   records / entities / documents   a qualifier on EVERY op   (a record type, a namespace, a document type)
+ *   users                  a qualifier on `s` ONLY          (the sensitive-reveal permit)
  *   profiles               a qualifier on `c`/`u`/`d` ONLY  (a principal, or the `self` sentinel)
  *   scripts                a qualifier on `x` ONLY          (a script name)
  *
@@ -75,29 +75,26 @@ describe('scope qualifier axes', () => {
     describe('the other three axes still hold', () => {
         // Included here rather than left implicit: `scripts:x` is a NEW axis, and the way a new axis
         // goes wrong is by widening the rule for everyone.
-        test('sensitive-reveal: documents:s:<type> mints, documents:r:<type> does not', async () => {
-            await expectMintable('documents:s:invoice');
-            await expectRefused('documents:r:invoice');
-        });
-
         test('principal: profiles:u:self mints, profiles:r:self does not', async () => {
             await expectMintable('profiles:u:self');
             await expectRefused('profiles:r:self');
         });
 
-        test('CRUD: records and entities take a qualifier on EVERY op', async () => {
-            // "every op" is the claim, so every letter is exercised — and `entities` is the second
-            // member of that axis, which no cell reached before.
+        test('CRUD: records, entities and documents take a qualifier on EVERY op', async () => {
+            // "every op" is the claim, so every letter is exercised — `entities` and `documents`
+            // are the other members of that axis, which a records-only cell would never reach.
             for (const op of ['c', 'r', 'u', 'd']) {
                 await expectMintable(`records:${op}:smoke_probe_type`);
                 await expectMintable(`entities:${op}:smoke_probe_ns`);
+                await expectMintable(`documents:${op}:smoke_probe_type`);
             }
-            // Both are on the sensitive-reveal set TOO, so `s` takes one as well — the case a
+            // All three are on the sensitive-reveal set TOO, so `s` takes one as well — the case a
             // row-wise reading of the axis table gets wrong.
             await expectMintable('records:s:smoke_probe_type');
+            await expectMintable('documents:s:smoke_probe_type');
         });
 
-        test('sensitive-reveal: users behaves like documents, not like records', async () => {
+        test('sensitive-reveal: users takes a qualifier on `s` only, unlike records and documents', async () => {
             // `users` is the axis member with no CRUD-side qualifier at all, so it is the one that
             // shows the axes are genuinely separate rather than one union.
             await expectMintable('users:s:smoke_probe_type');

@@ -32,7 +32,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `records-archive` | The record `ARCHIVED` lifecycle — a soft retraction from search and RAG that keeps the record retrievable by id. |
 | `records-update-consistency` | An update makes the new content searchable and the old content stops surfacing — no window where search shows stale or missing content. |
 | `records-tiering-safety` | Payload tiering: once a payload is externalized, list and lookup return only the inline projection — and the guard that stops a `PUT` truncating what it did not read. |
-| `records-ttl` | The write-time contract for an absolute record TTL (`expiresAt`): the opt-in gate, the minimum floor, rejection of a malformed value, and that setting or extending an expiry is never dropped as a no-op. The reap itself runs on DynamoDB's schedule, so no test observes the deletion. |
+| `records-ttl` | The write-time contract for an absolute record TTL (`expiresAt`): the opt-in gate, the minimum floor, rejection of a malformed value, and that setting or extending an expiry is never dropped as a no-op. The reap itself runs on a schedule, so no test observes the deletion. |
 | `patch` | RFC-7386 merge-PATCH: partial update, optimistic-lock conflicts. |
 | `type-fidelity` | A schema's declared field types survive the full round trip, and a partial update never trips a type error on a field it did not touch. |
 | `composite-lookup` | A lookup declared over several fields at once (`fieldNames` + the `field=a,b` / `values` query form), including the partial-tuple grouping behavior, the `sortFrom`/`sortTo` sort-key window, and the array-typed `values` parameter's encoding. |
@@ -48,6 +48,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `documents-storetext` | The `storeText` retention choice, fixed at ingest: keep the extracted text, or discard it once indexing completes. |
 | `documents-filterable-projection` | Which schema-bound payload fields become `?filters=` targets — a field is a filter target because it was declared `filterable`, not because it happens to be short. |
 | `folders` | Folder hierarchy and protection rules. |
+| `documents-untyped-externalid` | An `externalId` needs a `schemaId`: without one the request is a `400`, unless it also passes `confirmUntyped`; the file-upload route follows the same rule. |
 | `external-id-collision` | An `externalId` can no longer be moved onto a slot another document or entity already holds. |
 
 **Search & inference**
@@ -57,8 +58,9 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `search` | Cross-content hybrid search, pagination (`hasMore`, the full 1–100 `limit` range), unique-document dedup, `externalId` on hits, and `textScore` in `TEXT` mode. |
 | `null-sentinel-search` | The null sentinel in a search scope clause: adding `null` to a `data_scope` value list additionally reaches owner-less (tenant-level) rows, without widening past what the caller could already read — proven on both the text and the vector engine. |
 | `schema-reserved-fields` | The field ids a schema may not declare `filterable` — the platform's own search-index metadata keys — and where that check deliberately stops. |
-| `chat` / `rag` | Streaming inference and grounded RAG over your corpus. |
-| `models` | Model catalog, plan gating, per-region pricing. |
+| `chat` / `rag` | Streaming inference and grounded RAG over your corpus; RAG's `search.limit` is bounded to 1–100. |
+| `provider-alias` | A `providerAlias` the tenant has not configured is refused with a `403` that names the alias, on chat, RAG and document ask. |
+| `models` | The current model catalog, the retired aliases it no longer lists, plan gating and per-region pricing. |
 
 **Scripts & triggers**
 
@@ -84,7 +86,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `principal-lookup` | Cross-context principal lookup — the same principal's profiles across every app context it reaches. |
 | `namespaces` | Namespace placement (tenant-wide vs context-owned, fixed at registration) and namespace membership. |
 | `issuers-token-exchange` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
-| `invite-validation` | The two validation rules around sub-user invitations, including the frozen email while an invitation is outstanding. |
+| `invite-validation` | The validation rules around sub-user invitations: the frozen email while an invitation is outstanding, a profile role that must exist, activation only by accepting the invitation, and `acceptUrl` validated whenever it is supplied. |
 | `status-validation` | `status` on the update paths — normalised and validated the way the create paths always were. |
 
 **Contexts, operations & the contract**
@@ -95,12 +97,12 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `deleted-user-context-refusal` | A scoped key bound to a deleted user is not immediately revoked (cached scope resolution, not instant); no new credential or access grant can be issued in an app context that is mid-teardown, while an already-existing access profile in it can still be updated. |
 | `cross-context-isolation` | An object in one app context is invisible to a sibling context, on every read path. |
 | `schema-lineage` | `basedOn` schema customization (a shared base + owner-specific variants), `specificityRank` namespace tie-breaks, and the `userId`/`scope` selectors on schema and document-lookup resolution. |
-| `residency` | Data-residency confinement (fail-closed). |
+| `residency` | Inference region: requests are served from a US region by default, and one that asks for the global region is refused with a `403` unless the tenant is entitled to it. |
 | `usage` | Usage counters after real operations. |
 | `usage-reconcile` | Cross-tenant usage reconciliation: the totals across your live and test tenants agree. |
-| `billing-exact` | Exact per-operation billing, pinned as before/after deltas rather than as directional assertions. |
+| `billing-exact` | Exact per-operation billing, pinned as before/after deltas rather than as directional assertions. Set `SMOKE_SHARED_TENANT=1` when other people use the tenant: the record cell then allows up to five attempts and passes only when one attempt reads the exact amounts. |
 | `logs` | `GET /v1/admin/logs` — the API call log, its filters, and the delegation chain on delegate-minted traffic. |
-| `erasure-requests` | `POST`/`GET /v1/erasure-requests`: submit, poll to completion, and check the certificate's own claims. |
+| `erasure-requests` | `POST`/`GET /v1/erasure-requests`: submit, poll to completion, and check the certificate's own claims, including a partial `contextScope` that keeps the identity (`identityRetained`) and the `purge` rule for subject types. |
 | `negative-paths` / `error-contract` | The error contract — asserting error *bodies*, not just status codes. |
 | `cors-preflight` | The browser preflight contract: the headers a browser-hosted SDK caller needs permitted in order to read an API error at all. |
 | `vectros-version-header` | The `Vectros-Version` request header — sent explicitly, echoed back on a supported version, and rejected with `400` on an unrecognized one. |
@@ -108,14 +110,15 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 ## Credentials
 
 Most examples run with your live API key (`VECTROS_API_KEY`) and the base URL.
-Two more drive specific examples and are skipped cleanly when unset:
+Two more drive specific examples (`VECTROS_TEST_API_KEY` is skipped cleanly when unset; the
+behaviour without `VECTROS_LIVE_TENANT_ID` is described below):
 
 - `VECTROS_TEST_API_KEY` — your test-environment key (every account has one), for
   the tenant-isolation examples.
 - `VECTROS_LIVE_TENANT_ID` — your tenant id. Needed by every example that mints a
   scoped key against a specific context: `cross-context-isolation`, `app-contexts`,
   `access-profiles`, `capabilities`, `token-assume`, `erasure-requests`, `invite-validation`,
-  `identity`, `logs` and `deleted-user-context-refusal`. Three of those skip cleanly without it — `cross-context-isolation`, `app-contexts` and
+  `identity`, `logs` and `deleted-user-context-refusal`. Three of those skip the tests that need it — `cross-context-isolation`, `app-contexts` and
   `token-assume`; **the other seven fail**, so set it before running the full suite.
 
 ## Cleanup

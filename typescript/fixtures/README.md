@@ -1,12 +1,12 @@
 # Smoke test fixtures
 
 This directory holds binary fixtures used by smoke tests. Keep files small
-(< 100 KB each) so the repo stays light.
+(< 100 KB each).
 
 ## Expected files
 
-- `sample.pdf` — ~10 KB synthetic clinical-note PDF used by
-  `documents-upload.spec.ts`. Must contain:
+- `sample.pdf` — ~29 KB synthetic clinical-note PDF used by
+  `documents-upload.spec.ts` and `documents-storetext.spec.ts`. Must contain:
   - At least one exact phrase matching `SAMPLE_PDF_KNOWN_PHRASE` in
     `src/fixtures.ts` (currently `"systolic blood pressure"`).
   - Content semantically related to medical/clinical topics (so SEMANTIC-mode
@@ -15,9 +15,9 @@ This directory holds binary fixtures used by smoke tests. Keep files small
   - At least 500 words of body text so the indexer produces multiple chunks
     (exercises chunk-level scoring).
 
-Generate with any PDF writer — LibreOffice, pandoc, or a Python script.
-Commit the binary; do not generate at test time (test environments may not
-have the tooling, and generation introduces nondeterminism).
+The PDF is a committed file rather than generated at test time: test environments
+may not have PDF tooling, and generation introduces nondeterminism. To replace it,
+generate a new one with any PDF writer — LibreOffice, pandoc, or a Python script.
 
 ## Why these aren't generated dynamically
 

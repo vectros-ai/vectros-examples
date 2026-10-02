@@ -86,7 +86,7 @@ describe('externalId collisions on the update paths', () => {
 
         test('re-typing onto a type where the externalId is TAKEN is refused', async () => {
             await expect(client.documents.patchDocument({
-                id: mover, body: { title: 'mover', schemaId: schemaIds[typeB] },
+                id: mover, title: 'mover', schemaId: schemaIds[typeB],
             })).rejects.toMatchObject({ statusCode: 400 });
 
             // The document is untouched — the refusal did not half-apply the re-type.
@@ -98,7 +98,7 @@ describe('externalId collisions on the update paths', () => {
         // redden the cells after it for an unrelated reason.
         afterEach(async () => {
             await tryCleanup('restore mover to type A', () => client.documents.patchDocument({
-                id: mover, body: { title: 'mover', schemaId: schemaIds[typeA] },
+                id: mover, title: 'mover', schemaId: schemaIds[typeA],
             }));
         });
 
@@ -106,7 +106,7 @@ describe('externalId collisions on the update paths', () => {
             // The control. Without it the cell above could pass against a re-type that had simply
             // stopped working.
             const moved = await client.documents.patchDocument({
-                id: mover, body: { title: 'mover', schemaId: schemaIds[typeC] },
+                id: mover, title: 'mover', schemaId: schemaIds[typeC],
             });
             expect(moved.schemaId).toBe(schemaIds[typeC]);
             expect(moved.externalId).toBe(sharedExternalId);
@@ -121,7 +121,7 @@ describe('externalId collisions on the update paths', () => {
             } });
             documentIds.push(anonymous.id!);
             const moved = await client.documents.patchDocument({
-                id: anonymous.id!, body: { title: 'anonymous', schemaId: schemaIds[typeB] },
+                id: anonymous.id!, title: 'anonymous', schemaId: schemaIds[typeB],
             });
             expect(moved.schemaId).toBe(schemaIds[typeB]);
         });
@@ -129,7 +129,7 @@ describe('externalId collisions on the update paths', () => {
         test('re-sending the CURRENT schemaId of a document is unaffected', async () => {
             // A no-op re-type must not be read as a collision with the document itself.
             const same = await client.documents.patchDocument({
-                id: mover, body: { title: 'mover', schemaId: schemaIds[typeA] },
+                id: mover, title: 'mover', schemaId: schemaIds[typeA],
             });
             expect(same.schemaId).toBe(schemaIds[typeA]);
         });

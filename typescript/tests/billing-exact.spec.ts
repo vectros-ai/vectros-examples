@@ -25,6 +25,20 @@
  * storage-billing run landing mid-spec — vanishingly rare; and this spec's own getUsage() reads,
  * which are metered past the plan's free read allowance — unreachable at smoke volume.
  * usedMilli reads are eventually consistent; a read-after-write race is a rerunnable flake.
+ *
+ * The isolation above covers ONE suite run. It does not cover a second run, or another person's,
+ * against the same tenant at the same time: their writes land on the same counter and inflate a
+ * delta. So the record cell is STRICT by default: one attempt, and both the create and the delete
+ * must read exactly 6, which is what a run that owns the tenant (the exclusive lane in CI) should see.
+ *
+ * Set SMOKE_SHARED_TENANT=1 when other people are using the tenant. The cell then retries with a
+ * fresh record, up to five times, and passes only when ONE attempt reads exactly 6 for BOTH the
+ * create and the delete; the failure message prints every attempt. Extra traffic only ever adds to
+ * a delta, and the counter's reads are eventually consistent, so a delta can also read low: that is
+ * why a retry is needed at all. It is also why a pass is evidence and not proof: one operation can
+ * read exact by luck, and a fee that is only intermittently wrong can still pass on a lucky attempt.
+ * Run it strict, alone, when a failure or a suspicion of intermittent over-billing needs a clean
+ * reading.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
@@ -55,23 +69,46 @@ describe('exact per-operation billing', () => {
     });
 
     test('record create and delete each charge exactly base(5) + one index(1) = 6 milli-credits', async () => {
-        const before = await usedMilli();
+        // Strict unless SMOKE_SHARED_TENANT=1 (see the header): one attempt, create and delete both exactly 6.
+        // With the opt-in, retry with a fresh record and accept an attempt only when ITS create and ITS
+        // delete both read 6; deltas from different attempts are never mixed.
+        const SHARED_TENANT = process.env.SMOKE_SHARED_TENANT === '1';
+        const ATTEMPTS = SHARED_TENANT ? 5 : 1;
+        const attempts: Array<{ create: number; delete: number }> = [];
 
-        const rec = await client.records.createRecord({ body: {
-            typeName: recordType,
-            schemaId,
-            externalId: uniqueTag(),
-            payload: { note: 'exact-billing probe' },
-        } });
+        for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+            let rec: { id?: string } | undefined;
+            let deleted = false;
+            try {
+                const before = await usedMilli();
+                rec = await client.records.createRecord({ body: {
+                    typeName: recordType,
+                    schemaId,
+                    externalId: uniqueTag(),
+                    payload: { note: 'exact-billing probe' },
+                } });
+                const create = (await usedMilli()) - before;
 
-        const afterCreate = await usedMilli();
-        expect(afterCreate - before).toBe(6);
+                // Deletes bill the same write fee as the write that created the record.
+                const beforeDelete = await usedMilli();
+                await client.records.deleteRecord({ id: rec.id! });
+                deleted = true;
+                attempts.push({ create, delete: (await usedMilli()) - beforeDelete });
+            } finally {
+                // A failure part-way must not leave the probe record behind for the schema delete to trip on.
+                if (rec && !deleted) await tryCleanup('probe record', () => client.records.deleteRecord({ id: rec!.id! }));
+            }
 
-        // Deletes bill the same write fee as the write that created the record.
-        const beforeDelete = await usedMilli();
-        await client.records.deleteRecord({ id: rec.id! });
-        const afterDelete = await usedMilli();
-        expect(afterDelete - beforeDelete).toBe(6);
+            const last = attempts[attempts.length - 1];
+            if (last.create === 6 && last.delete === 6) break;
+        }
+
+        if (!attempts.some((a) => a.create === 6 && a.delete === 6)) {
+            throw new Error(
+                `no attempt read exactly 6 milli-credits for BOTH the create and the delete: ${JSON.stringify(attempts)}` +
+                (SHARED_TENANT ? '' : ' (strict mode; set SMOKE_SHARED_TENANT=1 if other sessions are using this tenant)'),
+            );
+        }
     });
 });
 
@@ -306,7 +343,7 @@ describe('POST-shaped reads meter the same read counter as their GET equivalent 
     test('POST /v1/documents/lookup (lookupDocumentsByBody) now meters a read, where it used to meter nothing', async () => {
         // externalId needs no schema declaration -- the cheapest fixture for this probe.
         const extId = uniqueTag();
-        const doc = await client.documents.ingestDocument({ body: {
+        const doc = await client.documents.ingestDocument({ confirmUntyped: true, body: {
             title: 'POST-shaped read probe', text: 'n/a', indexMode: 'NONE', externalId: extId,
         } });
         try {

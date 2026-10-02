@@ -297,7 +297,7 @@ describe('type fidelity', () => {
             // PATCH one small field (the document's request re-sends its title, a
             // no-op). Neither `priority` (typed) nor the large `note` is re-sent —
             // both must survive the deep-merge intact.
-            const patched = await client.documents.patchDocument({ id: doc.id!, body: { title, payload: { active: true } } });
+            const patched = await client.documents.patchDocument({ id: doc.id!, title, payload: { active: true } });
             expect(patched.id).toBe(doc.id);
 
             const got = await client.documents.getDocument({ id: doc.id! });

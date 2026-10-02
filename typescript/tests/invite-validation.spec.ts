@@ -238,4 +238,64 @@ describe('invite validation', () => {
         // hand createScopedKey a profile pointing at a roleId that stops existing, so there is
         // nothing further to assert here.
     });
+
+    // -------------------------------------------------------------------
+    // acceptUrl is validated whenever it is SUPPLIED, not only when an email is sent. With
+    // sendEmail:false the platform never mails the link, but it still hands the caller an accept link
+    // built from it, so a javascript:, plain-http or IP-literal value would be stored and returned as
+    // a ready-to-use link. The control (a valid https URL is accepted) keeps the refusals honest. A
+    // javascript: value is tested separately below: the deployed edge answers it before the request
+    // reaches this validation, so it says nothing about the validator.
+    // -------------------------------------------------------------------
+    describe('acceptUrl is validated even when no email is sent', () => {
+        const invite = (acceptUrl: string) => client.auth.createInvite({
+            email: `${uniqueTag()}@test.com`, contextId: ctxId, sendEmail: false, acceptUrl,
+            accessProfile: { scopes: [{ allowed_actions: ['records:r'] }] },
+        });
+
+        test.each([
+            ['a non-https scheme', 'ftp://example.com/accept', /https/i],
+            ['a plain http URL', 'http://example.com/accept', /https/i],
+            ['an IP-literal host', 'https://203.0.113.5/accept', /IP literal/i],
+        ])('%s is refused with 400', async (_label, acceptUrl, reason) => {
+            let rejected: { statusCode?: number; body?: { message?: string } } | null = null;
+            let leaked: string | undefined;
+            try {
+                leaked = (await invite(acceptUrl)).userId;
+            } catch (err) {
+                rejected = err as { statusCode?: number; body?: { message?: string } };
+            } finally {
+                if (leaked) await tryCleanup('invited user', () => client.identity.deleteUser({ id: leaked! }));
+            }
+            expect(rejected).not.toBeNull();
+            expect(rejected!.statusCode).toBe(400);
+            expect(rejected!.body?.message ?? '').toContain('acceptUrl');
+            expect(rejected!.body?.message ?? '').toMatch(reason);
+        });
+
+        test('a javascript: URL is refused (403) by the deployed edge, before the request reaches the validator', async () => {
+            // What the deployed edge does, not what the validator does: the edge filter answers this value with a
+            // 403, so the handler's own 400 (as in the cases above) is never reached. It is pinned so a change in
+            // the edge's behaviour is noticed; a refusal here proves nothing about the validation rule itself.
+            let status: number | undefined;
+            let leaked: string | undefined;
+            try {
+                leaked = (await invite('javascript:alert(1)')).userId;
+            } catch (err) {
+                status = (err as { statusCode?: number }).statusCode;
+            } finally {
+                if (leaked) await tryCleanup('invited user', () => client.identity.deleteUser({ id: leaked! }));
+            }
+            expect(status).toBe(403);
+        });
+
+        test('control: a valid https acceptUrl is accepted', async () => {
+            const created = await invite('https://example.com/accept');
+            try {
+                expect(created.userId).toBeTruthy();
+            } finally {
+                await tryCleanup('invited user', () => client.identity.deleteUser({ id: created.userId! }));
+            }
+        });
+    });
 });

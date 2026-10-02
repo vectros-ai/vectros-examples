@@ -18,7 +18,7 @@ vectros login          # opens your browser to sign in
 
 ```bash
 vectros whoami         # the identity you're signed in as
-vectros key list       # your API keys
+vectros key list       # the API keys in your active context (--all-contexts for the whole account)
 vectros context list   # your application contexts
 ```
 

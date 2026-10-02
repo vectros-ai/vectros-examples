@@ -97,17 +97,17 @@ describe('namespaces', () => {
             const ctxA = ('nsa' + uniqueTag()).slice(0, 31);
             const ctxB = ('nsb' + uniqueTag()).slice(0, 31);
             const namespace = nsName('co');
-            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace ctx A' } });
-            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace ctx B' } });
-
-            const created = await client.identity.registerNamespace({
-                contextId: ctxA,
-                body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
-            });
-            expect(created.contextId).toBe(ctxA);
-
             let entityId: string | undefined;
             try {
+                await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace ctx A' } });
+                await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace ctx B' } });
+
+                const created = await client.identity.registerNamespace({
+                    contextId: ctxA,
+                    body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
+                });
+                expect(created.contextId).toBe(ctxA);
+
                 // Reading the registration from the OWNING context succeeds; from the sibling
                 // context it is invisible — identical to a namespace that doesn't exist.
                 const loaded = await client.identity.getNamespace({ namespace, contextId: ctxA });
@@ -150,13 +150,13 @@ describe('namespaces', () => {
             const ctxA = ('nsv' + uniqueTag()).slice(0, 31);
             const ctxB = ('nsw' + uniqueTag()).slice(0, 31);
             const namespace = nsName('ver');
-            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace versions ctx A' } });
-            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace versions ctx B' } });
-            await client.identity.registerNamespace({
-                contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
-            });
             let entityId: string | undefined;
             try {
+                await client.auth.createAppContext({ body: { contextId: ctxA, name: 'namespace versions ctx A' } });
+                await client.auth.createAppContext({ body: { contextId: ctxB, name: 'namespace versions ctx B' } });
+                await client.identity.registerNamespace({
+                    contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
+                });
                 const entity = await client.identity.createEntity({
                     namespace, contextId: ctxA, body: { externalId: 'ent-' + uniqueTag(), name: 'versioned' },
                 });
@@ -208,13 +208,13 @@ describe('namespaces', () => {
             const ctxA = ('nsc' + uniqueTag()).slice(0, 31);
             const ctxB = ('nsd' + uniqueTag()).slice(0, 31);
             const namespace = nsName('cf');
-            await client.auth.createAppContext({ body: { contextId: ctxA, name: 'confine ctx A' } });
-            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'confine ctx B' } });
-            await client.identity.registerNamespace({
-                contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
-            });
-
             try {
+                await client.auth.createAppContext({ body: { contextId: ctxA, name: 'confine ctx A' } });
+                await client.auth.createAppContext({ body: { contextId: ctxB, name: 'confine ctx B' } });
+                await client.identity.registerNamespace({
+                    contextId: ctxA, body: { namespace, specificityRank: uniqueRank(), entityBacked: true },
+                });
+
                 const minted = (await client.auth.mintToken({
                     contextId: ctxA,
                     scope: { allowedActions: [`entities:c:${namespace}`, `entities:r:${namespace}`] },
@@ -443,39 +443,39 @@ describe('namespaces', () => {
             const ctxId = ('memu' + uniqueTag()).slice(0, 31);
             const namespace = nsName('mu');
             const declaredNamespace = nsName('mud');
-            await client.auth.createAppContext({ body: { contextId: ctxId, name: 'membership undeclared spec' } });
-            // No membershipLevelField/membershipLevels declared at all — any level-qualified
-            // matcher against this namespace names a level the namespace doesn't recognize.
-            await client.identity.registerNamespace({
-                body: {
-                    namespace, specificityRank: uniqueRank(),
-                    membershipRecordType: recordType,
-                    membershipTargetField: 'granteeUserId',
-                    membershipContextId: ctxId,
-                },
-            });
-            // Positive control, alongside the same namespace: a namespace that DOES declare
-            // 'viewer' as a level. Without this, the 400 below could just as easily be the whole
-            // level-qualified GRAMMAR being rejected for some unrelated reason — this proves the
-            // identical shape is accepted the moment the level is declared.
-            await client.identity.registerNamespace({
-                body: {
-                    namespace: declaredNamespace, specificityRank: uniqueRank(),
-                    membershipRecordType: recordType,
-                    membershipTargetField: 'granteeUserId',
-                    membershipContextId: ctxId,
-                    membershipLevelField: 'level',
-                    membershipLevels: ['viewer'],
-                },
-            });
-            // The declared-levels check runs only when a level-qualified placeholder is AUTHORED
-            // onto a role or access profile — not when a token is minted directly with one inline.
-            // A mintToken probe here would always succeed regardless of this rule, so this test
-            // authors via createRole instead, the boundary where "rejected when authored" actually
-            // applies.
             const roleId = ('mulvl' + uniqueTag()).slice(0, 31);
             const declaredRoleId = ('muldok' + uniqueTag()).slice(0, 31);
             try {
+                await client.auth.createAppContext({ body: { contextId: ctxId, name: 'membership undeclared spec' } });
+                // No membershipLevelField/membershipLevels declared at all — any level-qualified
+                // matcher against this namespace names a level the namespace doesn't recognize.
+                await client.identity.registerNamespace({
+                    body: {
+                        namespace, specificityRank: uniqueRank(),
+                        membershipRecordType: recordType,
+                        membershipTargetField: 'granteeUserId',
+                        membershipContextId: ctxId,
+                    },
+                });
+                // Positive control, alongside the same namespace: a namespace that DOES declare
+                // 'viewer' as a level. Without this, the 400 below could just as easily be the whole
+                // level-qualified GRAMMAR being rejected for some unrelated reason — this proves the
+                // identical shape is accepted the moment the level is declared.
+                await client.identity.registerNamespace({
+                    body: {
+                        namespace: declaredNamespace, specificityRank: uniqueRank(),
+                        membershipRecordType: recordType,
+                        membershipTargetField: 'granteeUserId',
+                        membershipContextId: ctxId,
+                        membershipLevelField: 'level',
+                        membershipLevels: ['viewer'],
+                    },
+                });
+                // The declared-levels check runs only when a level-qualified placeholder is AUTHORED
+                // onto a role or access profile — not when a token is minted directly with one inline.
+                // A mintToken probe here would always succeed regardless of this rule, so this test
+                // authors via createRole instead, the boundary where "rejected when authored" actually
+                // applies.
                 await expect(client.auth.createRole({
                     contextId: ctxId,
                     body: {

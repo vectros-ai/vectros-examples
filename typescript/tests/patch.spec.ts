@@ -143,7 +143,7 @@ describe('PATCH (RFC-7386 merge)', () => {
 
         test('PATCH title leaves the body untouched (partial update)', async () => {
             const { id } = await createDoc();
-            const patched = await client.documents.patchDocument({ id, body: { title: 'PATCH Doc (renamed)' } });
+            const patched = await client.documents.patchDocument({ id, title: 'PATCH Doc (renamed)' });
             expect(patched.title).toBe('PATCH Doc (renamed)');
             // The stored text is unchanged — round-trip it to prove the body survived.
             const text = await client.documents.getDocumentText({ id });
@@ -153,18 +153,18 @@ describe('PATCH (RFC-7386 merge)', () => {
         test('optimistic lock — stale expectedVersion rejected 409', async () => {
             const { id, version } = await createDoc();
             const ok = await client.documents.patchDocument({
-                id, body: { title: 'v2', expectedVersion: version },
+                id, title: 'v2', expectedVersion: version,
             });
             expect(ok.version).toBe(version + 1);
             await expect(client.documents.patchDocument({
-                id, body: { title: 'v3', expectedVersion: version },
+                id, title: 'v3', expectedVersion: version,
             })).rejects.toMatchObject({ statusCode: 409 });
         });
 
         test('PATCH to a missing id returns 404', async () => {
             await expect(client.documents.patchDocument({
                 id: '11111111-1111-1111-1111-111111111111',
-                body: { title: 'nope' },
+                title: 'nope',
             })).rejects.toMatchObject({ statusCode: 404 });
         });
     });

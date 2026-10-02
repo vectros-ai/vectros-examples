@@ -38,7 +38,7 @@ server:
       "command": "npx",
       "args": ["-y", "@vectros-ai/mcp-server"],
       "env": {
-        "VECTROS_API_KEY": "sk_live_…",
+        "VECTROS_API_KEY": "ssk_live_…",
         "VECTROS_API_BASE_URL": "https://api.vectros.ai"
       }
     }
