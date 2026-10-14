@@ -314,6 +314,54 @@ describe('status validation on the update paths', () => {
                 await tryCleanup('surviving user', () => client.identity.deleteUser({ id: userId }));
             }
         });
+
+        test('a DELETE racing concurrent UPDATEs: the user whose DELETE returned 204 stays deleted', async () => {
+            // The test above accepts a surviving user either way, so it cannot tell "an update won before the
+            // delete" from "a losing update brought the user back after the delete committed". This one can:
+            // once a DELETE has answered 204 the user must be gone, whatever the updates did. A losing update
+            // sees 404 (the row is gone) or, if other writes keep the row busy through every internal retry, a
+            // retryable 409 VERSION_CONFLICT; never a 500.
+            const externalId = `smoke-del-upd-revive-${uniqueTag()}`;
+            const user = await client.identity.createUser({ body: { externalId, type: 'HUMAN' } });
+            const userId = user.id!;
+
+            const [deleteResult, ...updateResults] = await Promise.allSettled([
+                client.identity.deleteUser({ id: userId }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `d-${uniqueTag()}@test.com` } }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `e-${uniqueTag()}@test.com` } }),
+                client.identity.updateUser({ id: userId, body: { externalId, email: `f-${uniqueTag()}@test.com` } }),
+            ]);
+
+            for (const r of updateResults) {
+                if (r.status === 'rejected') {
+                    expect([404, 409]).toContain((r.reason as { statusCode?: number }).statusCode);
+                }
+            }
+
+            if (deleteResult.status === 'fulfilled') {
+                // The DELETE answered 204: the user must not be there, however the updates interleaved. getUser reads
+                // eventually consistent, so a read straight after the delete can still hit the old row: poll for the 404 for
+                // about two seconds. A user an update brought BACK is a real row and stays readable, so it still fails here.
+                let lastStatus: number | undefined;
+                for (const deadline = Date.now() + 2000; ;) {
+                    try {
+                        await client.identity.getUser({ id: userId });
+                        lastStatus = 200;
+                    } catch (e) {
+                        lastStatus = (e as { statusCode?: number }).statusCode;
+                        if (lastStatus === 404) break;
+                    }
+                    if (Date.now() >= deadline) break;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+                expect(lastStatus).toBe(404);
+            } else {
+                // The DELETE itself lost: only a 404 or a retryable 409 is acceptable, never a 500.
+                expect([404, 409]).toContain((deleteResult.reason as { statusCode?: number }).statusCode);
+                // Clean up whatever is left.
+                await tryCleanup('surviving user', () => client.identity.deleteUser({ id: userId }));
+            }
+        });
     });
 });
 

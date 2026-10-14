@@ -8,9 +8,8 @@
  * `data_scope` permits reading/writing).
  *
  * SCOPE — this file targets exactly what a black-box smoke test adds over the
- * exhaustive server-side unit suite (~1600 lines, already covering every
- * check-order branch, the freshness guard, and every narrowing rule in detail)
- * and what the access-coverage matrix names as unexercised ("none yet"):
+ * exhaustive server-side unit suite (already covering every
+ * check-order branch, the freshness guard, and every narrowing rule in detail):
  *
  *   1. THE UNION-CHECK-OVER-GRANT REGRESSION — a caller composed of TWO roles,
  *      each granting a DIFFERENT single dimension, must be REFUSED a single
@@ -18,7 +17,7 @@
  *      dimension is individually granted by *some* role. Only ONE role's own
  *      joint `assumable` grant may satisfy a multi-dimension request; it is
  *      never synthesized across two independently-authored roles. This is the
- *      single highest-value gap named in the smoke-coverage kickoff.
+ *      highest-value check in this file.
  *   2. The `st_*`-only gate (root `sk_*` and scoped `ssk_*` keys both refused).
  *   3. Basic request-shape validation (empty body, a namespace key that
  *      resolves to the reserved `partnerUserId` axis).

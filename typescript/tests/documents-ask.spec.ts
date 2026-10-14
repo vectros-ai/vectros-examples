@@ -43,7 +43,8 @@ describe('inference: /v1/documents/{id}/ask', () => {
         const stream = await client.inference.documentAsk({
             id: docId,
             prompt: 'How do the drugs in this document work?',
-            maxTokens: 128,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         });
         const events = await collectStream<any>(stream);
 

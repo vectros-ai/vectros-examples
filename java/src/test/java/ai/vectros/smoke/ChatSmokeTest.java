@@ -46,7 +46,8 @@ class ChatSmokeTest {
         DoneEvent done = null;
         for (ChatStreamEvent e : Smoke.live().inference().chatInference(ChatRequest.builder()
                 .messages(List.of(msg(ChatMessageRole.USER, "Say \"hello smoke test\" exactly, no more.")))
-                .maxTokens(32).build())) {
+                // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+                .maxTokens(512).build())) {
             if (e.isContentDelta()) deltas++;
             else if (e.isDone()) { dones++; done = e.getDone().get(); }
             else if (e.isError()) errors++;
@@ -68,7 +69,8 @@ class ChatSmokeTest {
             .messages(List.of(
                 msg(ChatMessageRole.SYSTEM, "Always begin your response with the literal string \"" + marker + "\"."),
                 msg(ChatMessageRole.USER, "Briefly state today is a good day.")))
-            .maxTokens(60).build()));
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            .maxTokens(512).build()));
         assertEquals(1, count(events, ChatStreamEvent::isDone));
         assertTrue(joinDeltas(events).contains(marker));
     }
@@ -102,7 +104,8 @@ class ChatSmokeTest {
         for (RagStreamEvent e : Smoke.live().inference().ragInference(RagRequest.builder()
                 .query("What is a smoke test?")
                 .search(RagSearch.builder().mode(RagSearchMode.HYBRID).limit(3).build())
-                .maxTokens(48).build())) {
+                // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+                .maxTokens(512).build())) {
             if (e.isContentDelta()) deltas++;
             else if (e.isDone()) dones++;
             else if (e.isError()) errors++;

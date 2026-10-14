@@ -64,7 +64,8 @@ describe('inference: /v1/rag', () => {
                 // phrasing can rank above our just-created corpus doc.
                 createdAfter: testStartedAt,
             },
-            maxTokens: 128,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         }));
         const events = await collectStream<any>(stream);
 
@@ -104,7 +105,8 @@ describe('inference: /v1/rag', () => {
                 limit: 5,
                 createdAfter: testStartedAt,
             },
-            maxTokens: 64,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         }));
         const events = await collectStream<any>(stream);
 

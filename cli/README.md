@@ -18,7 +18,7 @@ vectros login          # opens your browser to sign in
 
 ```bash
 vectros whoami         # the identity you're signed in as
-vectros key list       # the API keys in your active context (--all-contexts for the whole account)
+vectros key list       # the API keys in your default context (--context <id> for another, --all-contexts for the whole account)
 vectros context list   # your application contexts
 ```
 
@@ -38,7 +38,8 @@ vectros bootstrap --help         # no-code: provision a blueprint + a scoped MCP
 ```
 
 `vectros bootstrap --blueprint <name> --client code` provisions a blueprint and
-wires the resulting credential into your MCP client in one step. It uses a
-one-time bridge token from the developer portal — see the guide below.
+wires the resulting credential into your MCP client in one step. After
+`vectros login` it uses that session; with no session, in a terminal, it asks you to paste
+a token from the developer portal (https://developer.vectros.ai/settings/cli-token).
 
 Full CLI documentation and the no-code quickstart: **https://docs.vectros.ai**

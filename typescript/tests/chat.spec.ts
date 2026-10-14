@@ -27,7 +27,8 @@ describe('inference: /v1/chat', () => {
             messages: [
                 { role: 'user', content: 'Say "hello smoke test" exactly, no more.' },
             ],
-            maxTokens: 32,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         });
         const events = await collectStream<any>(stream);
 
@@ -58,7 +59,8 @@ describe('inference: /v1/chat', () => {
                 { role: 'system', content: `Always begin your response with the literal string "${marker}".` },
                 { role: 'user',   content: 'Briefly state today is a good day.' },
             ],
-            maxTokens: 60,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         });
         const events = await collectStream<any>(stream);
         expect(events.filter((e) => e.event === 'done')).toHaveLength(1);
@@ -77,7 +79,8 @@ describe('inference: /v1/chat', () => {
                 { role: 'assistant', content: 'Nice choice. Teal is a calm, balanced color.' },
                 { role: 'user',      content: 'What did I just say my favorite color was?' },
             ],
-            maxTokens: 32,
+            // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
+            maxTokens: 512,
         });
         const events = await collectStream<any>(stream);
         const reply = joinDeltas(events).toLowerCase();
@@ -87,7 +90,7 @@ describe('inference: /v1/chat', () => {
     });
 
     test('explicit model parameter routes to that model (verify done.model)', async () => {
-        // Pick the default explicitly — known-available on the free plan.
+        // Name the previous default explicitly (the default is claude-haiku-5-5 since 0.47.0) — known-available on the free plan.
         const model = 'claude-haiku-4-5';
         const stream = await client.inference.chatInference({
             messages: [{ role: 'user', content: 'Reply with one word: ok' }],

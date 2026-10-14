@@ -101,7 +101,9 @@ describe('inference models', () => {
         // The current generation of aliases, including the non-Anthropic tiers.
         for (const expected of [
             'claude-haiku-4-5',
+            'claude-haiku-5-5',
             'claude-sonnet-5',
+            'claude-sonnet-5-5',
             'claude-opus-5-5',
             'amazon-nova-lite',
             'amazon-nova-2-lite',
@@ -114,5 +116,47 @@ describe('inference models', () => {
         expect(ids).not.toContain('claude-sonnet-4-5');
         expect(ids).not.toContain('claude-opus-4-7');
         expect(ids).not.toContain('claude-opus-4-8');
+    });
+
+    test('claude-haiku-5-5 carries a longContext rate card (5x over 100,000 prompt tokens) and no other model does', async () => {
+        // Haiku 5.5 is priced by prompt length: a request whose prompt is longer than promptTokensOver is charged EVERY line at
+        // the longContext rates. Standard 0.01/0.05 credits per 1K, longContext x5 = 0.05/0.25 (US x the region premium).
+        const catalog = await client.inference.listInferenceModels();
+        const byId = new Map(catalog.models.map((m): [string, any] => [m.id, m]));
+        const h55 = byId.get('claude-haiku-5-5');
+        expect(h55).toBeDefined();
+        expect(h55.longContext).toBeDefined();
+        expect(h55.longContext.promptTokensOver).toBe(100000);
+        expect(h55.longContext.multiplier).toBeCloseTo(5.0, 6);
+        expect(h55.longContext.base.input).toBeCloseTo(h55.inputCreditsPer1kTokens * 5, 6);
+        expect(h55.longContext.base.output).toBeCloseTo(h55.outputCreditsPer1kTokens * 5, 6);
+        expect(h55.longContext.us.input).toBeCloseTo(h55.longContext.base.input * h55.regionPricing.regionPremiumFactor, 6);
+        for (const [id, model] of byId) {
+            if (id !== 'claude-haiku-5-5') expect(model.longContext).toBeUndefined();
+        }
+    });
+
+    test('the Claude models report their context windows and per-token rates', async () => {
+        // Context windows are 1M tokens for the four newer Claude models (Haiku 4.5 keeps 200K), and the
+        // Claude rates are credits per 1K tokens (1 credit = $0.01): Haiku 4.5 $1/$5, Sonnet 5 and 5.5 $2/$10, Opus 5.5
+        // $4/$20 per million input/output tokens are the provider's list prices. Haiku 5.5 is $0.10/$0.50 per million for a
+        // prompt of up to 100,000 tokens (the provider's list price) and 5x that above it: see the longContext
+        // check below. The public pricing page should list the same figures; compare it with these rates when either changes.
+        const catalog = await client.inference.listInferenceModels();
+        const byId = new Map(catalog.models.map((m): [string, typeof m] => [m.id, m]));
+        const expected: Array<[string, number, number, number]> = [
+            ['claude-haiku-4-5', 200000, 0.1, 0.5],
+            ['claude-haiku-5-5', 1000000, 0.01, 0.05],
+            ['claude-sonnet-5', 1000000, 0.2, 1.0],
+            ['claude-sonnet-5-5', 1000000, 0.2, 1.0],
+            ['claude-opus-5-5', 1000000, 0.4, 2.0],
+        ];
+        for (const [id, window, input, output] of expected) {
+            const model = byId.get(id);
+            expect(model).toBeDefined();
+            expect(model!.contextWindow).toBe(window);
+            expect(model!.inputCreditsPer1kTokens).toBeCloseTo(input, 5);
+            expect(model!.outputCreditsPer1kTokens).toBeCloseTo(output, 5);
+        }
     });
 });

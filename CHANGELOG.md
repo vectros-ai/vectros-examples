@@ -5,6 +5,39 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.4 — 2026-10-12
+
+### Changed
+
+- **The examples target SDK 0.47.0.** The TypeScript example's `@vectros-ai/sdk` range is `^0.47.0`, the Python
+  requirement is `vectros>=0.47.0,<0.48.0`, and the Java example builds against `0.47.0`.
+- **The checks that call the default model leave room for its reasoning.** The default model is `claude-haiku-5-5`, which
+  can reason before it answers, and the reasoning counts against `maxTokens`. The TypeScript chat, document-question and retrieval-grounded-answer checks, and the Python and Java chat and retrieval-grounded-answer checks, ask for a `maxTokens` of 512 where they assert on the text of a reply.
+- **The model-catalog check expects the newer Claude models.** It expects `claude-haiku-5-5` and `claude-sonnet-5-5`, the
+  1,000,000-token context windows of the newer Claude models, their per-token rates and the prompt-length rate card of
+  `claude-haiku-5-5`, so it fails against a deployment that does not serve them. It asserts that the default model is a
+  catalog model available on the free plan instead of naming one.
+- **The namespaces example's comment no longer says `org` and `client` are provisioned at signup.** Every account
+  registers them explicitly, like any other namespace; the assertions are the same.
+- **The Python example's test runner is `pytest` 9.0.3** (it was 8.3.4, which carries a published advisory). The tests and
+  assertions are unchanged.
+- **The Python example's README states Python 3.10 or later,** which the pinned `pytest` requires (the `vectros` SDK itself
+  supports Python 3.8 and later). The command-line example's README says `vectros bootstrap` uses your `vectros login`
+  session and asks you to paste a portal token only when there is none.
+- **Source comments state their rules themselves.** Comments that pointed at internal documents now say what the
+  rule is. No behavior changes.
+
+### Added
+
+- **The Python and Java examples check that a stream carrying comment lines reads the same.** Comment lines (lines starting
+  with a colon) may appear in a streamed chat, retrieval-grounded or document answer, and compliant readers ignore them. The
+  checks serve a canned stream with comment lines before the first event, between events and right before `done`, and
+  assert that the SDK yields the same events as the same stream without them. A hand-written stream parser must ignore
+  comment lines the same way. The checks need no credentials and no network.
+- **A deleted user stays deleted when concurrent updates raced the delete.** The user-update examples gain a check that once a
+  `DELETE /v1/users/{id}` has answered `204`, the user is gone (`404`) however concurrent `PUT /v1/users/{id}` calls
+  interleaved with it, and that a losing update answers `404` or a retryable `409`. The existing race check is unchanged.
+
 ## 0.18.3 — 2026-10-01
 
 ### Added

@@ -254,13 +254,12 @@ describe('namespaces', () => {
         });
 
         test("'org' and 'client' are ordinary, tenant-wide namespace registrations", async () => {
-            // As of 0.40.0, `org`/`client` are real, entity-backed namespace registrations rather
-            // than implicitly special-cased by name alone. An account created from 0.40.0 onward
-            // has both auto-provisioned (entityBacked=true, reserved=true) at creation time — but
-            // this is not retroactive for accounts that predate 0.40.0, which must register them
-            // explicitly (see the public docs for the exact command). This test's tenant predates
-            // 0.40.0 and registered them itself, so `reserved` is `false` here specifically —
-            // asserting `true` would be asserting this tenant's history, not the behavior.
+            // `org`/`client` are real, entity-backed namespace registrations rather than
+            // implicitly special-cased by name alone. Signup does NOT provision them: every account
+            // registers them explicitly, like any other namespace (see the public docs for the exact
+            // command), and this suite relies on its tenant having done so. This test's tenant
+            // registered them itself, so `reserved` is `false` here specifically — asserting `true`
+            // would be asserting this tenant's history, not the behavior.
             // entityBacked + specificityRank are the actual invariants under test, and hold
             // regardless of provenance.
             const all = await allNamespaces();

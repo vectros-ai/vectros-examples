@@ -234,8 +234,8 @@ describe('triggers: the projected-input size cap', () => {
         const small = `ok_${uniqueTag().replace(/-/g, '_')}`;
         await client.records.patchRecord({ id: recordId, body: { payload: { big: small } } });
 
-        // Drains the cursor rather than trusting page one — the same correction this MR makes in
-        // `trigger-firing.spec.ts`, applied here too rather than only where it was first noticed.
+        // Drains the cursor rather than trusting page one — the same correction as in
+        // `trigger-firing.spec.ts`.
         const folder = await pollFor('the under-cap firing to run and commit', async () => {
             let cursor: string | null | undefined;
             do {

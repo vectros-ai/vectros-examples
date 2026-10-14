@@ -22,7 +22,8 @@ def _join_deltas(events) -> str:
 def test_chat_stream_deltas_then_done_with_billing(client):
     stream = client.inference.chat_inference(
         messages=[vectros.ChatMessage(role="user", content='Say "hello smoke test" exactly, no more.')],
-        max_tokens=32,
+        # The default model reasons before it answers and that counts against max_tokens: leave room for the text.
+        max_tokens=512,
     )
     events = support.collect_stream(stream)
 
@@ -49,7 +50,8 @@ def test_chat_system_message_is_honored(client):
             vectros.ChatMessage(role="system", content=f'Always begin your response with the literal string "{marker}".'),
             vectros.ChatMessage(role="user", content="Briefly state today is a good day."),
         ],
-        max_tokens=60,
+        # The default model reasons before it answers and that counts against max_tokens: leave room for the text.
+        max_tokens=512,
     )
     events = support.collect_stream(stream)
     assert len([e for e in events if e.event == "done"]) == 1
@@ -88,7 +90,8 @@ def test_rag_round_trip(client):
     stream = client.inference.rag_inference(
         query="What is a smoke test?",
         search=vectros.RagSearch(mode="HYBRID", limit=3),
-        max_tokens=48,
+        # The default model reasons before it answers and that counts against max_tokens: leave room for the text.
+        max_tokens=512,
     )
     events = support.collect_stream(stream)
     dones = [e for e in events if e.event == "done"]

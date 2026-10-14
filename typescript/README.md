@@ -13,7 +13,7 @@ cp ../.env.example ../.env     # set VECTROS_API_KEY and VECTROS_API_BASE_URL
 ./run.sh tests/search.spec.ts  # just one
 ```
 
-`run.sh` installs the dependencies (including the published SDK, pinned in
+`run.sh` installs the dependencies (including the published SDK, at the version range in
 `package.json`) and runs the suite with [Jest](https://jestjs.io/).
 
 Requires Node.js ≥ 20.

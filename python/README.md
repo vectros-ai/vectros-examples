@@ -13,7 +13,8 @@ cp ../.env.example ../.env       # set VECTROS_API_KEY and VECTROS_API_BASE_URL
 ```
 
 `run.sh` creates a virtualenv, installs the published SDK + [pytest](https://pytest.org/),
-and runs the suite. Requires Python ≥ 3.8.
+and runs the suite. Requires Python ≥ 3.10 for the pinned pytest (the `vectros` SDK itself
+supports Python 3.8 and later).
 
 ## What each example shows
 
