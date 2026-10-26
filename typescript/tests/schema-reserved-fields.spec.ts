@@ -19,7 +19,7 @@
  *   check happened to look at first".
  *
  * `status` is deliberately NOT reserved on either surface — a very common business field name that
- * the platform no longer writes into the index.
+ * the platform does not write into the index.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
@@ -52,7 +52,7 @@ describe('schemas: reserved search-index metadata field ids', () => {
         })).rejects.toMatchObject({
             statusCode: 400,
             body: expect.objectContaining({
-                // The message names the field and the reason, so a partner can act without guessing.
+                // The message names the field and the reason, so a client can act without guessing.
                 message: expect.stringContaining(fieldId),
             }),
         });
@@ -99,7 +99,7 @@ describe('schemas: reserved search-index metadata field ids', () => {
     });
 
     test('`status` is reserved on neither surface', async () => {
-        // The platform no longer publishes a record's lifecycle status into the index, so a schema is
+        // The platform does not publish a record's lifecycle status into the index, so a schema is
         // free to use the name for a business field of its own — on either surface.
         await expectAccepted(['record'], { fieldId: 'status', fieldType: 'string', filterable: true });
         await expectAccepted(['document'], { fieldId: 'status', fieldType: 'string', filterable: true });
@@ -113,9 +113,8 @@ describe('schemas: reserved search-index metadata field ids', () => {
     });
 
     test('the UPDATE path validates too, not just create', async () => {
-        // The create-validates / update-does-not split is the exact shape two other fixes on this
-        // release closed. A schema created clean and then edited to declare a reserved filterable
-        // field must be refused on the way in.
+        // A schema that is valid on create but edited to declare a reserved filterable field must
+        // also be refused.
         const created = await client.schemas.createSchema({
             body: schemaBody(['record'], { fieldId: 'recordType', fieldType: 'string', filterable: false }),
         });

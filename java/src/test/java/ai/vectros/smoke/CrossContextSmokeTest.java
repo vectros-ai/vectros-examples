@@ -183,7 +183,7 @@ class CrossContextSmokeTest {
             String status = doc.getIndexStatus().map(Object::toString).orElse("");
             if ("INDEXED".equals(status)) return;
             if ("FAILED".equals(status)) {
-                // 0.36.0: a FAILED response carries a structured indexFailure —
+                // A FAILED response carries a structured indexFailure —
                 // branch on its stable code, not the human message.
                 String detail = doc.getIndexFailure()
                     .map(f -> " — " + f.getCode().map(Object::toString).orElse("?")

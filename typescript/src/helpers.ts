@@ -9,25 +9,18 @@ import { withRateLimitListener } from './rateLimitFetch';
  * Opt-out gate for tests whose real-world latency dominates the suite's
  * runtime (an async multi-minute drain/convergence, not a slow assertion) —
  * `SMOKE_SKIP_SLOW=true` skips them for a fast local iteration loop. Default
- * OFF (slow tests run, same coverage as today) so CI/pre-push runs stay
- * exhaustive by default; this is for a human iterating locally who doesn't
- * want to eat the cost every run.
+ * OFF (slow tests run), so a full run stays exhaustive; this is for iterating
+ * locally without paying the cost every run.
  *
- * There's no fast/slow tagging system in this harness (checked
- * `jest.config.js` before adding one — not worth it for a single test today).
- * As of this writing exactly ONE test uses this gate
- * (app-contexts.spec.ts's destroy-path test) — if a second slow test joins
- * it, follow the same pattern at ITS OWN call site (gate composes with
- * whatever other condition that test already has, e.g. `liveTenantId`):
+ * Today it skips the long-running cells in app-contexts, erasure-requests,
+ * issuers-token-exchange and trigger-firing. A slow test opts in at its own call site (the gate
+ * composes with whatever other condition the test already has, e.g.
+ * `liveTenantId`):
  *
  *   (liveTenantId && !SKIP_SLOW ? test : test.skip)('... (SLOW — ...)', async () => {...}, 360_000);
  *
- * If a THIRD slow test shows up wanting to be skippable independently of the
- * others, that's the signal this flat boolean has stopped being enough —
- * build real per-test tagging then, rather than stacking more env vars.
- *
  * Name the reason in the test title (e.g. "SLOW — full teardown
- * convergence, ~3min") so `--testPathPattern`/`-t` filtering and CI logs are
+ * convergence, ~3min") so `--testPathPattern`/`-t` filtering and run logs are
  * self-explanatory without reading this comment.
  */
 export const SKIP_SLOW = process.env.SMOKE_SKIP_SLOW === 'true';
@@ -69,13 +62,13 @@ export async function pollUntilIndexed(
         last = kind === 'document'
             ? await client.documents.getDocument({ id })
             : await client.records.getRecord({ id });
-        // Documents report pipeline state in `indexStatus` since the 2.4.0
-        // status split (`status` is now the ACTIVE/ARCHIVED lifecycle field);
-        // fall back to `status` for pre-split environments.
+        // Documents report processing state in `indexStatus` (`status` is the
+        // ACTIVE/ARCHIVED lifecycle field); fall back to `status` for servers
+        // that still report processing state there.
         const status = kind === 'document' ? (last?.indexStatus ?? last?.status) : last?.indexStatus;
         if (status === 'INDEXED') return last;
         if (status === 'FAILED') {
-            // Since 0.36.0 a FAILED record/document response carries a structured
+            // A FAILED record/document response carries a structured
             // `indexFailure` — branch on its stable `code` (SOURCE_UNAVAILABLE,
             // TEXT_INDEX_FAILED, EMBEDDING_FAILED, INDEXING_FAILED,
             // VECTOR_LIMIT_EXCEEDED, INTERNAL), not the human `message`, whose
@@ -129,8 +122,7 @@ export async function tryCleanup(label: string, fn: () => Promise<unknown>): Pro
  * Returns the caught error (with its `body`, when the SDK attached one) so a
  * caller that needs to assert on the error body/shape can do so without a
  * second, ad-hoc try/catch. Shared across spec files rather than each
- * hand-rolling its own copy — was previously duplicated verbatim in
- * issuers-token-exchange.spec.ts and token-assume.spec.ts.
+ * hand-rolling its own copy.
  */
 export async function expectReject(
     promise: Promise<unknown>,
@@ -149,7 +141,7 @@ export async function expectReject(
 
 /**
  * Extracts a wait duration (ms) from a rate-limited SDK error, or `null` if
- * `err` isn't one. The partner API's rate limiter is a SHARED, per-tenant,
+ * `err` isn't one. The Vectros API's rate limiter is a SHARED, per-tenant,
  * 60s fixed-window counter — every concurrent caller against the same
  * tenant counts against it. On a trip it returns 429 with `Retry-After` set
  * to the actual seconds until the window resets (up to ~60s). The SDK's OWN
@@ -218,40 +210,29 @@ export async function withRateLimitRetry<T>(
  * Defensive poll that waits for a search query to surface a freshly-indexed
  * doc.
  *
- * VISIBILITY LAG IS LANE-DEPENDENT:
- *   - TEXT mode: searchable ≈ at INDEXED (~1s). The index commit blocks until
- *     the new content is published, and search reads published content live —
- *     so INDEXED really does mean text-searchable.
- *   - SEMANTIC / HYBRID mode (vector lane): INDEXED is stamped only after
- *     every chunk's embedding is generated AND written to the vector store
- *     successfully, so by the time INDEXED is observed the write is fully
- *     durable. Live re-investigation could not reproduce a genuine
- *     "INDEXED-but-absent" case at any load tested (repeated one-shot,
- *     zero-poll queries all found the doc immediately, including under
- *     heavy synthetic concurrent load) — what WAS reproduced, repeatedly, is
- *     the rate-limiter interaction {@link retryAfterMsFrom} describes, which
- *     produces the identical externally-observed symptom (a poll attempt
- *     that never completes in time) without any vector-store lag at all.
- *     Some genuine cold/warm query latency on the vector lane may still
- *     exist (a cold cache costs more than a warm one, with no published
- *     write-visibility guarantee either way) — this comment does not assert
- *     an "eventually consistent" gap as settled fact.
+ * VISIBILITY LAG DEPENDS ON THE SEARCH MODE:
+ *   - TEXT mode: searchable ≈ at INDEXED (~1s).
+ *   - SEMANTIC / HYBRID: INDEXED is stamped once the embeddings are stored. A
+ *     poll that times out is more often the rate limiter
+ *     ({@link retryAfterMsFrom}) than a search delay; there is no published
+ *     write-visibility guarantee, so treat a timeout as unexplained rather
+ *     than as proof of an eventual-consistency gap.
  *
  * This is a DISTINCT phase from {@link pollUntilIndexed}: a doc is INDEXED (the
  * indexing phase succeeded) BEFORE it is confirmed search-visible. A timeout
  * HERE means "INDEXED but not yet observed as search-visible" — it does NOT
  * mean indexing failed, and (per the above) does not by itself mean a real
- * S3-Vectors lag either; check whether `rateLimited` fired in the thrown
- * error before assuming lane latency.
+ * search delay either; check whether `rateLimited` fired in the thrown
+ * error before assuming search-mode latency.
  *
- * NOTE: many specs use a generic query string which can match orphan docs
- * from prior runs in the same tenant. Prefer a unique-tag marker for new
+ * NOTE: a generic query string can match results from earlier runs in the same
+ * tenant, and the poll must tolerate them. Prefer a unique-tag marker for new
  * specs so the expected docId is the only matching result, or use
  * `createdAfter` to scope retrieval to the current run.
  *
- * `limit: 100` widens the result window so legacy orphan docs (matching the
- * same query tokens, scoring higher because they have richer histories) don't
- * push a just-created doc off the default first page.
+ * `limit: 100` widens the result window so stale results from earlier runs
+ * (matching the same query tokens) don't push a just-created doc off the
+ * default first page.
  *
  * Defaults: 30s timeout, 1s poll interval, TEXT mode. Callers should reach
  * INDEXED via {@link pollUntilIndexed} FIRST, then confirm search visibility
@@ -270,19 +251,12 @@ export async function pollUntilSearchable(
     while (Date.now() < deadline) {
         // `createdAfter` scopes results to content created at or after the
         // given ISO-8601 timestamp — the cleanest way to isolate just-created
-        // smoke content from accumulated tenant history. When passed, the
-        // orphan-pagination problem disappears entirely and the test becomes
-        // deterministic regardless of query semantics.
+        // smoke content from accumulated tenant history. When passed, results
+        // from earlier runs are excluded.
         //
-        // `limit: 100` widens the result window so legacy orphan docs (matching
-        // the same query tokens, scoring higher because they have richer
-        // histories) don't push a just-created doc off the first page.
-        // (A smaller limit was tried to cut per-call cost, but the backend
-        // internally overfetches past whatever `limit` asks for and can
-        // trigger a second, more expensive fetch to backfill a small result
-        // window — plausibly a net loss under exactly the busy-tenant
-        // conditions this poll needs to handle well. Not pursued further
-        // without a way to verify it's actually faster in practice.)
+        // `limit: 100` widens the result window so stale results from earlier
+        // runs (matching the same query tokens) don't push a just-created doc
+        // off the first page.
         const req: any = { query, mode, limit: 100 };
         if (createdAfter) req.createdAfter = createdAfter;
         const results = await withRateLimitRetry(() => client.search.content(req), (waitedMs) => {
@@ -307,9 +281,9 @@ export async function pollUntilSearchable(
               `miss AFTER that wait, not a limiter artifact. `
             : mode === 'TEXT'
                 ? `TEXT is searchable ≈ at INDEXED, so a timeout here is unexpected — suspect the query ` +
-                  `tokens, relevance/paging, or an orphan-doc collision rather than lane latency. `
-                : `${mode} rides the vector lane; no reproducible vector-store lag was found at any tested ` +
-                  `load, so suspect the query/relevance mechanics above before assuming one. `) +
+                  `tokens, relevance/paging, or a collision with results from earlier runs rather than search delay. `
+                : `${mode} results can lag slightly behind INDEXED; check the query and relevance mechanics ` +
+                  `above before assuming a search delay. `) +
         `Last results: ${lastIds.slice(0, 5).join(', ')}${lastIds.length > 5 ? ` (+${lastIds.length - 5} more)` : ''}`
     );
 }
@@ -317,9 +291,9 @@ export async function pollUntilSearchable(
 /**
  * Defensive poll that waits for a search query to STOP returning a given
  * docId — the inverse of {@link pollUntilSearchable}. Useful after a delete
- * or a re-index that should make the prior content unsearchable: the text
- * lane's delete-by-query runs asynchronously after the API call returns, so
- * a poll is more robust than a bare sleep.
+ * or a re-index that should make the prior content unsearchable: removal from
+ * the index may complete after the API call returns, so a poll is more robust
+ * than a bare sleep.
  *
  * Resolves on the first poll where the docId is absent from the result set.
  * Throws if the deadline elapses with the docId still surfacing — that's
@@ -368,20 +342,17 @@ export async function pollUntilSearchHitGone(
  * anything that is not a search: an async trigger firing, a background convergence, any
  * "wait for this to appear" loop.
  *
- * ⚠️ WHY THIS LIVES HERE RATHER THAN IN EACH SPEC. Two spec files had hand-rolled copies of
- * this loop on a FIXED deadline, and the bug that hides in that shape is nasty: the partner
- * API's rate limiter is a SHARED per-tenant 60s window, and `rateLimitAwareFetch` pays a
+ * ⚠️ WHY THIS LIVES HERE RATHER THAN IN EACH SPEC. A poll loop on a FIXED deadline hides a
+ * nasty failure: the Vectros API's rate limiter is a SHARED per-tenant 60s window, and `rateLimitAwareFetch` pays a
  * 429's `Retry-After` SILENTLY inside a single `await`, up to three times. So ONE probe call
  * can consume ~120s of a 150s budget without the loop ever knowing, leaving it a couple of
  * real attempts before it reports a timeout that reads exactly like "the thing never
  * happened" — a false RED against a working platform, on whichever spec happens to run last
  * and inherit the hottest limiter.
  *
- * Measured 2026-09-06: a trigger cell timed out at 150s in a full-file run and passed in
- * 3.8s in isolation, with the platform behaving correctly in both.
- *
- * The search polls already solved this; a new spec writing its own loop had no reason to
- * know that. One shared implementation is what stops the next one re-introducing it.
+ * The symptom is a cell that times out at 150s in a full-file run yet passes in seconds in
+ * isolation, with the platform behaving correctly in both. One shared implementation stops
+ * each spec from re-introducing the problem in its own loop.
  */
 export async function pollUntil<T>(
     label: string,
@@ -433,7 +404,7 @@ export async function collectStream<T>(
 /**
  * The extra header a presigned upload URL requires, as named by the upload response.
  *
- * The platform can bake an S3 conditional-write precondition (for example
+ * The platform can bake a conditional-write precondition (for example
  * `If-None-Match: *`, which makes the URL single-use) into the URL's own
  * signature. A PUT that omits that header, or changes its value, fails
  * signature validation with a 403 before the bytes are accepted.

@@ -1,14 +1,13 @@
 /**
  * documents-archive.spec.ts — Document ARCHIVED lifecycle, and the de-index contract.
  *
- * `records-archive.spec.ts` has pinned the RECORD half of this since 0.35. The document twin did
- * not exist, and that is exactly where the defect shipped: archiving a document retracted it from
- * search, but a LATER WRITE silently put it back — the document went on reporting `ARCHIVED` while
- * `POST /v1/search` and RAG kept returning it, with no error on either side. Creating a document
- * directly with `status: "ARCHIVED"` indexed it for the same reason. Records were never affected by
- * either. One surface had coverage, the other had none, and the bug landed on the one that had none.
+ * `records-archive.spec.ts` pins the RECORD half of this; this spec is its document twin. Two
+ * failure shapes matter here, and neither raises an error on either side: a LATER WRITE to an
+ * archived document silently putting it back into search (the document keeps reporting `ARCHIVED`
+ * while `POST /v1/search` and RAG return it), and a document created directly with
+ * `status: "ARCHIVED"` being indexed anyway.
  *
- * What this spec pins, all of it published 0.43.0 surface:
+ * What this spec pins:
  *
  *   archive retracts     ARCHIVED removes the document from search (BOTH retrieval legs) and RAG
  *   storage never moves  archived is still readable by id and still listed by GET /v1/documents
@@ -33,7 +32,7 @@
  * message says the pipeline never drained rather than blaming the property under test.
  *
  * Isolation follows the sibling specs: a unique marker token in the searchable text plus
- * `createdAfter` scoping on every query, so the expected id is the only possible hit and orphans
+ * `createdAfter` scoping on every query, so the expected id is the only possible hit and leftovers
  * from prior runs are invisible.
  */
 import { Vectros } from '@vectros-ai/sdk';
@@ -62,7 +61,7 @@ const API_KEY = process.env.VECTROS_API_KEY!;
  *
  * Raw fetch, not `client.documents.patchDocument`, and the reason is the property under test. The
  * document PATCH is an RFC 7386 merge patch: an absent key means "leave it alone", so a status-only
- * body is the correct — and for a partner, the obvious — way to archive. Older generated SDKs typed
+ * body is the correct — and for a client, the obvious — way to archive. Older generated SDKs typed
  * this endpoint's body as the full document request, in which `title` was REQUIRED, so a typed
  * status-only call did not compile and pushed a typed caller into re-sending a title alongside the
  * archive; current SDKs give the endpoint its own request type. (The record twin never had the
@@ -130,8 +129,8 @@ describe('documents (ARCHIVED lifecycle)', () => {
             userId,
             scopes: [`org:${orgEntityId}`],
             // `status` is the caller-controlled lifecycle field, accepted on the ingest path as well
-            // as on update/patch — typed by the SDK since 0.43.0, so this cell round-trips a REAL
-            // field rather than one a stale backend could accept and drop.
+            // as on update/patch — typed by the SDK, so this cell round-trips a REAL
+            // field rather than one a server could accept and drop.
             ...(opts.status ? { status: opts.status } : {}),
         } });
         docIds.push(doc.id!);
@@ -176,7 +175,7 @@ describe('documents (ARCHIVED lifecycle)', () => {
     // ── ANCHOR ────────────────────────────────────────────────────────────────────────────────
     // The whole lifecycle against ONE document, in order, because every phase depends on the state
     // the previous one left behind. This is the twin of records-archive.spec.ts's own anchor cell,
-    // extended with the two phases 0.43.0 made newly true (write-while-archived, and re-assert).
+    // extended with two further phases (write-while-archived, and re-assert).
     test('ACTIVE → ARCHIVED → written-to → re-archived → ACTIVE: search flips, storage never does', async () => {
         const first = marker('docarchive');
         const second = marker('docarchive2');
@@ -229,8 +228,8 @@ describe('documents (ARCHIVED lifecycle)', () => {
         const indexStatusWhenArchived = whileArchived.indexStatus;
 
         // ── Phase 2: THE HEADLINE DEFECT — a write must not resurrect it ──────────────────────
-        // Before the fix, this re-created the search-index entry: the document reported ARCHIVED and
-        // was returned by search anyway. The new text carries a SECOND marker, so a resurrection
+        // A write that re-created the search-index entry would leave the document reporting ARCHIVED
+        // while search still returned it. The new text carries a SECOND marker, so a resurrection
         // is visible as a hit the old marker could never have produced.
         await client.documents.updateDocument({ id, body: {
             title: 'Doc Archive Rewritten While Archived',
@@ -270,17 +269,15 @@ describe('documents (ARCHIVED lifecycle)', () => {
         await pollUntilSearchHitGone(first, id, 30_000, 'TEXT', testStartedAt);
 
         // ── Phase 3: RE-ARCHIVING IS ACCEPTED — and what that does NOT prove ────────────────
-        // ⚠️ THIS IS NOT COVERAGE OF THE REPAIR PATH, and an earlier version of this phase claimed it
-        // was. Re-sending the archive is documented as the fix for an item found
-        // archived-but-still-searchable — but the de-index it now re-asserts only does observable
+        // ⚠️ THIS IS NOT COVERAGE OF THE REPAIR PATH. Re-sending the archive is documented as the
+        // repair for an item found archived-but-still-searchable — but the de-index it re-asserts only does observable
         // work on a document that is archived AND still holds a live index entry, and that state
-        // cannot be built through public endpoints: the write paths that produced it are exactly
-        // what 0.43.0 fixed. The same limitation the record twin states.
+        // cannot be built through public endpoints. The same limitation the record twin states.
         //
-        // A previous version asserted the retraction here with `pollUntilSearchHitGone(second, ...)`.
-        // That line could not fail: the control-gated assertions above had ALREADY proven `second`
-        // absent, and the poll returns on its first absent result. It would have passed identically
-        // against a build that reverted the archive half to edge-triggered.
+        // Asserting the retraction here with `pollUntilSearchHitGone(second, ...)` would be vacuous:
+        // the control-gated assertions above have ALREADY proven `second` absent, and the poll
+        // returns on its first absent result. It would pass identically against a build that
+        // reverted the archive half to edge-triggered.
         //
         // What IS pinned, and is worth pinning: the second archive is ACCEPTED rather than refused
         // as a no-op or a conflict, and does not resurrect the document. Idempotence of acceptance,
@@ -303,7 +300,7 @@ describe('documents (ARCHIVED lifecycle)', () => {
         // budget equal to the nominal sum therefore turns a rate-limited run into a bare "Exceeded
         // timeout" naming nothing, which is precisely the failure mode the helpers' own messages
         // exist to replace. Headroom keeps the phase-specific error the one you actually see.
-        // (Measured wall-clock on a healthy staging: 22-41s.)
+        // (A healthy run finishes in well under a minute.)
     }, 900_000);
 
     // ── Born archived ─────────────────────────────────────────────────────────────────────────
@@ -327,12 +324,12 @@ describe('documents (ARCHIVED lifecycle)', () => {
         // work that will never run. (Archiving an ALREADY-INDEXED document is different and correct:
         // the anchor cell above asserts its indexStatus does NOT move.)
         //
-        // Measured on staging: PENDING_INDEX at create, still PENDING_INDEX 25s later, after the
-        // control above proved the pipeline had drained for this marker.
+        // The document is PENDING_INDEX at create and still PENDING_INDEX after the control
+        // above proved the index pipeline had drained for this marker.
         //
-        // Asserted as the CURRENT behaviour, not as desirable behaviour. If this is fixed, this cell
-        // fails and should be updated to whatever the fix settles on — that is the point of pinning
-        // it: the residual becomes visible instead of quietly persisting.
+        // Asserted as the CURRENT behaviour, not as desirable behaviour. If the behaviour changes, this cell
+        // fails and should be updated to whatever it settles on — that is the point of pinning
+        // it: the residual stays visible instead of quietly persisting.
         expect((await client.documents.getDocument({ id })).indexStatus).toBe('PENDING_INDEX');
 
         // Stored all along: readable by id, and listed by GET /v1/documents.

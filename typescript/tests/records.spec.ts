@@ -141,11 +141,10 @@ describe('records', () => {
     test('search HYBRID — semanticScore + textScore both > 0, contextText non-empty', async () => {
         // Pre-condition: ANCHOR record already INDEXED in beforeAll-driven flow.
         // The record has notes="presents with hypertension and complains of chest pain"
-        // and department="cardiology" — query for "hypertension" hits both lanes.
-        // HYBRID rides the vector lane, whose query visibility lags INDEXED
-        // (eventually-consistent; see helpers' pollUntilSearchable header). 30s
-        // absorbs that tail — a timeout here is the visibility gap, not an
-        // indexing failure.
+        // and department="cardiology" — query for "hypertension" hits both TEXT and SEMANTIC search.
+        // SEMANTIC/HYBRID search can lag INDEXED slightly (see helpers'
+        // pollUntilSearchable header). 30s absorbs that — a timeout here is the
+        // visibility gap, not an indexing failure.
         await pollUntilSearchable('hypertension', recordIds[0], 30_000, 'HYBRID', testStartedAt);
         const results = await client.search.content({
             query: 'hypertension chest pain',
@@ -188,9 +187,8 @@ describe('records', () => {
         });
         const hit = (results.results ?? []).find((r) => r.documentId === recordIds[0]);
         expect(hit).toBeDefined();
-        // textScore is not asserted > 0 in TEXT mode — the text-lane backend
-        // serves highlighted snippets via an endpoint that does not expose
-        // per-hit scores. Only the result-array order is meaningful as a
+        // textScore is not asserted > 0 in TEXT mode — TEXT mode does not
+        // expose per-hit scores. Only the result-array order is meaningful as a
         // rank signal. HYBRID mode does return scores (asserted above).
         expect(hit!.semanticScore).toBe(0);
     });
@@ -452,11 +450,10 @@ describe('records', () => {
         expect(tombObj.id ?? tombObj.recordId ?? rec.id).toBeTruthy();
     });
 
-    // The tombstone response was narrowed in this release to exactly the
-    // fields that describe the deletion fact itself. Everything about who
-    // owned the deleted record, or the platform's internal audit/retention
-    // bookkeeping for it, is no longer served — see this release's
-    // CHANGELOG migration note for the full list of removed fields.
+    // The tombstone response is narrowed to exactly the fields that describe
+    // the deletion fact itself. Everything about who owned the deleted
+    // record, or the platform's internal audit/retention bookkeeping for it,
+    // is not served.
     test('tombstone response is narrowed to exactly the documented deletion-fact fields', async () => {
         const rec = await client.records.createRecord({ body: {
             typeName: recordType,

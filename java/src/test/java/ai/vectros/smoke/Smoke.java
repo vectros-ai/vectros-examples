@@ -20,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Shared support for the Java SDK smoke suite — the Java-language analogue of
  * the node SDK smoke. Installs the published `ai.vectros:vectros-sdk` and drives
- * it against the live API, proving the cross-language wire contract that mock
- * unit tests cannot.
+ * it against the live API, proving the cross-language wire contract against a real server, which a
+ * mocked client cannot.
  *
  * AUTH MODEL: like the node SDK smoke, the SDK is constructed directly with an
  * API key (sk_*) — how you use the SDK. The suite reads VECTROS_API_KEY /
@@ -32,14 +32,13 @@ final class Smoke {
 
     // -------------------------------------------------------------------
     // Rate-limit visibility. Same mechanism as the TypeScript example's
-    // rateLimitFetch.ts and its Python port in support.py: the partner API's
+    // rateLimitFetch.ts and its Python port in support.py: the Vectros API's
     // rate limiter is a SHARED, per-tenant, 60s fixed-window counter, so a
     // full-suite run can trip it even though no single test is at fault.
     // Left alone, the SDK's own default retry pays the Retry-After wait
     // SILENTLY inside one call — invisible to a test's own assertions, and
-    // (measured while porting test_namespaces.py's membership-revocation
-    // test to Python) able to shift a request's real send time late enough
-    // to observe a state a promptly-sent request wouldn't have. This
+    // able to shift a request's real send time late enough to observe a
+    // state a promptly-sent request wouldn't have. This
     // OkHttp interceptor pays the same wait but VISIBLY (printed, bounded
     // to 3 attempts) instead of the SDK's opaque retry.
     // -------------------------------------------------------------------

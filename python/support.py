@@ -2,8 +2,8 @@
 Shared support for the Python SDK smoke suite.
 
 This suite installs the `vectros` PyPI package and drives it against the live
-Vectros API, proving the cross-language wire contract that mock-client unit tests
-cannot. It provides the building blocks (unique tagging, indexing polls, stream
+Vectros API, proving the cross-language wire contract against a real server, which a
+mocked client cannot. It provides the building blocks (unique tagging, indexing polls, stream
 collection, and the two-app-context isolation fixture) on the Python SDK's
 snake_case surface.
 
@@ -36,8 +36,8 @@ def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         raise RuntimeError(
-            f"{name} is required. Set it in your environment (or your CI secret "
-            f"store) before running the suite."
+            f"{name} is required. Set it in your environment "
+            f"before running the suite."
         )
     return value
 
@@ -49,15 +49,14 @@ def base_url() -> str:
 # ---------------------------------------------------------------------------
 # Rate-limit visibility
 # ---------------------------------------------------------------------------
-# The partner API's rate limiter is a SHARED, per-tenant, 60s fixed-window
+# The Vectros API's rate limiter is a SHARED, per-tenant, 60s fixed-window
 # counter -- every concurrent caller against the same tenant counts against
 # it. On a trip it returns 429 with Retry-After set to the actual seconds
 # until the window resets. Left alone, the SDK's own default retry pays that
-# wait SILENTLY inside a single call -- invisible to any test's own timeout
-# and indistinguishable from a genuine hang or (worse, as measured while
-# writing test_namespaces.py's membership-revocation test) able to shift a
-# request's real send time late enough to observe a state a request sent
-# promptly would not have. This is the Python analogue of the TypeScript
+# wait SILENTLY inside a single call -- invisible to any test's own timeout,
+# indistinguishable from a genuine hang, and able to shift a request's real
+# send time late enough to observe a state a request sent promptly would not
+# have. This is the Python analogue of the TypeScript
 # example's rateLimitFetch.ts: pays the SAME wait but VISIBLY (a
 # printed warning, so a slow run is diagnosable) and BOUNDED to a small,
 # fixed attempt count -- not the SDK's opaque retry layered on top of this.
@@ -67,9 +66,26 @@ def base_url() -> str:
 # resolved (or gave up on), which would silently double the wait.
 _MAX_RATE_LIMIT_ATTEMPTS = 3
 
+# Explicit timeouts. `httpx.Client()` with no `timeout` waits 5 s per phase, and the SDK reads
+# `httpx_client.timeout.read` when it is handed a client of its own: left unset, a smoke's
+# patience is whatever httpx's default happens to be. 60 s is the SDK's own documented
+# default for a request; 10 s is generous for a TCP + TLS connect to the API.
+READ_TIMEOUT_S = 60.0
+CONNECT_TIMEOUT_S = 10.0
+
+
+def _bound_connect_timeout(request: httpx.Request) -> None:
+    """The SDK passes ONE float as every request's timeout, which would make the connect
+    phase as patient as the read phase; cap it here (the transport sees the final value)."""
+    t = dict(request.extensions.get("timeout") or {})
+    connect = t.get("connect")
+    t["connect"] = CONNECT_TIMEOUT_S if connect is None else min(connect, CONNECT_TIMEOUT_S)
+    request.extensions["timeout"] = t
+
 
 class _RateLimitAwareTransport(httpx.HTTPTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        _bound_connect_timeout(request)
         attempt = 1
         while True:
             response = super().handle_request(request)
@@ -96,10 +112,14 @@ def make_client(token: str) -> VectrosApi:
     """A VectrosApi bound to `token` and the configured base URL, with the
     rate-limit-aware transport above and max_retries=0 (see that class's
     doc) so a shared-tenant 429 is visible and boundedly retried exactly
-    once, not silently retried twice."""
+    once, not silently retried twice. Every request has an explicit 60 s read
+    and 10 s connect timeout (READ_TIMEOUT_S / CONNECT_TIMEOUT_S)."""
     return VectrosApi(
-        base_url=base_url(), token=token, max_retries=0,
-        httpx_client=httpx.Client(transport=_RateLimitAwareTransport()),
+        base_url=base_url(), token=token, max_retries=0, timeout=READ_TIMEOUT_S,
+        httpx_client=httpx.Client(
+            transport=_RateLimitAwareTransport(),
+            timeout=httpx.Timeout(READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
+        ),
     )
 
 
@@ -148,7 +168,7 @@ def poll_until_indexed(
         if last.index_status == "INDEXED":
             return last
         if last.index_status == "FAILED":
-            # Since 0.36.0 a FAILED response carries a structured index_failure —
+            # A FAILED response carries a structured index_failure —
             # branch on its stable `code`, not the human `message`.
             failure = getattr(last, "index_failure", None)
             detail = f" — {failure.code}: {failure.message}" if failure else ""
@@ -182,7 +202,8 @@ def raw_post(path: str, body: str) -> RawResponse:
     """POST a raw (possibly malformed) JSON body with the live key. The SDK's
     typed surface would reject these bodies at call time; the API error contract
     must hold against any well-formed HTTP request with a malformed body, so we go
-    around the SDK with stdlib urllib."""
+    around the SDK with stdlib urllib. It waits at most READ_TIMEOUT_S (urllib has one socket timeout, used for the
+    connect and for each read)."""
     key = require_env("VECTROS_API_KEY")
     req = urllib.request.Request(
         f"{base_url()}{path}",
@@ -191,7 +212,7 @@ def raw_post(path: str, body: str) -> RawResponse:
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
     try:
-        with urllib.request.urlopen(req) as resp:  # noqa: S310 - fixed https base
+        with urllib.request.urlopen(req, timeout=READ_TIMEOUT_S) as resp:  # noqa: S310 - fixed https base
             status, raw = resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read().decode("utf-8")

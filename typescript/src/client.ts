@@ -1,9 +1,8 @@
 /**
  * Singleton client instantiation for smoke tests.
  *
- * Reads credentials and target environment from environment variables. In CI,
- * your pipeline injects these from the appropriate secret store. For local
- * development, copy .env.example to .env and fill in real values.
+ * Reads credentials and target environment from environment variables. For
+ * local development, copy .env.example to .env and fill in real values.
  *
  *   VECTROS_API_KEY         — sk_live_* or sk_test_* API key for the test
  *                             tenant
@@ -19,8 +18,7 @@ function requireEnv(name: string): string {
     if (!value || value.length === 0) {
         throw new Error(
             `${name} is required. ` +
-            `In CI, ensure the secret is wired in your pipeline variables. ` +
-            `For local dev, set it in a .env file (see .env.example).`
+            `Set it in the environment, or in a .env file for local dev (see .env.example).`
         );
     }
     return value;
@@ -35,8 +33,7 @@ function requireEnv(name: string): string {
 // BOUNDED instead; `maxRetries: 0` stops the SDK from retrying again on top
 // of it. Any spec that constructs its OWN `VectrosClient` (rather than using
 // this file) must spread the same options in — see auth.spec.ts /
-// capabilities.spec.ts / logs.spec.ts / identity-scoped-key.spec.ts /
-// negative-paths.spec.ts for the pattern.
+// capabilities.spec.ts / logs.spec.ts / negative-paths.spec.ts for the pattern.
 const RATE_LIMIT_SAFE = { fetch: rateLimitAwareFetch, maxRetries: 0 } as const;
 
 // LIVE-tenant client — primary client used by most specs

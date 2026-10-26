@@ -25,8 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * traffic from a delegate-minted key, null on ordinary traffic. The
  * Java-language analogue of the single {@code delegationChain} test in
  * logs.spec.ts (the rest of that file's filter/pagination coverage is not
- * ported here -- this file exists specifically to close the 0.40.0
- * Java-parity gap for the delegationChain field).
+ * ported here -- this file covers the delegationChain field only).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class LogsSmokeTest {

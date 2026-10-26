@@ -17,8 +17,8 @@ restricted_to_domain starts as pending_verification and is activated only by
 POST /v1/auth/issuers/{issuerId}/verify with a real login token from the IdP,
 which this suite cannot produce -- so everything that needs an active
 registration (a real 401 from a signature that fails to verify,
-suspend/reinstate, context_id disambiguation) is covered by backend unit
-tests, not here. This covers the issuer-registry CRUD contract, the pending
+suspend/reinstate, context_id disambiguation) is not exercised
+here. This covers the issuer-registry CRUD contract, the pending
 state and its uniform 404 at exchange, every rejection verify can produce,
 and every exchange() rejection reachable without an active registration.
 """
@@ -78,7 +78,7 @@ def _raw_put(path: str, body: dict) -> support.RawResponse:
         },
     )
     try:
-        with urllib.request.urlopen(req) as resp:  # noqa: S310 - fixed https base
+        with urllib.request.urlopen(req, timeout=support.READ_TIMEOUT_S) as resp:  # noqa: S310 - fixed https base
             status, raw = resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read().decode("utf-8")
@@ -314,7 +314,7 @@ def test_exchange_unregistered_issuer_404(client):
 # the issuer is not registered against -> 404). It is only distinguishable from an unrecognized
 # issuer when the registration is ACTIVE; a pending registration already 404s at exchange whatever
 # context_id is sent. An active registration requires proving control of a real IdP, so that path
-# is covered by backend unit tests rather than this suite.
+# is not exercised here.
 
 
 # -----------------------------------------------------------------------
@@ -323,8 +323,7 @@ def test_exchange_unregistered_issuer_404(client):
 # POST /v1/auth/issuers/{issuerId}/verify. That call needs a real login token from the IdP,
 # which this suite cannot obtain -- so what is provable here is the pending state, its uniform
 # 404 at exchange, and every way verify refuses. (The 401 a registered issuer returns for a
-# signature that fails to verify needs an ACTIVE registration, so it is covered by backend unit
-# tests rather than this suite.)
+# signature that fails to verify needs an ACTIVE registration, so it is not exercised here.)
 # -----------------------------------------------------------------------
 
 def test_registration_without_domain_is_pending_verification_with_challenge_and_its_iss_aud_404s_at_exchange(client, ctx_id):
@@ -362,8 +361,8 @@ def test_registration_without_domain_is_pending_verification_with_challenge_and_
 # A registration still pending verification can be neither activated nor suspended through PUT --
 # activation happens only via verify, and suspending an unverified registration is meaningless.
 # (Suspend/reinstate of an ACTIVE registration is not reachable from this suite: an active
-# registration requires proving control of a real IdP, so that path is covered by backend unit
-# tests.)
+# registration requires proving control of a real IdP, so that path is not exercised
+# here.)
 def test_status_cannot_be_changed_on_a_pending_registration(client, ctx_id):
     issuer_id = slug("pendput")
     client.auth.register_issuer(
@@ -484,7 +483,7 @@ def test_exchange_404_uses_oauth_envelope_not_message():
 
 # The 401 (a registered issuer whose token signature fails) has no reachable path from this
 # suite: it needs an ACTIVE registration, and activating one requires proving control of a real
-# IdP, so that envelope is covered by backend unit tests. A registration still pending
+# IdP, so that envelope is not exercised here. A registration still pending
 # verification is the closest reachable case -- it answers with the same uniform 404 as an
 # unregistered issuer, and must carry the same OAuth envelope.
 def test_exchange_pending_registration_404_uses_oauth_envelope_not_message(client, ctx_id):

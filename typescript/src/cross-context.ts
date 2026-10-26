@@ -101,7 +101,7 @@ function requireTenantId(): string {
         throw new Error(
             'VECTROS_LIVE_TENANT_ID is required for cross-context isolation specs ' +
             '(the scoped-key mint endpoint needs the tenant the key will operate on). ' +
-            'Set it in a .env file for local dev; in CI it is a pipeline variable.'
+            'Set it in the environment, or in a .env file for local dev.'
         );
     }
     return t;

@@ -38,8 +38,7 @@ describe('inference: /v1/documents/{id}/ask', () => {
 
     // ANCHOR — document_context fires first, then content, then done
     test('ask stream emits document_context then content_delta then done', async () => {
-        // SDK shape: documentAsk takes { id, prompt, ... } in the request body
-        // (id was previously a path-style positional arg).
+        // SDK shape: documentAsk takes { id, prompt, ... } in the request body.
         const stream = await client.inference.documentAsk({
             id: docId,
             prompt: 'How do the drugs in this document work?',
@@ -133,8 +132,7 @@ describe('inference: /v1/documents/{id}/ask', () => {
         }
     });
 
-    // The "document in PENDING_INDEX returns 409" behavior is covered at
-    // the unit-test layer rather than here — the smoke caller can't reach
-    // a doc in the PENDING_INDEX state deterministically (race against
-    // indexing completion).
+    // The "document in PENDING_INDEX returns 409" behavior is not exercised
+    // here — the smoke caller can't reach a doc in the PENDING_INDEX state
+    // deterministically (race against indexing completion).
 });

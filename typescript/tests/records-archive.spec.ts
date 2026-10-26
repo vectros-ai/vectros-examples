@@ -2,15 +2,15 @@
  * records-archive.spec.ts — Record ARCHIVED lifecycle.
  *
  * A record's `status` is the caller-controlled lifecycle field (distinct from the
- * read-only `indexStatus` pipeline field). Setting `status=ARCHIVED` soft-retracts
+ * read-only `indexStatus` processing field). Setting `status=ARCHIVED` soft-retracts
  * the record from search and RAG recall while KEEPING it stored: retrievable by id,
  * findable by structured-field lookup, and returned by `GET /v1/records`. Setting it
  * back to `ACTIVE` re-indexes and restores search visibility.
  *
- * This spec pins the full round-trip against the live API — the behaviour has ZERO
- * prior smoke coverage. Because search visibility on the vector lane is
- * eventually-consistent (see helpers' pollUntilSearchable header), each transition is
- * POLLED, not asserted on a bare sleep:
+ * This spec pins the full round-trip against the live API. Because search
+ * visibility in SEMANTIC/HYBRID search can lag slightly (see helpers'
+ * pollUntilSearchable header), each transition is POLLED, not asserted on a
+ * bare sleep:
  *
  *   create HYBRID → INDEXED → search finds it
  *     → status=ARCHIVED → poll until search NO LONGER returns it (pollUntilSearchHitGone)
@@ -37,7 +37,7 @@ describe('records (ARCHIVED lifecycle)', () => {
     const recordIds: string[] = [];
 
     // A unique token embedded in the record's searchable text so the archive
-    // search assertions match ONLY this record — never an orphan from a prior
+    // search assertions match ONLY this record — never a leftover from a prior
     // run that shares generic vocabulary. Combined with createdAfter scoping,
     // the expected id is the sole possible hit.
     const marker = `archivemarker_${uniqueTag()}`.replace(/-/g, '_');
@@ -75,8 +75,8 @@ describe('records (ARCHIVED lifecycle)', () => {
 
     // Whole lifecycle in ONE test so the phases run against a single record in a
     // deterministic order (each transition depends on the prior one's state). A
-    // long-ish timeout is expected: HYBRID rides the vector lane and each phase
-    // waits out its eventually-consistent visibility flip.
+    // long-ish timeout is expected: HYBRID search can lag, so each phase
+    // waits out its visibility flip.
     test('ACTIVE → ARCHIVED → ACTIVE: search visibility flips, storage never does', async () => {
         // ── Phase 0: create + INDEXED ─────────────────────────────────────────
         const record = await client.records.createRecord({ body: {
@@ -122,7 +122,7 @@ describe('records (ARCHIVED lifecycle)', () => {
         const reactivated = await client.records.patchRecord({ id, body: { status: 'ACTIVE' } });
         expect(reactivated.status).toBe('ACTIVE');
 
-        // Re-indexing runs through the same async pipeline as the initial index;
+        // Re-indexing is asynchronous, like the initial index;
         // poll until the record reaches INDEXED and then re-surfaces in search.
         await pollUntilIndexed(id, 'record');
         await pollUntilSearchable(marker, id, 30_000, 'HYBRID', testStartedAt);
@@ -138,20 +138,16 @@ describe('records (ARCHIVED lifecycle)', () => {
     }, 240_000);
 
     test('re-sending ARCHIVED on an already-archived record is accepted and leaves it retracted', async () => {
-        // 0.43.0 made re-sending the archive RE-ASSERT the retraction rather than doing nothing —
-        // the documented repair for an item found archived-but-still-searchable, which previously
-        // needed a hard delete. This cell pins the half that is reachable from outside: the second
-        // archive is ACCEPTED and leaves the record archived and unsearchable.
+        // Re-sending the archive RE-ASSERTS the retraction rather than doing nothing — the documented
+        // repair for an item found archived-but-still-searchable. This cell pins the half that is
+        // reachable from outside: the second archive is ACCEPTED and leaves the record archived and
+        // unsearchable.
         //
-        // ⚠️ WHAT THIS CELL DOES **NOT** PROVE, and the honest label matters more than the coverage.
-        // The repair only shows its work on a record that is archived AND STILL INDEXED, and that
-        // state cannot be constructed through public endpoints — the write paths that produced it
-        // are exactly what was fixed. So this is NOT coverage of the repair: a second archive
-        // returning 200 was already true before the fix, and a cell built only on that passes
-        // identically against unfixed code. What it DOES pin is the idempotence the repair path
-        // depends on — re-archiving is ACCEPTED rather than refused as a no-op, and does not
-        // resurrect the record into the index. The repair proper is unit-tested; claiming it here
-        // would be a false green.
+        // ⚠️ WHAT THIS CELL DOES **NOT** PROVE. The repair only shows its work on a record that is
+        // archived AND STILL INDEXED, and that state cannot be constructed through public endpoints.
+        // So this is NOT coverage of the repair itself, which is not exercised here. What it DOES pin
+        // is the idempotence the repair path depends on — re-archiving is ACCEPTED rather than refused
+        // as a no-op, and does not resurrect the record into the index.
         // Its own searchable marker, so the retraction assertion below is about THIS record.
         const reMarker = `rearchive_${uniqueTag()}`.replace(/-/g, '_');
         const rec = await client.records.createRecord({ body: {

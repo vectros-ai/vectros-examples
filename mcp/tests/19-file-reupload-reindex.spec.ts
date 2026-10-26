@@ -9,12 +9,10 @@ import { parseToolResult as parse } from './fixtures.js';
 /**
  * File-mode RE-UPLOAD → re-extract → re-index smoke.
  *
- * The one curation surface unit tests can only MOCK: upload a file-backed
- * document, then re-upload a DIFFERENT file under the SAME externalId
- * (upsert:true), and confirm the backend re-extracts and RE-INDEXES the new
- * file's content — SAME document id, new text searchable, old text gone.
- * Exercises the live S3-upload → async extraction → re-index leg end-to-end
- * against staging (the leg that shipped to prod 2.4.0 without a live smoke).
+ * Upload a file-backed document, then re-upload a DIFFERENT file under the
+ * SAME externalId (upsert:true), and confirm the server re-extracts and RE-INDEXES
+ * the new file's content — SAME document id, new text searchable, old text gone.
+ * Exercises the live upload → async extraction → re-index path end-to-end.
  */
 
 const UNIQUE = `reupload-${Date.now()}-${process.pid}`;

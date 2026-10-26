@@ -310,7 +310,7 @@ describe('scripts and triggers', () => {
 
         test('a control-plane verb in the grant is refused without the capability, naming it', async () => {
             // A plain triggers:c token, no granted_capabilities at all — the ordinary shape of a
-            // partner-authored role that only ever meant to author ordinary resource triggers.
+            // customer-authored role that only ever meant to author ordinary resource triggers.
             const minted = (await client.auth.mintToken({
                 scope: { allowedActions: ['triggers:c'] },
             })) as { token: string };
@@ -390,7 +390,7 @@ describe('scripts and triggers', () => {
             });
 
             /** A triggers:c + records:r token bound to `selfUserId`'s own identity — no
-             *  granted_capabilities at all, matching the ordinary partner-authored shape. */
+             *  granted_capabilities at all, matching the ordinary customer-authored shape. */
             async function scopedAsSelf() {
                 const minted = (await client.auth.mintToken({
                     scope: { allowedActions: ['triggers:c', 'records:r'], identity: { userId: selfUserId } },
@@ -433,7 +433,7 @@ describe('scripts and triggers', () => {
                 fields: [],   // REQUIRED: what the rule projects into input.record ([] = identity only)
                 scriptRef: { name: scriptName, version: 'latest' },
                 scopes: [{ allowed_actions: ['records:r'] }],
-            } as any });   // `as any` until the staging SDK carries `fields`
+            } as any });   // `as any` until the installed SDK declares `fields`
             ruleId = created.id!;
             triggerIds.push(ruleId);
         });

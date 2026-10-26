@@ -136,9 +136,9 @@ describe('schema lineage (basedOn / specificityRank)', () => {
                 userId: owner.id,
             } });
 
-            // No selector — the shared base wins. Before this release two
-            // schemas sharing a typeName with no declared relationship would
-            // have 400'd here as an ambiguous type.
+            // No selector — the shared base wins. Two schemas sharing a
+            // typeName with no declared relationship do not 400 here as an
+            // ambiguous type.
             const noSelector = await client.schemas.listSchemas({ recordType });
             expect((noSelector.data ?? []).map((s) => s.id)).toEqual([base.id]);
 

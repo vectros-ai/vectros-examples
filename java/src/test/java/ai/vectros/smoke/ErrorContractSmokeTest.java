@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * The API error response contract. A malformed JSON body must come back as a
  * clean 4xx whose body is well-formed JSON and never leaks Jackson internals.
  * These tests go around the SDK (raw HTTP via Smoke.rawPost) — the typed surface
- * would reject the deliberately malformed bodies at call time, but the backend
+ * would reject the deliberately malformed bodies at call time, but the API
  * contract must hold against any well-formed HTTP request with a malformed JSON
  * body.
  */

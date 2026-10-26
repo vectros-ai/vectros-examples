@@ -428,7 +428,7 @@ describe('records: batch limits', () => {
 
     test('more than 50 items is refused outright, on both atomicity modes, naming the limit, the mode and the count', async () => {
         // A REQUEST-shape refusal: the batch is never processed, so this is a 4xx rather than a 200
-        // carrying per-item results. A partner splitting a large import has to be able to tell the
+        // carrying per-item results. A client splitting a large import has to be able to tell the
         // two apart — and has to be told WHAT to change, so the message is asserted, not just the
         // status: a bare 400 passes against any other refusal.
         for (const atomicity of ['best_effort', 'all_or_nothing'] as const) {
@@ -447,7 +447,7 @@ describe('records: batch limits', () => {
 
     test('exactly 50 items is accepted — the boundary is inclusive', async () => {
         // Without this, the cell above would pass just as happily against an off-by-one that
-        // refused at 50, which would break a partner batching to the documented maximum.
+        // refused at 50, which would break a client batching to the documented maximum.
         const resp: any = await client.records.batchWriteRecords({
             atomicity: 'best_effort',
             items: wideItems(50, `at-${uniqueTag()}`),
@@ -488,14 +488,14 @@ describe('records: batch limits', () => {
     });
 
     test('an all_or_nothing batch too large to commit ATOMICALLY is refused, and writes nothing', async () => {
-        // Within the item limit and past the row limit. The distinction matters to a partner:
+        // Within the item limit and past the row limit. The distinction matters to a client:
         // splitting by item count alone is not sufficient, because the bound is on underlying rows —
         // and the failure here would otherwise be a PARTIAL write, which is the worst outcome this
         // endpoint has.
         //
         // The refusal is PROCESSED, not rejected outright: HTTP 200, and every item reports the same
-        // outcome. Pinned exactly (an earlier version accepted "threw OR succeeded === 0", which
-        // passes for any refusal at all): every result is `not_committed`, carries no id, and carries
+        // outcome. Pinned exactly (accepting "threw OR succeeded === 0" would
+        // pass for any refusal at all): every result is `not_committed`, carries no id, and carries
         // the batch-level reason with an actionable message.
         const tag = `rows-${uniqueTag()}`;
         const resp: any = await client.records.batchWriteRecords({

@@ -13,7 +13,7 @@ import { parseToolResult as parse, resolveSmokeDocumentId } from './fixtures.js'
  *   (ii) SEARCH → get — discover a document via hybrid_search (constrained to
  *        `contentTypes: ['documents']`, since unified search also returns RECORD
  *        hits whose id document_get would 404 on) and get it. The seeded INDEXED
- *        document guarantees a hit, so this no longer skips on an "empty corpus".
+ *        document guarantees a hit, so this never needs to skip on an empty corpus.
  */
 
 async function findAnyDocumentId(client: Awaited<ReturnType<typeof spawnServer>>['client']): Promise<string | null> {

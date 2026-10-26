@@ -13,7 +13,7 @@
  *   profiles               a qualifier on `c`/`u`/`d` ONLY  (a principal, or the `self` sentinel)
  *   scripts                a qualifier on `x` ONLY          (a script name)
  *
- * These are asserted against the deployed mint rather than against the grammar in isolation, because
+ * These are asserted against the live mint rather than against the grammar in isolation, because
  * the property worth having is that a credential the platform actually HANDS OUT cannot carry an
  * inert qualifier.
  */
@@ -40,7 +40,7 @@ async function expectRefused(action: string): Promise<void> {
     const r = await mint(action);
     if (r.ok) throw new Error(`expected '${action}' to be refused, but it minted: ${JSON.stringify(r.actions)}`);
     expect(r.status).toBe(400);
-    // The message has to name the op letters, because the fix is to split the entry rather than to
+    // The message has to name the op letters, because the remedy is to split the entry rather than to
     // drop the qualifier everywhere.
     expect(r.message).toMatch(/does not support a qualifier/i);
 }

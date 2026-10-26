@@ -343,10 +343,9 @@ describe('search', () => {
     });
 
     test('limit above 50 returns more than 50 results when enough match', async () => {
-        // Before this release, a `limit` above 50 was silently capped to 50
-        // even though the documented maximum was always 100. This corpus has
-        // 55 matches so the fix is observable: a limit of 75 must return more
-        // than 50 of them.
+        // A `limit` above 50 must not be silently capped to 50 (the documented
+        // maximum is 100). This corpus has 55 matches so a cap is observable:
+        // a limit of 75 must return more than 50 of them.
         const marker = 'VECTROS_SMOKE_WIDELIMIT_' + uniqueTag().replace(/-/g, '_');
         const wideSchema = await client.schemas.createSchema({ body: {
             typeName: `smoke_widelimit_${uniqueTag()}`,

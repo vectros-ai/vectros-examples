@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * real login token from the IdP, which this suite cannot produce — so
  * everything that needs an active registration (a real 401 from a signature
  * that fails to verify, suspend/reinstate, {@code context_id}
- * disambiguation) is covered by backend unit tests, not here. This covers the
+ * disambiguation) is not exercised here. This covers the
  * issuer-registry CRUD contract, the pending state and its uniform 404 at
  * exchange, every rejection {@code verify} can produce, and every exchange()
  * rejection reachable without an active registration.
@@ -272,7 +272,7 @@ class IssuersTokenExchangeSmokeTest {
     // context the issuer is not registered against -> 404). It is only distinguishable from an
     // unrecognized issuer when the registration is ACTIVE; a pending registration already 404s at
     // exchange whatever context_id is sent. An active registration requires proving control of a
-    // real IdP, so that path is covered by backend unit tests rather than this suite.
+    // real IdP, so that path is not exercised here.
 
     @Test
     void selfSignupPolicyTargetingAnAlreadyElevatedRoleRejectedAtRegistration() {
@@ -321,7 +321,7 @@ class IssuersTokenExchangeSmokeTest {
     // A registration made without restrictedToDomain is pending_verification: it carries a
     // verification challenge and accepts no token exchange until it is verified. (The 401 a
     // registered issuer returns for a signature that fails to verify needs an ACTIVE registration,
-    // so it is covered by backend unit tests rather than this suite.)
+    // so it is not exercised here.)
     @Test
     void registrationWithoutDomainIsPendingVerificationWithChallengeAndItsIssAudIs404AtExchange() throws Exception {
         String issuerId = slug("pend");
@@ -356,8 +356,8 @@ class IssuersTokenExchangeSmokeTest {
     // A registration still pending verification can be neither activated nor suspended through
     // PUT — activation happens only via verify, and suspending an unverified registration is
     // meaningless. (Suspend/reinstate of an ACTIVE registration is not reachable from this suite:
-    // an active registration requires proving control of a real IdP, so that path is covered by
-    // backend unit tests.)
+    // an active registration requires proving control of a real IdP, so that path is not
+    // exercised here.)
     @Test
     void statusCannotBeChangedOnAPendingRegistration() throws Exception {
         String issuerId = slug("pendput");
@@ -468,7 +468,7 @@ class IssuersTokenExchangeSmokeTest {
 
     // The 401 (a registered issuer whose token signature fails) has no reachable path from this
     // suite: it needs an ACTIVE registration, and activating one requires proving control of a
-    // real IdP, so that envelope is covered by backend unit tests. A registration still pending
+    // real IdP, so that envelope is not exercised here. A registration still pending
     // verification is the closest reachable case — it answers with the same uniform 404 as an
     // unregistered issuer, and must carry the same OAuth envelope.
     @Test

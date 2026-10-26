@@ -31,6 +31,7 @@ needed — and resolves the SDK from Maven Central. Requires a JDK 21+ on
 | `NamespacesSmokeTest` | Namespace placement (tenant-wide vs context-owned, fixed at registration) and namespace membership. |
 | `IssuersTokenExchangeSmokeTest` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
 | `LogsSmokeTest` | `delegationChain` on `GET /v1/admin/logs` entries — present on delegate-minted traffic, null on ordinary traffic. |
+| `SseCommentFramesTest` | A streamed chat answer that carries SSE comment lines (lines starting with a colon) yields the same events as the same stream without them. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 
 `CrossContextSmokeTest` needs `VECTROS_LIVE_TENANT_ID` and is skipped when it's unset (see
 `../.env.example`). `CapabilitiesSmokeTest` and `LogsSmokeTest` need it too and **fail** rather

@@ -1,16 +1,16 @@
 /**
- * external-id-collision.spec.ts — an `externalId` can no longer be moved onto a slot another
+ * external-id-collision.spec.ts — an `externalId` cannot be moved onto a slot another
  * resource already holds.
  *
  * An `externalId` is unique per type for a document and per namespace for an entity, and both
- * CREATE paths always enforced that. Neither UPDATE path re-checked it, so the identifier could be
- * moved onto an occupied slot and two resources would end up sharing one — after which every lookup
- * keyed on it resolved to an arbitrary one of the two, including `POST /v1/documents?upsert=true`,
- * which could then overwrite the wrong document with no error anywhere.
+ * CREATE paths enforce that, and so must both UPDATE paths: otherwise the identifier could be moved
+ * onto an occupied slot and two resources would share one — after which every lookup keyed on it
+ * would resolve to an arbitrary one of the two, including `POST /v1/documents?upsert=true`, which
+ * could then overwrite the wrong document with no error anywhere.
  *
  * There are two ways to reach it and they do not look alike, which is why both are here:
  *
- *   documents   the `externalId` VALUE was already immutable on update; what was mutable was its
+ *   documents   the `externalId` VALUE is immutable on update; what can change is its
  *               uniqueness SCOPE, because the scope is the bound schema's type. Re-typing the
  *               document moves the identifier without ever touching the identifier.
  *   entities    the ordinary shape — the value itself is changed.

@@ -61,8 +61,8 @@ async function rawPost(path: string, body: string): Promise<{
     });
     const rawBody = await resp.text();
     // Parse separately so the test can ASSERT on parseability — JSON.parse
-    // throwing IS the bug class we're guarding against (the pre-fix body
-    // contained a raw \n inside a string and refused to parse).
+    // throwing IS the bug class we're guarding against (a raw newline
+    // inside a string would make the body unparseable).
     let parsed: unknown;
     try {
         parsed = JSON.parse(rawBody);

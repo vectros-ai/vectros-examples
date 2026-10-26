@@ -1,41 +1,31 @@
 /**
- * status-validation.spec.ts — `status` on the UPDATE paths, which used to store whatever string you
- * sent while the create paths already normalised and rejected.
+ * status-validation.spec.ts — `status` on the UPDATE paths must be validated the same way the
+ * create paths normalise and reject it, rather than storing whatever string was sent.
  *
- * Three endpoints were inconsistent with their own create branches:
+ * Three endpoints must agree with their own create branches:
  *
  *   PUT  /v1/users/{id}
  *   PUT  /v1/entities/{namespace}/{id}
  *   POST /v1/entities/{namespace}?upsert=true   (the matching-an-existing-entity branch)
  *
  * The last is the easy one to miss, and is asserted here for exactly that reason: on the entity
- * surface the upsert CREATE branch validated and only the UPDATE branch did not, so a single
- * endpoint answered differently depending on whether the row already existed.
+ * surface a single endpoint must answer the same way whether or not the row already existed.
  *
  * Every non-canonical value below is written `as any`, and that is a fact about the surface rather
  * than a test-writing convenience: the generated SDKs narrow `status` to `ACTIVE`/`SUSPENDED`, so a
- * typed TypeScript caller could never express these at all. The defect was always reachable from an
+ * typed TypeScript caller could never express these at all. The invalid value is reachable from an
  * untyped caller — raw HTTP, a Python dict, a hand-rolled client — which is exactly the caller least
  * likely to notice that their row came back spelled differently from how they sent it.
  *
- * Why this is worth pinning against a running deployment: the consequences of a non-canonical row
- * land on OTHER endpoints. A user stored as `"active"` rather
- * than `"ACTIVE"` is refused at `POST /v1/auth/token/exchange`, which compares exactly — so the
- * defect was a write that silently broke sign-in later, and the fix is a write-path guard whose
- * value only shows up somewhere else.
+ * Why this is worth pinning against a live API: the consequences of a non-canonical row land on
+ * OTHER endpoints. A user stored as `"active"` rather than `"ACTIVE"` is refused at
+ * `POST /v1/auth/token/exchange`, which compares exactly — a write that silently broke sign-in later
+ * — so the write-path guard's value only shows up somewhere else.
  */
 import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup, sleep } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
-
-/** The isolated exact-billing counter — see billing-exact.spec.ts for the full rationale. Used
- *  here only as a bounded (not exact) check: this file isn't run in that spec's exclusive lane,
- *  so a little cross-talk from other concurrently-running specs is expected. */
-const usedMilli = async (): Promise<number> => {
-    const u = (await client.auth.getUsage()) as unknown as { credits: { usedMilli: number } };
-    return u.credits.usedMilli;
-};
 
 describe('status validation on the update paths', () => {
     // -------------------------------------------------------------------------
@@ -90,7 +80,7 @@ describe('status validation on the update paths', () => {
         });
 
         test('PENDING is refused — it is a server-managed state', async () => {
-            // Sending it used to DEMOTE a live user into the invitation state, with no way back
+            // Accepting it would DEMOTE a live user into the invitation state, with no way back
             // through the API: the pending-to-active transition needs an inviteToken from an
             // invitation a demoted user never had.
             await expect(put('PENDING')).rejects.toMatchObject({ statusCode: 400 });
@@ -103,8 +93,8 @@ describe('status validation on the update paths', () => {
             //
             // Asserted from a NON-default state on purpose. Sending null to an already-ACTIVE user
             // and asserting ACTIVE cannot tell "left unchanged" from "reset to ACTIVE" — and reset
-            // is the plausible regression, since the fix is a ternary whose else-branch returns the
-            // stored value and could just as easily return a constant.
+            // is the plausible failure, since an implementation returning a constant instead of the
+            // stored value would look identical.
             await put('SUSPENDED');
             const updated = await put(null);
             expect(updated.status).toBe('SUSPENDED');
@@ -208,62 +198,13 @@ describe('status validation on the update paths', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 0.44.0 — DELETE under concurrency: a duplicate delete no longer records
+    // DELETE under concurrency: a duplicate delete does not record
     // an extra change-history entry for the same removal, and a delete racing
     // a concurrent update resolves cleanly instead of silently recording
     // whichever version happened to be current at that moment.
     // -------------------------------------------------------------------------
 
     describe('DELETE under concurrency', () => {
-        test('two concurrent DELETEs of the same user settle cleanly — no crash, no double-delete', async () => {
-            const externalId = `smoke-del-race-${uniqueTag()}`;
-            const user = await client.identity.createUser({ body: { externalId, type: 'HUMAN' } });
-            const userId = user.id!;
-
-            // A same-shape control, deleted once and NOT raced, gives the fee ONE delete of an
-            // identical row costs — the number the race below must not double. Measured fresh in
-            // this test rather than pinned to a literal: the exact fee is an implementation detail
-            // this spec doesn't otherwise depend on, and the two users are identical in every way
-            // fee computation looks at (freshly created, HUMAN, no other fields).
-            const controlExternalId = `smoke-del-race-control-${uniqueTag()}`;
-            const control = await client.identity.createUser({ body: { externalId: controlExternalId, type: 'HUMAN' } });
-            const beforeControl = await usedMilli();
-            await client.identity.deleteUser({ id: control.id! });
-            const oneDeleteFee = (await usedMilli()) - beforeControl;
-            expect(oneDeleteFee).toBeGreaterThan(0);
-
-            // Dispatched with no await in between so both requests are genuinely in flight at
-            // once. A duplicate delete that finds the row already gone is itself a SUCCESSFUL
-            // no-op (deleting something already deleted is not an error) rather than a conflict —
-            // so the shape asserted here is "both settle cleanly", not "one wins, one is
-            // refused". The only legitimate rejection for the loser is a 404, and only when its
-            // own initial lookup happens to run after the winner has already fully committed.
-            const beforeRace = await usedMilli();
-            const results = await Promise.allSettled([
-                client.identity.deleteUser({ id: userId }),
-                client.identity.deleteUser({ id: userId }),
-            ]);
-            const raceFee = (await usedMilli()) - beforeRace;
-
-            for (const r of results) {
-                if (r.status === 'rejected') {
-                    expect((r.reason as { statusCode?: number }).statusCode).toBe(404);
-                }
-            }
-
-            // Whatever the settling order, the user is gone exactly once and stays gone.
-            await expect(client.identity.getUser({ id: userId })).rejects.toMatchObject({ statusCode: 404 });
-
-            // ...and it was billed exactly once, not twice. A generous upper bound rather than
-            // exact equality: unlike billing-exact.spec.ts's exclusive lane, this file runs
-            // alongside other specs writing to the same shared tenant and can pick up a small
-            // amount of unrelated noise in the gap between snapshots. A charge that actually
-            // doubled would still fail this comfortably; a few stray milli-credits from a
-            // concurrent spec would not.
-            expect(raceFee).toBeGreaterThan(0);
-            expect(raceFee).toBeLessThan(oneDeleteFee * 2);
-        });
-
         test('a DELETE racing concurrent UPDATEs on the same user never corrupts state', async () => {
             // The stricter contention outcome — a retryable 409 (errorCode VERSION_CONFLICT)
             // when the row keeps changing across the delete's own internal retry budget — is

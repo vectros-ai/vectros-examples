@@ -287,7 +287,7 @@ async function pollUntilIndexedIn(ctx: ContextHandle, docId: string, timeoutMs =
     let deadline = Date.now() + timeoutMs;
     let status: string | undefined;
     while (Date.now() < deadline) {
-        // indexStatus since the 2.4.0 status split; `status` fallback for pre-split envs.
+        // Processing state is `indexStatus`; fall back to `status` for servers that still report it there.
         // Rate-limit aware: `rateLimitAwareFetch` pays a 429's Retry-After silently inside this
         // one await (up to ~120s), which on a fixed deadline starves the poll and reports a
         // timeout that looks like the thing never happening. Extend by exactly what was paid.
@@ -296,7 +296,7 @@ async function pollUntilIndexedIn(ctx: ContextHandle, docId: string, timeoutMs =
         status = doc.indexStatus ?? doc.status;
         if (status === 'INDEXED') return;
         if (status === 'FAILED') {
-            // 0.36.0: a FAILED response carries a structured `indexFailure` —
+            // A FAILED response carries a structured `indexFailure` —
             // branch on its stable `code`, not the human message.
             const f = doc.indexFailure;
             throw new Error(`document ${docId} reached FAILED during indexing` +

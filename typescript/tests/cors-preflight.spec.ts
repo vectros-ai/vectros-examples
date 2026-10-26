@@ -9,9 +9,8 @@
  *
  * Two DIFFERENT things answer a preflight, and that is the whole point of this spec:
  *
- *   a matched path      answered by the route's own OPTIONS integration
- *   an unmatched path   answered before any route is reached at all — the same place a rejected
- *                       token, a throttled request or a firewall block is answered
+ *   a matched path      answered by the route
+ *   an unmatched path   answered before any route is reached
  *
  * The second one is what a browser client hits on a typo, a removed endpoint, or a version skew
  * between its SDK and the deployment — precisely when the API's shaped 404/401 is most worth
@@ -86,8 +85,8 @@ describe('CORS preflight', () => {
 
     test('Idempotency-Key is permitted — a browser caller can retry a script execution safely', async () => {
         // `Idempotency-Key` is a CALLER-supplied header (the SDK does not attach it), which is why
-        // it is asserted here rather than added to SDK_SENT_HEADERS. It reached the partner
-        // allow-list in 0.43.0 alongside `POST /v1/scripts/execute`, and it is the header whose
+        // it is asserted here rather than added to SDK_SENT_HEADERS. It is in the API's
+        // allow-list alongside `POST /v1/scripts/execute`, and it is the header whose
         // absence is worst: a browser caller that cannot send it loses the retry-safety the endpoint
         // was given, and sees only a bare CORS error with no status and no body explaining why.
         const resp = await preflight('/v1/scripts/execute', [...SDK_SENT_HEADERS, 'idempotency-key']);
@@ -97,10 +96,10 @@ describe('CORS preflight', () => {
         for (const h of SDK_SENT_HEADERS) expect(allowed).toContain(h);
     });
 
-    test('a browser origin is permitted — partners embed on arbitrary domains', async () => {
+    test('a browser origin is permitted — browsers on arbitrary origins can call the API', async () => {
         const resp = await preflight('/v1/records', SDK_SENT_HEADERS);
         // `*`, exactly — not merely "some origin". Narrowing this to one hard-coded origin returns a
-        // truthy header and breaks every partner-embedded client, which is the property the title
+        // truthy header and breaks every embedded client, which is the property the title
         // claims and a truthiness check cannot see.
         expect(resp.headers.get('access-control-allow-origin')).toBe('*');
     });

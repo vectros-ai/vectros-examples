@@ -1,7 +1,7 @@
 /**
  * Custom `fetch` for every VectrosClient in this suite.
  *
- * The partner API's rate limiter is a SHARED, per-tenant, 60s fixed-window
+ * The Vectros API's rate limiter is a SHARED, per-tenant, 60s fixed-window
  * counter — every concurrent caller against the same tenant counts against
  * it. On a trip it returns 429 with `Retry-After` set to the actual seconds
  * until the window resets (up to ~60s).

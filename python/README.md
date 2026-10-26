@@ -31,6 +31,8 @@ supports Python 3.8 and later).
 | `test_namespaces` | Namespace placement (tenant-wide vs context-owned, fixed at registration) and namespace membership. |
 | `test_issuers_token_exchange` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
 | `test_logs` | `delegationChain` on `GET /v1/admin/logs` entries — present on delegate-minted traffic, null on ordinary traffic. |
+| `test_sse_comment_frames` | A streamed chat answer that carries SSE comment lines (a line starting with a colon) yields the same events as the same stream without them. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
+| `test_client_timeouts` | The suite's HTTP client has an explicit 60-second read timeout and a 10-second connect timeout. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 
 `test_cross_context` needs `VECTROS_LIVE_TENANT_ID` and skips itself when it's unset (see
 `../.env.example`). `test_capabilities` and `test_logs` need it too and **fail** rather than

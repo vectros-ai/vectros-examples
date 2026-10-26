@@ -11,8 +11,8 @@ describe('folders', () => {
     let userOwnedFolderId: string;
     const folderIds: string[] = [];
     // Contents must be registered too, and drained BEFORE folderIds. These are the only tests
-    // here whose own failure leaves a folder NON-EMPTY, and a non-empty folder is now exactly what
-    // afterAll cannot delete: tryCleanup swallows the 400 and the folder is stranded in staging for
+    // here whose own failure leaves a folder NON-EMPTY, and a non-empty folder is exactly what
+    // afterAll cannot delete: tryCleanup swallows the 400 and the folder is stranded for
     // good. Inline cleanup on the happy path is not enough — it is the failure path that strands.
     const documentIds: string[] = [];
     const recordIds: string[] = [];
@@ -132,11 +132,10 @@ describe('folders', () => {
         });
     });
 
-    // The emptiness guard used to count only the folder's file-tree children, so the sub-folder case
-    // above was the ONLY one it actually covered. A text-ingested document and a record have no
-    // file-tree node at all, so a folder full of either deleted with a 204 and left them behind a
-    // folderId that no longer resolved. These two run over the real wire, which is where that
-    // regression would have reached a caller.
+    // The emptiness guard must count more than the folder's file-tree children, which is all the
+    // sub-folder case above covers. A text-ingested document and a record have no file-tree node at
+    // all, so a guard that ignored them would delete a folder full of either with a 204 and leave
+    // them behind a folderId that no longer resolved. These two run over the real wire.
 
     test('cannot delete a folder holding a text document (400)', async () => {
         const folder = await client.folders.createFolder({ body: { name: 'Doc Holder ' + uniqueTag() } });
@@ -226,7 +225,7 @@ describe('records (folder + user listing precedence)', () => {
     const userRecordIds: string[] = [];
     // A same-folder record owned by otherUserId — the negative control that must be EXCLUDED.
     let foreignRecId: string;
-    // Everything created, for teardown (staging is shared).
+    // Everything created, for teardown (the tenant is shared).
     const recordIds: string[] = [];
 
     beforeAll(async () => {

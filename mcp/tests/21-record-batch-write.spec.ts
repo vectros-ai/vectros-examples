@@ -4,8 +4,7 @@ import { spawnServer } from './helpers.js';
 import { api, parseToolResult as parse, SMOKE_TYPE } from './fixtures.js';
 
 /**
- * record_batch_write smoke — `POST /v1/records/batch`, live as of API 0.43.0
- * (previously a 501 stub).
+ * record_batch_write smoke — `POST /v1/records/batch`.
  *
  * Three things worth proving against the real API rather than a mock, because
  * each is a place the tool's own contract could be right locally and wrong on

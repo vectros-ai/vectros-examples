@@ -1,7 +1,7 @@
 /**
  * records-tiering-safety.spec.ts — payload tiering + the PUT truncation guard.
  *
- * THE SILENT-DATA-LOSS SURFACE. When a record's payload is externalized to S3
+ * THE SILENT-DATA-LOSS SURFACE. When a record's large payload is stored separately
  * (STANDARD profile at/above ~4 KB, or always under the LARGE_PAYLOAD profile),
  * `GET /v1/records` and lookup return only the INLINE PROJECTION — the schema's
  * lookup + filterable fields — and omit the bulk fields, flagging the response
@@ -19,7 +19,7 @@
  *
  * Determinism: a LARGE_PAYLOAD schema ALWAYS externalizes, so this spec never
  * has to size a payload against the 4 KB threshold or wait on indexing (indexMode
- * NONE — tiering is a storage concern, independent of the search pipeline).
+ * NONE — tiering is a storage concern, independent of search indexing).
  *
  * ?allowClear: the guard opt-in is a typed OpenAPI `@Parameter` on the update
  * operation, so the SDK exposes it as a first-class `allowClear` argument on the
@@ -63,13 +63,13 @@ describe('records (payload tiering + PUT truncation guard)', () => {
             displayName: 'Smoke Tiering Record',
             // Always externalize → deterministic payloadPartial without threshold math.
             storageProfile: 'LARGE_PAYLOAD',
-            // Store-only: tiering is independent of the search pipeline, so no indexing wait.
+            // Store-only: tiering is independent of search indexing, so no indexing wait.
             indexMode: 'NONE',
             allowedSurfaces: ['record'],
             fields: [
                 // Filterable → kept in the inline projection (survives a list read).
                 { fieldId: 'category', fieldType: 'string', required: false, filterable: true },
-                // Plain free-text → NOT projected inline → trimmed to S3 → omitted from
+                // Plain free-text → NOT projected inline → trimmed out of the inline copy → omitted from
                 // list/lookup → the field the truncation guard protects.
                 { fieldId: 'bulk', fieldType: 'string', required: false },
             ],
@@ -101,14 +101,11 @@ describe('records (payload tiering + PUT truncation guard)', () => {
      * Drains the type feed and returns the projected list item for `id` (or
      * undefined). Retries a few times: the file's own header comment is right
      * that search-index visibility is irrelevant here (indexMode NONE), but
-     * `listRecords` is a separate DynamoDB list/query path with its own
+     * `listRecords` is a separate list/query path with its own
      * ordinary eventual-consistency window — a just-created row isn't always
-     * immediately visible to it. Never observed in isolation (fast enough
-     * there that a single pass always wins), but measured live under the
-     * full 39-file suite's heavier concurrent write load: `PUT ?allowClear=
-     * true confirms the full replacement...` flaked exactly once with
-     * `listItem` returning undefined on its first (and, before this fix,
-     * only) pass. Bounded retry absorbs that window the same way the rest of
+     * immediately visible to it. A single pass normally wins in isolation (fast
+     * enough there), but can return undefined under a heavier concurrent
+     * write load. Bounded retry absorbs that window the same way the rest of
      * this suite polls for search visibility, just for a different backing
      * store.
      */
@@ -159,7 +156,7 @@ describe('records (payload tiering + PUT truncation guard)', () => {
         // `inline: true` (0.43.0) is the OTHER way to keep a field on the row when the payload is
         // externalized — and unlike `filterable` it buys no query capability, so surviving the
         // projection is the whole of what it promises. The trigger specs cover the projection into
-        // `input.record`; this covers the half a partner uses with no trigger anywhere in sight.
+        // `input.record`; this covers the half a client uses with no trigger anywhere in sight.
         //
         // Its own schema, deliberately: bolting a third field onto the shared fixture above would
         // change the projected set every other cell in this file asserts against.

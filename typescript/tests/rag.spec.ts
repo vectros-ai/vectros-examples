@@ -9,7 +9,7 @@
  *
  * Result-isolation strategy: `createdAfter` filter on the RAG search block
  * (added in SDK 0.7.6) scopes retrieval to content created during THIS test
- * run, so orphan docs from prior smoke runs can't push our corpus doc off
+ * run, so docs from prior smoke runs can't push our corpus doc off
  * the topK retrieval. Cleaner than the unique-marker pattern (which RAG's
  * LLM query-expansion could dilute anyway).
  */
@@ -39,10 +39,10 @@ describe('inference: /v1/rag', () => {
         //   1. INDEXING — wait for the doc to reach INDEXED. A failure here
         //      ("did not reach INDEXED") is indexing lag.
         await pollUntilIndexed(docId, 'document');
-        //   2. SEARCH VISIBILITY — INDEXED does NOT imply HYBRID-searchable: the
-        //      vector lane's query visibility is eventually-consistent (see
-        //      pollUntilSearchable's header). 30s absorbs that tail; a failure
-        //      here ("INDEXED but not yet search-visible") is the vector-lane
+        //   2. SEARCH VISIBILITY — INDEXED does NOT imply HYBRID-searchable:
+        //      SEMANTIC/HYBRID search can lag INDEXED slightly (see
+        //      pollUntilSearchable's header). 30s absorbs that; a failure
+        //      here ("INDEXED but not yet search-visible") is a search-visibility
         //      gap, NOT indexing. createdAfter scopes to this run.
         await pollUntilSearchable('hypertension treatment study', docId, 30_000, 'HYBRID', testStartedAt);
     });
@@ -182,8 +182,7 @@ describe('inference: /v1/rag', () => {
 
     test('scoped token without a corpus-read grant fails closed (grounds on nothing)', async () => {
         // A token with inference:r + search:r but NO documents:r / records:r cannot read any
-        // content directly, so RAG grounds on an empty corpus (no leak). This pins the
-        // behavior the docs recommendation used to violate.
+        // content directly, so RAG grounds on an empty corpus (no leak).
         const user = await client.identity.createUser({ body: { externalId: 'rag-noread-' + uniqueTag() } });
         const userOwnedDoc = await client.documents.ingestDocument({ body: {
             title: 'No-Read RAG Doc ' + uniqueTag(),
@@ -220,7 +219,7 @@ describe('inference: /v1/rag', () => {
     });
 
     // search.limit is bounded to 1-100 and an out-of-range value is REFUSED, never silently narrowed:
-    // a caller asking for more than the ceiling used to get fewer results with no error and no way to
+    // a caller asking for more than the ceiling must not get fewer results with no error and no way to
     // notice the shortfall. The boundary control (100 is accepted) is what stops a 400 from being any
     // unrelated failure of the route.
     describe('search.limit bounds', () => {
@@ -260,7 +259,7 @@ describe('inference: /v1/rag', () => {
 
     // Two additional RAG behaviors — "search infrastructure error → 500
     // before stream opens" and "oversized result set emits
-    // truncation_warning" — are covered at the unit-test layer rather
-    // than here, since both require synthetic failure injection that the
-    // smoke caller can't trigger deterministically.
+    // truncation_warning" — are not exercised here, since both require
+    // synthetic failure injection that the smoke caller can't trigger
+    // deterministically.
 });

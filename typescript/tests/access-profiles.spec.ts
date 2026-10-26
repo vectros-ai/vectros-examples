@@ -21,10 +21,9 @@ import { client, getScopedClient } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
 /**
- * 0.40.0: `POST /v1/app-contexts/{contextId}/profiles` now requires a `usr_` principalId to name a
- * REAL user in the tenant — a synthetic, never-created id (the pattern this file used throughout
- * before 0.40.0) now 400s ("... does not name a user in this tenant") instead of silently creating an
- * inert profile. Every access-profile test needs a real backing user; this helper creates one and
+ * `POST /v1/app-contexts/{contextId}/profiles` requires a `usr_` principalId to name a
+ * REAL user in the tenant — a synthetic, never-created id 400s ("... does not name a user in this
+ * tenant") instead of silently creating an inert profile. Every access-profile test needs a real backing user; this helper creates one and
  * returns both the profile-ready principalId and the raw user id for cleanup.
  */
 async function realPrincipal(): Promise<{ principalId: string; userId: string }> {
@@ -641,9 +640,8 @@ describe('access-profiles', () => {
             });
         });
 
-        // 0.39.0: create_own_scoped_key was removed as a working literal (it was never wired to any
-        // enforcement path) and now fails author-time validation with 400, same as any other
-        // unrecognized colon-less string.
+        // create_own_scoped_key is not a working literal (it is wired to no enforcement path) and
+        // fails author-time validation with 400, same as any other unrecognized colon-less string.
         test("the retired 'create_own_scoped_key' literal is rejected at author time, same as any other unrecognized bare literal", async () => {
             const { principalId, userId } = await realPrincipal();
             try {

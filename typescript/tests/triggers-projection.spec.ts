@@ -1,14 +1,13 @@
 /**
  * triggers-projection.spec.ts — the DECLARE-TIME half of a trigger rule's field projection.
  *
- * `scripts-triggers.spec.ts` covers the refusals a rule faced before 0.43.0 (an opted-out schema, a
- * bogus manifest verb, `${{ self.* }}`, no grant at all). `trigger-firing.spec.ts` covers what a
- * script actually receives once a rule fires. Between them sat the surface this file pins: what
- * `POST /v1/triggers` will and will not ACCEPT now that a rule must declare `fields`, and the
- * schema-side flag (`inline`) that decides what those fields may name.
- *
- * None of it had coverage. `scripts-triggers.spec.ts` passes `fields: []` on every rule it builds,
- * which is the one value that exercises none of these rules.
+ * `scripts-triggers.spec.ts` covers the refusals a rule faces regardless of its projection (an
+ * opted-out schema, a bogus manifest verb, `${{ self.* }}`, no grant at all). `trigger-firing.spec.ts`
+ * covers what a script actually receives once a rule fires. Between them sits the surface this file
+ * pins: what `POST /v1/triggers` will and will not ACCEPT given that a rule must declare `fields`, and
+ * the schema-side flag (`inline`) that decides what those fields may name. `scripts-triggers.spec.ts`
+ * passes `fields: []` on every rule it builds, which is the one value that exercises none of these
+ * rules.
  *
  * ── THE CONJUNCTIVE GRANT RULE, which is the subtle one ──────────────────────────────────────
  *
@@ -22,22 +21,22 @@
  *
  * ...with a deliberate exception inside (2): a `${{ input.* }}` placeholder is fine, because it
  * resolves to the firing row's OWN value and therefore matches by construction. Both arms are
- * covered below, and so is the placeholder exception — the second arm is what a partner hits the
+ * covered below, and so is the placeholder exception — the second arm is what a client hits the
  * moment they copy a scoped example from the docs, and the exception is the thing that would
  * otherwise get "fixed" by tightening the check.
  *
  * ── SCOPE ────────────────────────────────────────────────────────────────────────────────────
  *
  * Declare-time only, with ONE deliberate exception: every other cell here is a synchronous accept
- * or refusal, so this file stays in the fast lane. Nothing else here fires a rule (that is
- * `trigger-firing.spec.ts`, slow lane) — except the "execution-time: an unreadable firing row..."
- * cell near the end, which pins a projection-adjacent disclosure property that is only observable
- * once a rule actually fires, and so pays the slow lane's real async wait for that one case.
+ * or refusal. Nothing else here fires a rule (that is `trigger-firing.spec.ts`) — except the
+ * "execution-time: an unreadable firing row..." cell near the end, which pins a projection-adjacent
+ * disclosure property that is only observable once a rule actually fires, and so pays a real async
+ * wait for that one case.
  *
  * ⚠️ NOT COVERED, and deliberately: the 224 KB `record` + `previous` cap (`INPUT_TOO_LARGE`). It is
  * an EXECUTION-time failure, not a declare-time refusal, and reaching it needs a >224 KB inline
  * payload written through a firing schema — a quarter-megabyte write per run against a shared
- * staging tenant, for a limit whose enforcement is unit-tested. Called out rather than faked.
+ * tenant. That limit is covered separately in `triggers-input-cap.spec.ts`.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup, expectReject, pollUntil } from '../src/helpers';
@@ -85,9 +84,9 @@ describe('triggers: the fields projection declaration', () => {
                 { fieldId: 'secret', fieldType: 'string', sensitive: true },
                 // `tag` is projectable WITHOUT the `inline` flag — a filterable field is kept on the
                 // row too, so the published rule is "inline: true, filterable, OR a lookup field".
-                // Every fixture here used to declare only `inline: true`, which meant a regression
-                // narrowing the projectable set to that one flag would leave this file green while
-                // 400-ing the commoner declaration: `filterable` predates `inline` by many releases.
+                // Declaring only `inline: true` everywhere would leave this file green even if the
+                // projectable set were narrowed to that one flag, while 400-ing the commoner
+                // `filterable` declaration, so this fixture uses `filterable` on its own.
                 { fieldId: 'tag', fieldType: 'string', filterable: true },
             ],
         } });
@@ -133,8 +132,8 @@ describe('triggers: the fields projection declaration', () => {
     // ── The schema-side flag ──────────────────────────────────────────────────────────────────
 
     test('`inline: true` round-trips off the schema — it is stored, not merely accepted', async () => {
-        // THE POINT OF THIS CELL. `inline` is a new request field, and a backend that predates it
-        // accepts the create and drops the flag, returning a perfectly successful 201. Every other
+        // THE POINT OF THIS CELL. A server that did not support `inline`
+        // would accept the create and drop the flag, returning a perfectly successful 201. Every other
         // cell in this file and in trigger-firing.spec.ts is built on a schema that declares it, so
         // if the flag is silently dropped they would all fail for an unrelated-looking reason.
         // Reading it back is what distinguishes "stored" from "tolerated".
@@ -174,9 +173,9 @@ describe('triggers: the fields projection declaration', () => {
         // a field reaches `fields` WITHOUT carrying `inline: true`.
         const created = await client.triggers.createTrigger({ body: rule({ fields: ['tag', 'note'] }) });
         triggerIds.push(created.id!);
-        // Round-trip, not "the call returned 200": `fields` is a new request field and a stale
-        // backend would accept the rule and store nothing, leaving a rule that projects nothing
-        // while its declaration says otherwise.
+        // Round-trip, not "the call returned 200": a server that dropped `fields` would
+        // accept the rule and store nothing, leaving a rule that projects nothing while its
+        // declaration says otherwise.
         expect(created.fields).toEqual(['tag', 'note']);
         // ...and it survives a re-read, so this is stored state rather than a response echo.
         const reloaded = await client.triggers.getTrigger({ id: created.id! });
@@ -193,7 +192,7 @@ describe('triggers: the fields projection declaration', () => {
     // ── What `fields` may NAME ────────────────────────────────────────────────────────────────
 
     test('a field the schema does not keep inline is refused, and the error lists the projectable set', async () => {
-        // The projection is taken from the change-event image, which is S3-free and holds only the
+        // The projection is taken from the change-event image, which holds only the
         // fields the schema KEEPS ON THE ROW — `inline: true`, `filterable`, or a lookup field. A
         // field that is none of those could reach a script only for rows small enough to stay on the
         // row anyway; that silent, size-dependent behaviour is what the declaration prevents.
@@ -202,7 +201,7 @@ describe('triggers: the fields projection declaration', () => {
         }), 400);
         const message = JSON.stringify(err.body);
         expect(message).toContain('bulk');
-        // Listing the recognised set is the published contract, not a nicety: without it a partner
+        // Listing the recognised set is the published contract, not a nicety: without it a client
         // cannot tell "wrong name" from "right name, wrong flag". Both projectable fields appear,
         // which also pins that `filterable` counts as projectable and not only `inline: true`.
         expect(message).toContain('note');
@@ -226,14 +225,14 @@ describe('triggers: the fields projection declaration', () => {
         }), 400);
         // The two arms produce DIFFERENT messages, and asserting the common word 'fields' on both
         // would let a backend that collapsed them into one message still pass — losing the half
-        // that tells a partner which fix applies. This arm's remedy is "grant the read".
+        // that tells a client which fix applies. This arm's remedy is "grant the read".
         const message = JSON.stringify(err.body);
         expect(message).toContain('fields');
         expect(message).toContain(`records:r:${recordType}`);
     });
 
     test('ARM 2: a LITERAL data_scope on the reading clause is refused — the copied-example case', async () => {
-        // This is the one a partner hits by copying a scoped example: the clause looks careful and
+        // This is the one a client hits by copying a scoped example: the clause looks careful and
         // more restrictive, and that is precisely the problem. Dispatch does not consult data_scope,
         // so the rule would receive input.record for rows this clause cannot read.
         const err = await expectReject(client.triggers.createTrigger({
@@ -364,10 +363,10 @@ describe('triggers: the fields projection declaration', () => {
     // ── Execution-time: a fields:[] declaration alone does not protect a row the grant can't read ──
     //
     // Every cell above is declare-time. This one is the file's deliberate exception (see the header
-    // comment): a rule that declares `fields: []` used to still receive the firing row's ownership
-    // axis (`userId`, `scope.<namespace>`) as part of its input even when the rule's own grant could
-    // not read that row — an empty projection is not the same guarantee as "this rule cannot see
-    // this row at all". Observing the fix needs a real firing, so this cell pays the slow lane.
+    // comment): a rule that declares `fields: []` must not receive the firing row's ownership
+    // axis (`userId`, `scope.<namespace>`) as part of its input when the rule's own grant cannot
+    // read that row — an empty projection is not the same guarantee as "this rule cannot see
+    // this row at all". Observing that needs a real firing, so this cell pays a real async wait.
     describe('execution-time: an unreadable firing row withholds its ownership dims', () => {
         async function drainFolders(): Promise<any[]> {
             const out: any[] = [];

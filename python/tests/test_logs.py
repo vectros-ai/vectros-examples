@@ -3,9 +3,8 @@ test_logs.py -- 0.40.0: `delegationChain` on GET /v1/admin/logs entries --
 present on traffic from a delegate-minted key, null on ordinary traffic. The
 Python-language analogue of the single `delegationChain` test in
 logs.spec.ts (the rest of that file's filter/pagination coverage is not
-ported here -- this file exists specifically to close the 0.40.0
-Python-parity gap for the delegationChain field, not to duplicate the full
-admin-logs suite).
+ported here -- this file covers the delegationChain field only, not the
+full admin-logs suite).
 """
 from __future__ import annotations
 

@@ -282,16 +282,13 @@ describe('capabilities (granted_capabilities)', () => {
         // Distinct requirement from resendInvite above — the ACTIVE-attach branch mints no token
         // (nothing to mutate), so it needs only a bare elevated profiles:r, not r+u.
         // Reachable without any real external IdP: a target context with NO registered issuer
-        // treats any externalSubject that doesn't look like a real IdP-qualified subject (an
-        // ordinary activated smoke user's shape) as compatible, so this doesn't need issuer
-        // registration at all — traced directly against the actual credential-compatibility check
-        // rather than assumed from the SDK doc's own prose, which undersold the mechanism as
-        // needing real IdP compatibility to even exercise.
+        // treats an externalSubject that does not look like a real IdP-qualified subject (an
+        // ordinary activated smoke user's shape) as compatible, so no issuer registration is
+        // needed here.
         test('member-lifecycle WITH bare profiles:r attaches an ACTIVE member to a second context', async () => {
-            // Everything from the first write onward is inside the try/finally — an earlier version
-            // of this test created resources before entering it, which would leak an app context +
-            // orphaned users on a setup-step failure (staging rate-limit/flakiness). See the
-            // SUSPENDED-lockout test below for the same fix applied consistently.
+            // Everything from the first write onward is inside the try/finally — creating resources
+            // before entering it would leak an app context + orphaned users on a setup-step failure
+            // (rate-limit/flakiness). The SUSPENDED-lockout test below follows the same rule.
             let memberUserId: string | undefined;
             let ctxId2: string | undefined;
             let inviter: { id?: string } | undefined;
@@ -736,10 +733,8 @@ describe('capabilities (granted_capabilities)', () => {
             }
         });
 
-        // The capability's own documented boundary: CREATE-only. An UPDATE can never reassign
-        // userId, with or without this capability — traced directly against the code path that
-        // applies the capability's stamping effect, which only runs on create, never on
-        // update/patch.
+        // The capability applies on CREATE only. An UPDATE can never reassign userId, with or
+        // without it.
         test('the capability does NOT extend to UPDATE — reassigning userId on an existing record still 403s', async () => {
             const caller = await client.identity.createUser({ body: { externalId: uniqueTag() } });
             const target = await client.identity.createUser({ body: { externalId: uniqueTag() } });
@@ -926,8 +921,7 @@ describe('capabilities (granted_capabilities)', () => {
                 expect(subjectKinds).toContain(`user:${user.id}`);
                 expect(subjectKinds).toContain(`org:${org.id}`);
 
-                // The SAME disclosure must be found by querying the OTHER ownership dimension —
-                // previously only one dimension's query would have matched.
+                // The SAME disclosure must be found by querying the OTHER ownership dimension too.
                 const byOrg = (await client.auth.getAccessLog({
                     subjectType: 'org', subjectId: org.id!, contextId: 'default',
                     resourceId: fixedRecordId, limit: 10,
@@ -961,9 +955,8 @@ describe('capabilities (granted_capabilities)', () => {
                 const fixedDocId = docId!;
                 await pollUntilIndexed(fixedDocId, 'document');
 
-                // Previously this call left no access-log row at all, unlike the equivalent
-                // /v1/rag retrieval — the row must now show up under this document's resourceId,
-                // distinguishable by its `action`.
+                // Like the equivalent /v1/rag retrieval, this call must leave an access-log row
+                // under this document's resourceId, distinguishable by its `action`.
                 const stream = await client.inference.documentAsk({
                     id: fixedDocId, prompt: 'What drug class does this describe?', maxTokens: 32,
                 });

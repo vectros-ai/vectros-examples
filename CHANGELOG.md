@@ -5,6 +5,28 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.18.5 — 2026-10-25
+
+### Changed
+
+- **The examples target SDK 0.48.0.** The TypeScript example's `@vectros-ai/sdk` range is `^0.48.0`, the Python
+  requirement is `vectros>=0.48.0,<0.49.0`, and the Java example builds against `0.48.0`.
+- **The two-DELETE billing check is its own spec, `delete-fee-race`.** It checks that two concurrent
+  `DELETE /v1/users/{id}` calls bill once, not twice: the user is gone exactly once, and the race costs less than twice one
+  delete. It reads the tenant-wide credit counter before and after, so run it when nothing else writes to the tenant.
+- **The script-execution billing check allows a difference of five milli-credits** between a script that does billable work and
+  one that does none.
+- **The Python smoke client sets explicit timeouts.** Every request from the Python smoke suite has a 60-second read timeout
+  (it bounds each wait for the server, not the whole request), and requests made through the SDK wait at most 10 seconds to
+  connect, so an unreachable host fails quickly.
+- **The comments in the shipped specs describe what each check does.**
+
+### Documentation
+
+- **The Python and Java READMEs list the checks that make no API calls** (`test_sse_comment_frames`,
+  `test_client_timeouts`, `SseCommentFramesTest`).
+- **The TypeScript README documents `SMOKE_SKIP_SLOW=true`, which skips the slow specs.**
+
 ## 0.18.4 — 2026-10-12
 
 ### Changed
@@ -157,9 +179,8 @@ published Vectros SDK independently.
   no extra header when the response names none, so they work against API versions on either side
   of the change. The shared `presignedUploadHeaders` helper does the reading.
 
-- **The Java and Python rate-limit-visibility comments named an internal doc filename and
-  internal monorepo-relative file paths** instead of describing the mechanism and referring to
-  sibling examples by name. Reworded both; no behavioral change.
+- **The Java and Python rate-limit-visibility comments name the mechanism and refer to
+  sibling examples by name.** No behavioral change.
 
 ### Changed
 
@@ -252,7 +273,7 @@ published Vectros SDK independently.
 
 ### Added
 
-- Live coverage for the mirrored `mcp` example's `lookup_principal.contextId` parameter (API 0.40.0
+- Live coverage for the `mcp` example's `lookup_principal.contextId` parameter (API 0.40.0
   namespace placement) in both resolve mode and lookup mode, plus a namespace-registration fixture
   the lookup-mode entity tests now require.
 
@@ -310,11 +331,9 @@ updates.
 
 - **The Java quickstart's published Maven coordinate had drifted from the SDK its
   own source was tested against.** The public coordinate stayed pinned at
-  `ai.vectros:vectros-sdk:0.29.9` while the internal harness this example is
-  generated from moved forward to `0.33.0` and then `0.34.0` — a gap of four to
-  five minor versions across every release from `examples-v0.7.0` through
-  `v0.12.0`. The coordinate now tracks the SDK the example is actually written
-  and verified against.
+  `ai.vectros:vectros-sdk:0.29.9` while the example's source was written against
+  `0.33.0` and then `0.34.0`, from `examples-v0.7.0` through `v0.12.0`. The
+  coordinate now tracks the SDK the example is written and verified against.
 
 ### Added
 

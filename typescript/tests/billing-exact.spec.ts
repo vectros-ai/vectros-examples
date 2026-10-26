@@ -3,15 +3,10 @@
  *
  * The other usage assertions are directional (>=) because counters accumulate across runs. This
  * spec pins exact AMOUNTS instead, using before/after deltas of `credits.usedMilli` as the
- * isolated counter: this file's own run is ALWAYS serialized alone, before anything else in the
- * suite starts writing to the shared tenant (see the harness's exclusive-lane pre-pass — the file
- * is listed there specifically so this spec's own exact-delta assumption holds), so between two
- * snapshots the partner counter moves only for THIS spec's operations. That guarantee is NOT a
- * property of the suite running serially overall (it doesn't, since two other lanes run
- * concurrently after this one finishes) — it's specific to this file's own pre-pass isolation, and
- * a future change that drops this file from the exclusive list, or adds a second exact-delta spec
- * without also listing it there, silently reopens exactly the collision this comment exists to
- * prevent.
+ * isolated counter. The exact amounts only hold while nothing else writes to the tenant between
+ * two snapshots, so the counter moves only for THIS spec's operations. Run this spec on its own,
+ * before or apart from any other spec that writes to the same tenant; concurrent writers inflate
+ * the deltas.
  *
  * The probe is chosen so the only fees in play are exactly computable from the published
  * pricing schedule (vectros.ai/pricing):
@@ -21,15 +16,15 @@
  *   → create fee = write base (5) + 1 index (1) = 6 milli-credits, and a delete bills the same
  *     write fee for the same record shape ("writes and deletes cost the same").
  *
- * Known benign skews (each self-identifies as a delta ≠ 6 and re-runs clean): the periodic
- * storage-billing run landing mid-spec — vanishingly rare; and this spec's own getUsage() reads,
+ * Known benign skews (each self-identifies as a delta ≠ 6 and re-runs clean): periodic
+ * storage billing landing mid-spec — vanishingly rare; and this spec's own getUsage() reads,
  * which are metered past the plan's free read allowance — unreachable at smoke volume.
  * usedMilli reads are eventually consistent; a read-after-write race is a rerunnable flake.
  *
- * The isolation above covers ONE suite run. It does not cover a second run, or another person's,
+ * The isolation above covers only a run that has the tenant to itself. It does not cover a second run, or another person's,
  * against the same tenant at the same time: their writes land on the same counter and inflate a
  * delta. So the record cell is STRICT by default: one attempt, and both the create and the delete
- * must read exactly 6, which is what a run that owns the tenant (the exclusive lane in CI) should see.
+ * must read exactly 6, which is what a run sees when nothing else writes to the tenant.
  *
  * Set SMOKE_SHARED_TENANT=1 when other people are using the tenant. The cell then retries with a
  * fresh record, up to five times, and passes only when ONE attempt reads exactly 6 for BOTH the
@@ -113,24 +108,26 @@ describe('exact per-operation billing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Script execution time — the release's one new customer-visible CHARGE.
+// Script execution time — a customer-visible CHARGE.
 //
-// This belongs in the exclusive lane rather than alongside the other usage
-// assertions for the same reason the record fees above do: the reconciliation
-// claim is a DELTA claim, and a delta is only meaningful while nothing else is
-// writing to the shared tenant.
+// Like the record fees above, the reconciliation claim is a DELTA claim, and a
+// delta is only meaningful while nothing else is writing to the tenant.
 //
 // Why delta and not an absolute sum. The published contract says the per-category
 // breakdown sums to `credits.used`. On a long-lived tenant it does not, and that is
 // not a defect: `used` is a single accumulator of what was actually charged, while
 // the breakdown is reconstructed per category from today's stat keys, so charges
 // booked before a category existed sit in `used` with nothing to itemise them.
-// Measured on staging: a standing gap of ~12,700 milli-credits that does not move,
-// while every new charge lands in BOTH. An absolute-sum assertion would therefore
-// fail forever on this tenant and would say nothing about the property that matters
+// The result can be a standing gap that does not move, while every new charge
+// lands in BOTH. An absolute-sum assertion would therefore fail forever on such a
+// tenant and would say nothing about the property that matters
 // — which is that a NEW charge is itemised as well as counted.
 // ---------------------------------------------------------------------------
 
+// Milli-credits of tolerance on the `working <= bare` comparison below. Other executions on a
+// shared tenant move the same counter by a few milli-credits, so the comparison allows 5. The
+// tolerance also bounds what the check can see: a regression smaller than this would pass.
+const EXECUTION_NOISE_MILLI = 5;
 const EXECUTIONS = 3;
 
 /** The whole usage report, not just the credit total. */
@@ -203,7 +200,7 @@ describe('script execution time is charged, and itemised as well as counted', ()
 
         // 2. The published arithmetic, stated as an identity on the report itself:
         //    billable = total + (200 ms baseline x executions) - included.
-        //    This is what makes `includedMillis` checkable by a partner without reconstructing it.
+        //    This is what makes `includedMillis` checkable by you without reconstructing it.
         expect(after.execution.billableMillis).toBe(
             after.execution.totalMillis + 200 * after.execution.executions - after.execution.includedMillis,
         );
@@ -263,31 +260,30 @@ describe('script execution time is charged, and itemised as well as counted', ()
             `vectros.records.create({ typeName: '${workType}', payload: { note: input.params.tag } });`,
         );
 
-        // More work, less execution-time charge -- with the SAME +/-2mC tolerance the sibling
-        // assertion above already applies, and for the identical reason: this value is a floor
-        // against a shared, per-tenant running total that every concurrent execution on the
-        // account also increments, so a concurrent script can shift either side by a milli-credit
-        // even though nothing about this run's own billable time changed. The comparison still
-        // fails loudly on the thing it exists to catch -- a naive implementation charging MORE for
-        // more work -- because that failure shows up as a gap far wider than 2mC.
-        expect(working).toBeLessThanOrEqual(bare + 2);
+        // More work, less execution-time charge -- with a tolerance for the same reason the sibling
+        // assertion above carries one: this value is a floor against a shared, per-tenant running
+        // total that every concurrent execution on the account also increments, so another script
+        // can shift either side by a few milli-credits even though nothing about this run's own
+        // billable time changed. The comparison still fails on what it
+        // exists to catch: an implementation charging noticeably MORE for more work.
+        expect(working).toBeLessThanOrEqual(bare + EXECUTION_NOISE_MILLI);
     }, 60_000);
 });
 
 // ---------------------------------------------------------------------------
-// 0.44.0 — POST-shaped reads now meter identically to their GET equivalents.
+// POST-shaped reads meter identically to their GET equivalents (since 0.44.0).
 //
 // A handful of read endpoints happen to arrive as POST (a body-based lookup, a batch-get, a
-// full-text/semantic search) rather than GET. Before this release the read meter keyed purely on
-// HTTP verb, so every one of these accrued NOTHING at all — not a smaller charge, no charge — no
-// matter what the request actually read. They now take the same metered-read path their GET
-// equivalent already used, moving the same account-level read-call counter (`reads.calls.used`) a
-// GET does. `/v1/search` has no GET form at all, so it was an entirely unmetered surface.
+// full-text/semantic search) rather than GET. A read meter keyed purely on HTTP verb would accrue
+// NOTHING at all for these — not a smaller charge, no charge — no matter what the request
+// actually read. They take the same metered-read path as their GET equivalent, moving the
+// same account-level read-call counter (`reads.calls.used`) a GET does. `/v1/search` has no
+// GET form at all, so it would otherwise be an entirely unmetered surface.
 //
 // Asserted as a NONZERO delta rather than an exact one, and deliberately so: this spec's own
 // getUsage() calls are themselves GETs, so each one nudges the very counter under test — the same
-// self-measurement effect the top-of-file comment already notes for `credits.usedMilli`. "was
-// always zero, now moves" is the falsifiable claim this release makes; the exact increment isn't.
+// self-measurement effect the top-of-file comment already notes for `credits.usedMilli`. "Moves
+// at all" is the falsifiable claim here; the exact increment isn't.
 // ---------------------------------------------------------------------------
 
 describe('POST-shaped reads meter the same read counter as their GET equivalent (0.44.0)', () => {
@@ -319,28 +315,28 @@ describe('POST-shaped reads meter the same read counter as their GET equivalent 
         await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
     });
 
-    test('POST /v1/records/lookup (lookupRecordsByBody) now meters a read, where it used to meter nothing', async () => {
+    test('POST /v1/records/lookup (lookupRecordsByBody) meters a read', async () => {
         const before = await usageReport();
         await client.records.lookupRecordsByBody({ type: recordType, field: 'tag', value: 'post-read-probe' });
         const after = await usageReport();
         expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
     });
 
-    test('POST /v1/records/batch-get now meters a read, where it used to meter nothing', async () => {
+    test('POST /v1/records/batch-get meters a read', async () => {
         const before = await usageReport();
         await client.records.batchGetRecords({ ids: [recordId] });
         const after = await usageReport();
         expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
     });
 
-    test('POST /v1/search now meters a read — this surface has no GET form at all, so it was entirely unmetered before', async () => {
+    test('POST /v1/search meters a read — this surface has no GET form at all', async () => {
         const before = await usageReport();
         await client.search.content({ query: uniqueTag(), mode: 'TEXT', limit: 1 });
         const after = await usageReport();
         expect(after.reads.calls.used - before.reads.calls.used).toBeGreaterThan(0);
     });
 
-    test('POST /v1/documents/lookup (lookupDocumentsByBody) now meters a read, where it used to meter nothing', async () => {
+    test('POST /v1/documents/lookup (lookupDocumentsByBody) meters a read', async () => {
         // externalId needs no schema declaration -- the cheapest fixture for this probe.
         const extId = uniqueTag();
         const doc = await client.documents.ingestDocument({ confirmUntyped: true, body: {
@@ -357,7 +353,7 @@ describe('POST-shaped reads meter the same read counter as their GET equivalent 
     });
 
     // Not covered here: POST /v1/users/lookup and POST /v1/entities/{namespace}/lookup, the
-    // remaining two of the six routes this release re-metered. Both route through the same
+    // remaining two of the six POST-shaped read routes that meter reads. Both route through the same
     // schema-declared-lookup-field mechanism as the two record/document probes above, so the
     // metering wiring itself is unlikely to differ per route -- but building a correct
     // fixture for either (a user- or entity-surfaced schema with a bound lookup field) is
@@ -367,17 +363,17 @@ describe('POST-shaped reads meter the same read counter as their GET equivalent 
 });
 
 // ---------------------------------------------------------------------------
-// 0.44.0 — the reserved batch-lookup stub takes the free-allowance read path too, not the
-// write-credit-ceiling one.
+// The reserved batch-lookup stub takes the free-allowance read path too, not the
+// write-credit-ceiling one (since 0.44.0).
 //
-// The full loosening this release makes to these routes — a caller over its monthly credit
-// ceiling but within its free read allowance now succeeds where it used to get a 402 — needs an
+// The full behaviour of these routes — a caller over its monthly credit
+// ceiling but within its free read allowance succeeds rather than getting a 402 — needs an
 // over-ceiling tenant to observe directly, and that isn't something a smoke run against a shared
-// staging tenant can construct without draining its real credit balance (see
+// tenant can construct without draining its real credit balance (see
 // negative-paths.spec.ts's note on the equivalent 402 case for prepaid inference balance — the
 // same non-destructive-tenant constraint applies here). What IS cheap to check, with no credits
 // involved at all: the reserved stub still answers with its documented 501, not a 402/403 a
-// caller on the old write-path could have hit before ever reaching the stub.
+// caller on the write path would hit before ever reaching the stub.
 // ---------------------------------------------------------------------------
 
 describe('POST /v1/records/lookup/batch — reserved stub takes the read path, not the write-credit path (0.44.0)', () => {

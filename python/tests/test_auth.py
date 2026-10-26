@@ -58,8 +58,8 @@ def test_scoped_token_principal_key_id_is_unique_per_mint(client):
     """principalKeyId for an st_* token is the token's own jti (unique per
     mint), not the bound identity — two tokens minted for the same scope must
     report different values on ping. Asserting only "is a string" would not
-    catch a regression back to the old (pre-0.39.0) behavior, which echoed the
-    bound user/key id and would be IDENTICAL across mints."""
+    catch an implementation that echoed the bound user/key id, which would be
+    IDENTICAL across mints."""
     scope = vectros.ScopeRequest(allowed_actions=["records:r"])
     minted1 = client.auth.mint_token(scope=scope)
     minted2 = client.auth.mint_token(scope=scope)
@@ -71,7 +71,7 @@ def test_scoped_token_principal_key_id_is_unique_per_mint(client):
 
 
 def test_mint_token_rejects_expires_in_seconds_above_the_1hour_cap(client):
-    """0.39.0 lowered the max from 86400 (24h) to 3600 (1h). Assert both
+    """The max is 3600 (1h). Assert both
     sides of the exact boundary: 3600 still succeeds (it's also the
     default), 3601 is rejected."""
     scope = vectros.ScopeRequest(allowed_actions=["records:r"])

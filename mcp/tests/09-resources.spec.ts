@@ -24,7 +24,7 @@ test('schemas resource reads JSON catalog', async () => {
   }
 });
 
-test('identity resource reads at least the minimal degraded shape', async () => {
+test('identity resource reads at least the minimal shape', async () => {
   const { client, close } = await spawnServer();
   try {
     const result = await client.readResource({ uri: 'vectros://identity' });

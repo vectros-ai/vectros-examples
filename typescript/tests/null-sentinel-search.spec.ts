@@ -1,43 +1,32 @@
 /**
- * null-sentinel-search.spec.ts — the positive parse proof for the
- * null-sentinel corpus-clause push, run against the DEPLOYED staging build.
+ * null-sentinel-search.spec.ts — the positive proof that the null-sentinel
+ * scope is applied to search.
  *
  * WHY THIS EXISTS
  * ---------------
- * `/v1/search` + `/v1/rag` enforce a caller's dataScope per ROW at the
- * hybrid-search chokepoint, in two layers:
- *   - Layer 1 (authoritative, per-row): drops any result row the token can't read
- *     directly — this is what keeps a foreign owner's row out of the results.
- *   - Layer 2 (recall): compiles the resolved scope into ReadCorpusClauses
- *     pushed into BOTH search engines so entitled rows survive the engine query.
- *     For a `{userId:[self, null]}` scope the owner-less (tenant-level) opt-in
- *     becomes Quickwit `(* AND NOT owner_id:*)` and S3-Vectors `$exists:false`.
+ * `/v1/search` + `/v1/rag` apply a caller's dataScope per result ROW. For a
+ * `{userId:[self, null]}` scope the owner-less (tenant-level) opt-in must be
+ * honored: the scope is applied to both TEXT and SEMANTIC search.
  *
- * The trap the layers create: a MISPARSE of that owner-less clause only DEGRADES
- * RECALL — Layer 1 still enforces isolation, so nothing leaks — which makes the
- * bug INVISIBLE without an explicit POSITIVE assertion that the owner-less row
- * actually comes back on the deployed build. This spec is that test.
+ * The trap: getting that owner-less clause wrong only DEGRADES RECALL while
+ * isolation still holds, so nothing leaks — which makes the bug INVISIBLE
+ * without an explicit POSITIVE assertion that the owner-less row actually
+ * comes back. This spec is that test.
  *
  * WHAT IT PROVES
  * --------------
  * Seed three records that differ ONLY in ownership — owner-less (tenant-level),
  * self-owned, foreign-owned — sharing one searchable body. Mint an st_* token
  * with `dataScope { userId: [self, null] }` (the documented my-own + tenant-level
- * opt-in) and search WITHOUT a body userId filter (the exact call this guards —
- * without the fix it returned every owner's rows). Then:
- *   - the owner-less row IS returned in BOTH TEXT and SEMANTIC  ← the parse proof
- *     (TEXT exercises the Quickwit exists-query lane, SEMANTIC the S3-Vectors
- *     `$exists:false` lane — the two clauses parse on different engines);
+ * opt-in) and search WITHOUT a body userId filter (a search with no explicit
+ * filter must still be bounded by the token's scope). Then:
+ *   - the owner-less row IS returned in BOTH TEXT and SEMANTIC  ← the scope proof
  *   - the self-owned row IS returned                            ← positive control
- *   - the foreign-owned row is NOT returned                     ← Layer-1 isolation
+ *   - the foreign-owned row is NOT returned                     ← isolation
  * A no-sentinel control shows the recall of the owner-less row is CAUSED by the
- * sentinel, and a RAG assertion shows the same chokepoint governs grounding.
+ * sentinel, and a RAG assertion shows the same scope governs grounding.
  *
- * DEPLOY PRECONDITION: this validates the DEPLOYED staging build. If the
- * owner-less assertion fails, first confirm staging carries the null-sentinel
- * corpus-clause fix before concluding a real corpus-clause parse bug.
- *
- * Faithful + observable: exercises the real SDK the way a partner would; seeds via
+ * Faithful + observable: exercises the real SDK the way an API client would; seeds via
  * a root key, reads via the scoped token, waits for INDEXED (never sleeps), and
  * drains every seeded row on teardown (asserts a hard 404, not a status flip).
  */
@@ -82,7 +71,7 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
         const schema = await client.schemas.createSchema({ body: {
             typeName: recordType,
             displayName: 'Null-Sentinel Search Probe Schema',
-            indexMode: 'HYBRID', // HYBRID → both the text lane (TEXT) and vector lane (SEMANTIC)
+            indexMode: 'HYBRID', // HYBRID → both TEXT and SEMANTIC search
             allowedSurfaces: ['record'],
             fields: [{ fieldId: 'content', fieldType: 'string', required: true, searchable: true }],
         } });
@@ -94,14 +83,14 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
         foreignUserId = foreign.id!;
 
         // Identical searchable body across all three rows — carries both the
-        // unique marker (for the exact TEXT lane) and clinical prose (for the
-        // SEMANTIC lane). OWNERSHIP is the only thing that differs, so any recall
+        // unique marker (for exact TEXT search) and clinical prose (for
+        // SEMANTIC search). OWNERSHIP is the only thing that differs, so any recall
         // difference is the scope, not the content.
         const body = (role: string): string =>
             `${marker} A clinical note regarding hypertension management and cardiac risk (${role} row).`;
 
         // Owner-less / tenant-level: NO userId and NO scope, so the row is
-        // owner-less. This is the row the null-sentinel corpus clause must surface.
+        // owner-less. This is the row the null-sentinel scope must surface.
         const ownerLess = await client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { content: body('owner-less tenant-level') },
         } });
@@ -122,15 +111,14 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
         // Two distinct, separately-polled visibility phases (root client sees
         // every owner, so this races indexing, not scope):
         //   TEXT is searchable ≈ at INDEXED;
-        //   SEMANTIC rides the vector lane whose query visibility lags INDEXED
-        //   (eventually-consistent — see pollUntilSearchable's header). Polling
-        //   the owner-less row on the vector lane here means the scoped SEMANTIC
-        //   assertion below can't be racing a not-yet-visible vector.
+        //   SEMANTIC search can lag INDEXED slightly (see pollUntilSearchable's
+        //   header). Polling the owner-less row in SEMANTIC mode here means the
+        //   scoped SEMANTIC assertion below can't be racing a not-yet-visible row.
         await pollUntilSearchable(marker, ownerLessId, 15_000, 'TEXT', testStartedAt);
         await pollUntilSearchable(SEMANTIC_QUERY, ownerLessId, 30_000, 'SEMANTIC', testStartedAt);
 
-        // records:r is REQUIRED, not incidental: Layer 1 drops any
-        // record row the token can't read directly (a record →
+        // records:r is REQUIRED, not incidental: any
+        // record row the token can't read directly is dropped (a record →
         // records:r:<type>). Without it EVERY record row — including self's —
         // would be dropped and the test would fail closed. search:r authorizes
         // the query; inference:r lets the same token drive the RAG assertion.
@@ -159,9 +147,9 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
 
     /**
      * Search through the null-sentinel token with NO body userId filter — the
-     * scope's `[self, null]` governs the corpus. This is the exact call the fix
-     * addressed: previously an omitted userId returned EVERY owner's rows; now it
-     * returns my-own + owner-less and drops foreign per row. `createdAfter`
+     * scope's `[self, null]` governs which rows are visible. An omitted userId must
+     * not widen what is visible: the search returns my-own + owner-less rows and drops
+     * foreign ones per row. `createdAfter`
      * isolates this run from the shared smoke tenant's accumulated history.
      */
     async function sentinelSearchIds(mode: 'TEXT' | 'SEMANTIC', query: string): Promise<string[]> {
@@ -169,20 +157,20 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
         return (res.results ?? []).map((r) => r.documentId!).filter(Boolean);
     }
 
-    // ANCHOR — the parse proof on the TEXT lane (Quickwit `(* AND NOT owner_id:*)`).
+    // ANCHOR — the parse proof in TEXT mode.
     test('TEXT: null-sentinel scope surfaces the owner-less row, self, not foreign', async () => {
         const ids = await sentinelSearchIds('TEXT', marker);
-        expect(ids).toContain(ownerLessId);         // PARSE PROOF — owner-less clause parsed on the text engine
+        expect(ids).toContain(ownerLessId);         // SCOPE PROOF — owner-less row returned in TEXT mode
         expect(ids).toContain(selfOwnedId);         // positive control — the token is live, not over-confined
-        expect(ids).not.toContain(foreignOwnedId);  // Layer-1 isolation still holds
+        expect(ids).not.toContain(foreignOwnedId);  // isolation still holds
     });
 
-    // ANCHOR — the parse proof on the SEMANTIC lane (S3-Vectors `$exists:false`).
+    // ANCHOR — the parse proof in SEMANTIC mode.
     test('SEMANTIC: null-sentinel scope surfaces the owner-less row, self, not foreign', async () => {
         const ids = await sentinelSearchIds('SEMANTIC', SEMANTIC_QUERY);
-        expect(ids).toContain(ownerLessId);         // PARSE PROOF — owner-less clause parsed on the vector engine
+        expect(ids).toContain(ownerLessId);         // SCOPE PROOF — owner-less row returned in SEMANTIC mode
         expect(ids).toContain(selfOwnedId);         // positive control
-        expect(ids).not.toContain(foreignOwnedId);  // Layer-1 isolation still holds
+        expect(ids).not.toContain(foreignOwnedId);  // isolation still holds
     });
 
     test('control: WITHOUT the null sentinel the owner-less row is NOT visible (the sentinel is causal)', async () => {
@@ -207,9 +195,9 @@ describe('null-sentinel search (corpus-clause parse proof)', () => {
     });
 
     test('RAG grounds only on the permitted corpus (owner-less + self, not foreign)', async () => {
-        // RAG retrieval flows through the SAME hybrid-search chokepoint, so
+        // RAG retrieval goes through the SAME scope enforcement as search, so
         // the search_results event reflects the post-scope corpus. Tiny maxTokens
-        // — we assert the RETRIEVAL (the corpus clause), not the generation.
+        // — we assert the RETRIEVAL (the scope), not the generation.
         const stream = await sentinelClient.inference.ragInference({
             query: 'Summarize the clinical notes about hypertension and cardiac risk.',
             search: { mode: 'HYBRID', limit: 100, createdAfter: testStartedAt },

@@ -111,10 +111,8 @@ describe('identity', () => {
 
         // principalKeyId is the token's own jti — unique per mint, even for the
         // same scope. A second token minted here must report a DIFFERENT value;
-        // if it echoed the bound identity instead (the pre-0.39.0 behavior this
-        // field's doc comment used to contradict), two tokens for the same
-        // caller would report the SAME principalKeyId, and this would not catch
-        // a regression back to that.
+        // if it echoed the bound identity instead, two tokens for the same
+        // caller would report the SAME principalKeyId.
         const minted2 = (await client.auth.mintToken({
             scope: { allowedActions: ['records:r'] },
         })) as MintedToken;
@@ -124,7 +122,7 @@ describe('identity', () => {
     });
 
     test('mintToken rejects an expiresInSeconds above the 1-hour cap', async () => {
-        // 0.39.0 lowered the max from 86400 (24h) to 3600 (1h) — the exact
+        // The max is 3600 (1h) — the exact
         // boundary matters, so assert both sides of it rather than just "a
         // large value fails". 3600 itself must still succeed (it's also the
         // default); 3601 must be rejected.
@@ -199,9 +197,7 @@ describe('identity', () => {
 
             // principalKeyId for an ssk_* key identifies the KEY, not the call — same rule as a
             // root sk_* key (see the ping identity-binding tests above) and distinct from an st_*
-            // token's per-mint jti. This runs against a freshly-minted key so it exercises the
-            // rule in this suite's normal (staging) lane, not only the internal, production-only
-            // scoped-key spec, which asserts the identical rule against a pre-provisioned key.
+            // token's per-mint jti. This runs against a freshly-minted key.
             const body2 = (await scoped.auth.ping()) as unknown as PingIdentity;
             expect(body2.principalKeyId).toBe(body.principalKeyId);
         } finally {
@@ -410,10 +406,10 @@ describe('identity', () => {
     });
 
     // -------------------------------------------------------------------
-    // 0.40.0 — scoped-key-mint 404 uniformity: POST /v1/admin/keys/scoped
+    // scoped-key-mint 404 uniformity: POST /v1/admin/keys/scoped
     // returns the SAME message whether userId names no user at all in the
     // tenant, or a real user with no AccessProfile in the target context —
-    // collapsing what used to be a tenant-wide user-existence oracle.
+    // so the response cannot be used as a tenant-wide user-existence oracle.
     // -------------------------------------------------------------------
     test('createScopedKey 404s identically for a nonexistent userId and a real user with no profile in context', async () => {
         const ctxId = ('sk404' + uniqueTag()).slice(0, 31);

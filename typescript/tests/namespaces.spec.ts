@@ -168,9 +168,8 @@ describe('namespaces', () => {
                 });
 
                 // The version row isn't written by the update call itself — it's persisted
-                // asynchronously by a downstream pipeline after the update response returns,
-                // so an immediate read here can race it (measured: a real, low but nonzero
-                // flake rate). Poll instead of asserting on the first read — same pattern the
+                // asynchronously after the update response returns, so an immediate read
+                // here can race it. Poll instead of asserting on the first read — same pattern the
                 // sibling "update record → version history includes both versions" test in
                 // records.spec.ts uses for identical reasons.
                 let deadline = Date.now() + 30_000;

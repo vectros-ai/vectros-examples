@@ -6,10 +6,10 @@
  * on a triggers-enabled schema dispatches the rule's script, the script runs asynchronously under
  * the rule's OWN grant, and what it writes commits.
  *
- * It is the only place the async half of the runtime is exercised at all, which is why it earns a
- * slow lane and a real wait: the two cells below poll for a convergence that takes tens of seconds
- * on a live deployment. Both directions are covered, because they fail differently and a suite that
- * only proved the happy path could not tell "the dispatcher is down" from "my script threw":
+ * It is the only place the async half of the runtime is exercised at all, which is why it pays a
+ * real wait: the two cells below poll for a convergence that takes tens of seconds. Both directions
+ * are covered, because they fail differently and a suite that only proved the happy path could not
+ * tell "triggers are not firing" from "my script threw":
  *
  *   success   the script's write appears — proof the rule dispatched, resolved its principal,
  *             executed under its grant, and committed
@@ -23,12 +23,12 @@
 import { client } from '../src/client';
 import { uniqueTag, sleep, tryCleanup, pollUntil, drainCursor, SKIP_SLOW } from '../src/helpers';
 
-/** Long enough for a real async dispatch on a live deployment; measured at ~25s, polled to 150s. */
+/** Long enough for a real async dispatch (about 25s), polled to 150s. */
 const FIRE_TIMEOUT_MS = 150_000;
 const POLL_MS = 3_000;
 
-/** Shared, rate-limit-aware (see `pollUntil`) — the local fixed-deadline copy this file used to
- *  carry produced a false RED whenever it ran with a hot limiter. */
+/** Shared, rate-limit-aware (see `pollUntil`) — a local fixed-deadline poll produces a false RED
+ *  whenever it runs with a hot limiter. */
 const pollFor = <T>(label: string, probe: () => Promise<T | undefined>) =>
     pollUntil(label, probe, FIRE_TIMEOUT_MS, POLL_MS);
 
@@ -48,7 +48,7 @@ describe('triggers: a declared rule fires', () => {
      * Every marker this run put into a folder name. A declared rule stays live until `afterAll`, so
      * EVERY record any later cell writes fires EVERY rule declared before it — each one creating its
      * folder again, under a name no cell is watching for. Those extra folders are invisible to
-     * `folderIds` (which only ever holds the one folder a cell actually found) and used to be left
+     * `folderIds` (which only ever holds the one folder a cell actually found) and would be left
      * behind on the shared tenant, where somebody else's list assertion trips over them tomorrow.
      * Sweeping by marker in `afterAll` is what makes this spec genuinely re-runnable.
      */
@@ -161,7 +161,7 @@ describe('triggers: a declared rule fires', () => {
 
     /** Write a record to the firing schema, returning its id. Registers the note for the sweep:
      *  every live rule names a folder from it, and a note no marker matches leaks one per run —
-     *  which is exactly what the non-unique literals below used to do. */
+     *  which is exactly what a non-unique literal would do. */
     async function fire(note: string): Promise<string> {
         markers.push(note);
         const rec = await client.records.createRecord({ body: {
@@ -217,9 +217,9 @@ describe('triggers: a declared rule fires', () => {
     }, FIRE_TIMEOUT_MS + 60_000);
 
     test('input.recordId is the id vectros.records.get accepts — the script re-reads its own firing row', async () => {
-        // THE PRIMARY USE CASE, and it was broken: `input.recordId` carried the platform's internal
-        // storage sort key rather than the record's id, so `vectros.records.get(input.recordId)` —
-        // the first thing almost any trigger script does — returned a 404 while the bare id worked.
+        // THE PRIMARY USE CASE: `input.recordId` must be the record's id, not an internal storage key,
+        // so `vectros.records.get(input.recordId)` — the first thing almost any trigger script does —
+        // resolves rather than returning a 404.
         //
         // The round trip is the assertion. The script re-reads the firing row through the PUBLIC
         // host function and names the folder from what it read back, so the folder can only appear
@@ -322,15 +322,13 @@ describe('triggers: a declared rule fires', () => {
         triggerIds.push(rule.id!);
 
         const rec = await client.records.createRecord({ body: { typeName: recordType, payload: { note: gone } } });
-        // ⚠️ SETTLE BEFORE DELETING, AND THIS IS NOT PADDING. Measured on staging 2026-09-06: a record
-        // created and deleted in quick succession on a schema carrying several live rules loses its
-        // firings — no folder, no `trigger-failures` row, and no TRIGGER_DISPATCH_FAILED in the
-        // stream handler's log. Standalone repro: 5 rules + immediate delete lost all four expected
-        // firings; the identical fixture with the record left to settle first landed all four. That
-        // is a platform question, raised separately — it is NOT what this cell is about, and letting
-        // it redden here would make an unrelated dispatch race look like a DELETE-projection defect.
+        // ⚠️ SETTLE BEFORE DELETING, AND THIS IS NOT PADDING. A record created and deleted in
+        // quick succession on a schema carrying several live rules can lose its firings (no folder
+        // and no `trigger-failures` row). That is a separate question from what this cell asserts,
+        // and letting it redden here would make an unrelated race look like a DELETE-projection
+        // defect, so the record is left to settle first.
         //
-        // The settle is also the more honest scenario: a partner deleting a row is deleting one that
+        // The settle is also the more honest scenario: a client deleting a row is deleting one that
         // has existed, not one written microseconds earlier.
         await sleep(30_000);
         await client.records.deleteRecord({ id: rec.id! });
@@ -357,14 +355,14 @@ describe('triggers: a declared rule fires', () => {
             return (page.data ?? []).find((f: any) => (f.detail ?? '').includes(message));
         });
 
-        // The fields a partner builds an alert on.
+        // The fields a client builds an alert on.
         expect(failure.category).toBe('SCRIPT_ERROR');
         expect(typeof failure.retryable).toBe('boolean');
         expect(failure.attempts).toBeGreaterThanOrEqual(1);
         expect(failure.ruleId).toBeTruthy();
         expect(failure.schemaId).toBe(schemaId);
         expect(failure.event).toBe('CREATE');
-        // `detail` carries the script's OWN thrown message — the partner's words about the partner's
+        // `detail` carries the script's OWN thrown message — the caller's words about the caller's
         // own data, which is what makes it safe to surface to their users.
         expect(failure.detail).toContain(message);
         // …and it correlates back to the write that caused it, so an alert can name the row.
@@ -388,7 +386,7 @@ describe('triggers: a declared rule fires', () => {
 // recursed"), and the platform reports NOTHING for the severed hop: no failure record at all for
 // this rule, in particular no CASCADE_DEPTH_EXCEEDED. That silence is the documented behaviour: a
 // write past the cap is suppressed at its source, before any failure record exists, rather than
-// dispatched for the partner to refuse. A partner should never have to alert on it.
+// dispatched for the caller to refuse. A client should never have to alert on it.
 //
 // The floor of 3 records needs a cascade depth of at least 2; the platform's default maximum depth
 // is 3. A tenant that lowers it below 2 would make this test go red with nothing wrong.
@@ -476,7 +474,7 @@ describe('triggers: a rule whose script writes a record that fires it again is b
 
         // Wait for the chain to RECURSE (a record the script wrote fired the rule and the script wrote again:
         // three records, root + two successors), then for it to SETTLE: the record count unchanged across a
-        // full quiet window. The window is longer than the slowest single hop measured on staging (~25 s), so
+        // full quiet window. The window is longer than the slowest single hop (~25 s), so
         // "no change" means "no next hop is coming", not "the next hop is slow".
         await pollFor('the chain to recurse at least twice', async () => {
             const n = (await chainRecords()).length;

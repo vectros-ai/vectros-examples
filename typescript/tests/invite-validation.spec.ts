@@ -163,8 +163,8 @@ describe('invite validation', () => {
                 });
                 expect(suspended.status).toBe('SUSPENDED');
 
-                // Hop 2: SUSPENDED -> ACTIVE with no invite token presented. This used to
-                // succeed, silently completing an invitation the target never accepted.
+                // Hop 2: SUSPENDED -> ACTIVE with no invite token presented. This must be
+                // refused: it would silently complete an invitation the target never accepted.
                 await expect(client.identity.updateUser({
                     id: userId, body: { externalId: userId, status: 'ACTIVE' },
                 })).rejects.toMatchObject({ statusCode: 400 });
@@ -244,8 +244,8 @@ describe('invite validation', () => {
     // sendEmail:false the platform never mails the link, but it still hands the caller an accept link
     // built from it, so a javascript:, plain-http or IP-literal value would be stored and returned as
     // a ready-to-use link. The control (a valid https URL is accepted) keeps the refusals honest. A
-    // javascript: value is tested separately below: the deployed edge answers it before the request
-    // reaches this validation, so it says nothing about the validator.
+    // javascript: value is tested separately below: the API's request filter answers it before
+    // the request reaches this validation, so it says nothing about the validator.
     // -------------------------------------------------------------------
     describe('acceptUrl is validated even when no email is sent', () => {
         const invite = (acceptUrl: string) => client.auth.createInvite({
@@ -273,10 +273,10 @@ describe('invite validation', () => {
             expect(rejected!.body?.message ?? '').toMatch(reason);
         });
 
-        test('a javascript: URL is refused (403) by the deployed edge, before the request reaches the validator', async () => {
-            // What the deployed edge does, not what the validator does: the edge filter answers this value with a
-            // 403, so the handler's own 400 (as in the cases above) is never reached. It is pinned so a change in
-            // the edge's behaviour is noticed; a refusal here proves nothing about the validation rule itself.
+        test('a javascript: URL is refused (403) by the API\'s request filter, before the request reaches the validator', async () => {
+            // What the request filter does, not what the validator does: the API's request filter answers
+            // this value with a 403, so the handler's own 400 (as in the cases above) is never reached. It is
+            // pinned so a change in that behaviour is noticed; a refusal here proves nothing about the validation rule itself.
             let status: number | undefined;
             let leaked: string | undefined;
             try {

@@ -2,22 +2,17 @@
  * records-ttl.spec.ts — absolute record TTL contract. CONTRACT ONLY.
  *
  * A record can carry an absolute `expiresAt` (ISO-8601 UTC); the record is then
- * automatically deleted at (or shortly after) that time via the DynamoDB TTL
- * reaper. The reap itself fires on DDB's own schedule (up to ~48 h), so a smoke
- * test CANNOT observe the deletion — this spec validates the WRITE-TIME CONTRACT
+ * automatically deleted at (or shortly after) that time. The deletion happens on a
+ * schedule (up to ~48 h), so a smoke test cannot observe it — this spec validates the WRITE-TIME CONTRACT
  * only: the opt-in gate, the floor, malformed rejection, and that an expiry
  * set/extend is never dropped as a content no-op.
  *
  * The four fail-closed rules (all 400s) and the one positive path:
  *   - schema must opt in with capabilities.ttlEligible:true, else expiresAt → 400
- *   - expiresAt must be at least 10 minutes in the future (the MIN_TTL floor) → else 400
+ *   - expiresAt must be at least 10 minutes in the future (the minimum-TTL floor) → else 400
  *   - expiresAt must be a parseable ISO-8601 instant → else 400
  *   - a valid expiresAt on an eligible schema → 201, response echoes it
  *   - an upsert that only changes expiresAt is a TTL extend, NOT a no-op (it writes)
- *
- * NOT covered here (call-outs): the actual ~48 h reap + its REMOVE
- * cascade (search-index cleanup / no orphan), and the storage-meter decrement gap.
- * Those are observation/unit concerns, not smoke-able.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup } from '../src/helpers';
@@ -112,7 +107,7 @@ describe('records (TTL contract)', () => {
     });
 
     test('expiresAt below the 10-minute floor → 400', async () => {
-        // 5 minutes out — under the 600 s MIN_TTL floor.
+        // 5 minutes out — under the 600 s minimum-TTL floor.
         const { statusCode, body } = await captureError(client.records.createRecord({ body: {
             typeName: ttlType,
             schemaId: ttlSchemaId,

@@ -68,8 +68,8 @@ class AuthSmokeTest {
         // principalKeyId for an st_* token is the token's own jti (unique per
         // mint), not the bound identity — two tokens minted for the same scope
         // must report different values on ping. Asserting only "is a string"
-        // would not catch a regression back to the old (pre-0.39.0) behavior,
-        // which echoed the bound user/key id and would be IDENTICAL across mints.
+        // would not catch an implementation that echoed the bound user/key id,
+        // which would be IDENTICAL across mints.
         ScopeRequest scope = ScopeRequest.builder().allowedActions(List.of("records:r")).build();
         MintTokenResponse minted1 = Smoke.live().auth().mintToken(TokenRequest.builder().scope(scope).build());
         MintTokenResponse minted2 = Smoke.live().auth().mintToken(TokenRequest.builder().scope(scope).build());
@@ -82,7 +82,7 @@ class AuthSmokeTest {
 
     @Test
     void mintTokenRejectsExpiresInSecondsAboveThe1HourCap() {
-        // 0.39.0 lowered the max from 86400 (24h) to 3600 (1h). Assert both
+        // The max is 3600 (1h). Assert both
         // sides of the exact boundary: 3600 still succeeds (it's also the
         // default), 3601 is rejected.
         ScopeRequest scope = ScopeRequest.builder().allowedActions(List.of("records:r")).build();

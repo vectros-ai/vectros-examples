@@ -16,7 +16,7 @@ import { parseToolResult as parse } from './fixtures.js';
  * SDK (or accept that the tenant will GC them).
  *
  * The validation-error paths (missing text/filePath, both, HTTP
- * transport gate) are unit-tested; we don't re-exercise them here.
+ * transport gate) are not exercised here.
  */
 
 const UNIQUE = `mcp-smoke-${Date.now()}-${process.pid}`;

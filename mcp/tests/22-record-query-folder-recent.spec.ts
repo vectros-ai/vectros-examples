@@ -4,10 +4,9 @@ import { spawnServer } from './helpers.js';
 import { api, parseToolResult as parse, SMOKE_TYPE } from './fixtures.js';
 
 /**
- * record_query list-mode selectors that reached the tool surface in 0.17.0:
- * `folderId` (every record in a folder, any type) and `recent` (the account-wide
- * recently-updated feed). Both have been on `GET /v1/records` for many releases;
- * only the MCP tool lacked them.
+ * record_query list-mode selectors `folderId` (every record in a folder, any
+ * type) and `recent` (the account-wide recently-updated feed), both of which map
+ * onto `GET /v1/records`.
  *
  * Worth a wire test rather than a mock, for one specific reason: `recent` is a
  * STRING query parameter server-side while the tool takes a boolean, and
@@ -16,8 +15,8 @@ import { api, parseToolResult as parse, SMOKE_TYPE } from './fixtures.js';
  * a DIFFERENT result set (an unfiltered feed, or a type listing), which is the
  * failure shape a mock cannot catch and an agent cannot detect.
  *
- * This also closes the loop the 0.43.0 folder-delete change opened: a folder that
- * still holds records refuses to delete, and this is the call that finds them.
+ * A folder that still holds records refuses to delete, and this is the call that
+ * finds them.
  */
 
 test('record_query lists by folderId and serves the recent feed', async (t) => {
@@ -84,7 +83,7 @@ test('record_query lists by folderId and serves the recent feed', async (t) => {
     assert.ok(Array.isArray(recent.data), `recent mode returns a page: ${JSON.stringify(recent)}`);
     assert.ok((recent.data as unknown[]).length > 0, 'the account has records, so the feed is non-empty');
     // Guard against the assertion being satisfiable by a plain type listing. The discriminator
-    // has to be STRUCTURAL, not corpus-based: this suite is seeding-tolerant, and the staging
+    // has to be STRUCTURAL, not corpus-based: this suite is seeding-tolerant, and the
     // tenant can legitimately hold a single record of one type, so "the feed spans types" is not
     // assertable here. What is: the call names NO type and still returns rows — record_query
     // requires exactly one of type/folderId/recent, so a type listing cannot produce this at all.

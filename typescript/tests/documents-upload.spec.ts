@@ -78,7 +78,7 @@ describe('documents (upload)', () => {
 
         // Verify the indexed content is searchable. Bridge the residual
         // INDEXED→commit-visible window. createdAfter scopes results to this
-        // run — orphan PDFs from prior smoke runs with the same KNOWN_PHRASE
+        // run — PDFs from prior smoke runs with the same KNOWN_PHRASE
         // can't push our just-uploaded doc off the result page.
         await pollUntilSearchable(SAMPLE_PDF_KNOWN_PHRASE, upload.id!, 10_000, 'TEXT', testStartedAt);
         const results = await client.search.content({
@@ -242,9 +242,9 @@ describe('documents (upload)', () => {
     test('extracted text of a file-backed document stays retrievable (retention gate)', async () => {
         // File-backed docs keep BOTH the uploaded source and the extracted text
         // permanently — /text serves the extracted text (retained by default; see documents-storetext.spec.ts for the opt-out)
-        // (which is a text-ingest concern). This is the read-contract gate for
-        // the retention regression class: a reaped blob turns this into a
-        // 404/500 long after INDEXED reported success.
+        // (which is a text-ingest concern). This is the read-contract gate: if the
+        // stored file or extracted text were deleted, this would 404/500 long after INDEXED
+        // reported success.
         const resp = await client.documents.getDocumentText({ id: docIds[0] });
         expect(resp.id).toBe(docIds[0]);
         expect(resp.text).toContain(SAMPLE_PDF_KNOWN_PHRASE);

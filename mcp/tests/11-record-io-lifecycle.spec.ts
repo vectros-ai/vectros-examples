@@ -51,11 +51,11 @@ test('record_query / get / create / update / delete lifecycle', async (t) => {
     assert.ok(Array.isArray(listed.data), `list mode returns a {data,nextCursor} envelope: ${JSON.stringify(listed)}`);
 
     // QUERY lookup — EQUALITY / PREFIX / RANGE. These assert the record is FOUND
-    // without polling: lookup rows (GSI slots + range rows) are written synchronously
-    // with the record write, unlike async search/embedding indexing. If a future
-    // backend change ever makes lookup-row propagation eventually-consistent, these
+    // without polling: lookup entries are written synchronously
+    // with the record write, unlike async search/embedding indexing. If lookup
+    // propagation ever becomes eventually-consistent, these
     // three asserts are the first place that would flake.
-    // EQUALITY on `status` (the GSI-slot lookup field).
+    // EQUALITY on `status` (the equality lookup field).
     const eq = parse(
       await client.callTool({
         name: 'record_query',

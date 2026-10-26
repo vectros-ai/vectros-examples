@@ -1,12 +1,11 @@
 /**
- * deleted-user-context-refusal.spec.ts — two related 0.44.0 fail-closed fixes:
+ * deleted-user-context-refusal.spec.ts — two related fail-closed behaviours:
  *
  *   1. A scoped API key (`ssk_*`) bound to a DELETED user no longer authorizes.
  *      Deleting a user removes its row immediately, but the access profiles
- *      that reference it are cleaned up separately; until that happens, a key
- *      bound to the deleted user used to keep working indefinitely. The fix
- *      closes that window, but NOT instantly — resolved key scopes are
- *      cached, so a request already in flight (or one that lands on a warm
+ *      that reference it are cleaned up separately; a key bound to the
+ *      deleted user is therefore refused, but NOT instantly — resolved key
+ *      scopes are cached, so a request already in flight (or one that lands on a warm
  *      cache) is refused "within about five minutes of the deletion," per the
  *      API's own documented contract for this behavior, not the moment the
  *      user is deleted. This file asserts the part of that contract that is
@@ -18,11 +17,10 @@
  *
  *   2. No new credential or access grant can be created in an app context
  *      that is being deleted. Deleting a context revokes its keys and marks
- *      it as tearing down right away, but its access profiles and roles used
- *      to drain asynchronously — and in that window, every grant-issuing
- *      endpoint still accepted the context as a valid target. The fix makes
- *      each of those endpoints refuse a context that is mid-teardown the same
- *      way it refuses one that was never created, while explicitly leaving
+ *      it as tearing down right away, but its access profiles and roles drain
+ *      asynchronously — and in that window, every grant-issuing endpoint must
+ *      refuse the context as a target: each of them treats a context that is
+ *      mid-teardown the same way as one that was never created, while explicitly leaving
  *      one path open: an EXISTING access profile can still be updated (for
  *      example, suspended) while its context tears down, because that is not
  *      a new grant. The second `describe` block below seeds a context, roles,
@@ -90,7 +88,7 @@ describe('deleted-user key: non-immediate revocation window (not the eventual re
         // cache, and the documented cache lifetime for that resolution is measured
         // in minutes, not milliseconds — so a call made moments later, on the same
         // credential, is expected to still succeed. This is the deterministic half
-        // of the contract: the fix does not (and per its own documentation, is not
+        // of the contract: the API does not (and per its own documentation, is not
         // meant to) revoke a key the instant its bound user is deleted.
         //
         // What this test does NOT assert: that the SAME key is eventually refused.
@@ -154,15 +152,12 @@ describe('deleting-context grant refusal', () => {
         await tryCleanup('delete user B', () => client.identity.deleteUser({ id: userBId }));
     });
 
-    // Positive control, per the same release's own documented carve-out: updating
+    // Positive control, per the documented behaviour: updating
     // an EXISTING profile — for example suspending it — keeps working while its
     // context tears down. This is the proof the refusal below is targeted at NEW
     // grants/credentials specifically, not a blanket "everything 404s while
-    // deleting" behavior. Deliberately the FIRST test in this describe block: this
-    // release's own documented carve-out notes the profile row is only guaranteed
-    // to survive until the context's background re-drain reaps it, so this
-    // assertion has to land inside that window rather than after ~10 other
-    // awaited round trips' worth of elapsed wall-clock time.
+    // deleting" behavior. Keep this the first test in the block: the profile row
+    // is only guaranteed to exist until teardown removes it.
     test('updating an existing access profile in a deleting context still succeeds (positive control)', async () => {
         const updated = await client.auth.updateAccessProfile({
             contextId: ctxId,

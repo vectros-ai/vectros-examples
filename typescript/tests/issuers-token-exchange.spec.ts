@@ -20,7 +20,7 @@
  * registration through the public API. Everything that needs an ACTIVE
  * registration (a genuine 401 from a signature that fails to verify,
  * suspend/reinstate, `context_id` disambiguation, successful exchange,
- * self-signup) is therefore covered by backend unit tests, not by this file —
+ * self-signup) is therefore not exercised by this file —
  * named here, not silently missing.
  *
  * This file covers everything reachable WITHOUT an active registration: the
@@ -32,13 +32,13 @@
  * the 404 "unknown issuer" path).
  *
  * ONE NAMED GAP, deliberately not covered here (see "issuer registry"
- * below for the in-file investigation notes, not just this summary):
+ * below for the in-file notes, not just this summary):
  *   - Cross-context register-COLLISION (400, a context-confined caller):
  *     only root's idempotent-echo path is covered (verified live). The
  *     confined-caller 400 rejection has no black-box-reachable path at all
  *     — `registerIssuer` requires `provisioning:c` or root, and
  *     `provisioning:c` is platform-minted, never grantable to a
- *     partner-authored role. NOT covered, and structurally can't be from
+ *     customer-authored role. NOT covered, and structurally can't be from
  *     this suite.
  */
 import { client, getScopedClient } from '../src/client';
@@ -369,12 +369,9 @@ describe('issuers + token exchange', () => {
         // A token exchange composes `externalSubject` as `${issuerId}#${sub}`, but the
         // same field is independently settable via the invitation-
         // ACTIVATION request (UserRequest.externalSubject — the one call site where it's
-        // actually honored; an ordinary update ignores it). A prior investigation attempted
-        // this exact flow (createInvite with sendEmail:false, then updateUser with
-        // status:ACTIVE + inviteToken + externalSubject + emailVerifiedAttestation:true) and
-        // it consistently 400'd "Invitation could not be activated" — that was an activation-
-        // path platform bug independent of this test, since fixed. Re-verified live: the
-        // activation now succeeds and this test passes.
+        // actually honored; an ordinary update ignores it). createInvite with sendEmail:false,
+        // then updateUser with status:ACTIVE + inviteToken + externalSubject +
+        // emailVerifiedAttestation:true activates the member.
         test('DELETE is refused with 409 once a real user is bound via this issuer', async () => {
             const issuerId = ('bound' + uniqueTag()).slice(0, 31);
             await client.auth.registerIssuer({
@@ -412,15 +409,15 @@ describe('issuers + token exchange', () => {
         });
 
         test('re-registering an issuerId already owned by ANOTHER context echoes the ORIGINAL owner unchanged — never adopts the new context or values', async () => {
-            // Measured live rather than assumed: a root caller re-registering an
-            // issuerId that already exists in a DIFFERENT context does NOT 400 —
+            // A root caller re-registering an issuerId that already exists in a
+            // DIFFERENT context does NOT 400 —
             // it hits the same idempotent-echo path as the same-context case
             // (`created: false`), because root is unconfined and this is,
             // structurally, still "the issuerId already exists" from root's
             // point of view. (The confined-credential version of a genuine
             // cross-context COLLISION has no black-box-reachable path at all:
             // registerIssuer requires provisioning:c or root, and provisioning:c
-            // is platform-minted, never grantable to a partner-authored role.)
+            // is platform-minted, never grantable to a customer-authored role.)
             //
             // What's still a real, worth-pinning invariant: the echo returns
             // context A's ORIGINAL row byte-for-byte — it does NOT silently
@@ -566,7 +563,7 @@ describe('issuers + token exchange', () => {
         // PUT — activation happens only via `verify`, and suspending an unverified registration is
         // meaningless. (Suspend/reinstate of an ACTIVE registration is not reachable from this
         // suite: an active registration requires proving control of a real IdP, so that path is
-        // covered by backend unit tests.)
+        // not exercised here.)
         test('status cannot be changed on a pending registration — active and suspended are both refused with 400, and it stays pending_verification', async () => {
             const reg = await registerThrowawayIssuer();
             try {
@@ -693,7 +690,7 @@ describe('issuers + token exchange', () => {
         // that honors a caller-supplied value, so no live JWKS/OIDC round trip is needed.
         //
         // The teardown itself is an async, per-tick background drain (same convergence primitive as
-        // app-contexts.spec.ts's own SLOW destroy-path test, measured there at ~3 minutes) — so this
+        // app-contexts.spec.ts's own SLOW destroy-path test, which takes about 3 minutes) — so this
         // polls rather than asserting immediately. Until the drain has actually deleted the old row,
         // a re-registration attempt with the same issuerId hits the ordinary tenant-wide idempotent
         // echo instead (200, echoing the OLD, now-deleted-context row) — that is treated as "not yet
@@ -835,7 +832,7 @@ describe('issuers + token exchange', () => {
         // context the issuer is not registered against → 404). It is only distinguishable from an
         // unrecognized issuer when the registration is ACTIVE; a pending registration already 404s
         // at exchange whatever context_id is sent. An active registration requires proving control
-        // of a real IdP, so that path is covered by backend unit tests rather than this suite.
+        // of a real IdP, so that path is not exercised here.
     });
 
     // -----------------------------------------------------------------------
@@ -977,7 +974,7 @@ describe('issuers + token exchange', () => {
 
         // The 401 (a registered issuer whose token signature fails) has no reachable path from
         // this suite: it needs an ACTIVE registration, and activating one requires proving control
-        // of a real IdP, so that envelope is covered by backend unit tests. A registration still
+        // of a real IdP, so that envelope is not exercised here. A registration still
         // pending verification is the closest reachable case — it answers with the same uniform
         // 404 as an unregistered issuer, and must carry the same OAuth envelope.
         test('404 (registered issuer still pending verification) → {error, error_description}, not {message}', async () => {

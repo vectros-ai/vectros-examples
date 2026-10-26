@@ -6,7 +6,7 @@
  * asserts nothing), beforeAll SEEDS deterministic traffic that each filter is
  * guaranteed to match — a search call, a GET, and a deliberate 404 — then the
  * filter tests poll until that matching traffic is queryable and assert the
- * result is BOTH non-empty AND correctly filtered. The logs pipeline has a
+ * result is BOTH non-empty AND correctly filtered. Logs have a
  * short ingestion lag (~5-60s), so every read polls before asserting.
  */
 import { VectrosClient } from '@vectros-ai/sdk';
@@ -162,11 +162,11 @@ describe('admin logs', () => {
         // typed failure reasons is open: the platform adds new ones over time. A fixed list checked
         // against an open set cannot catch a defect, because every value it does not contain is
         // legitimate behaviour rather than a bug; all it can do is fail when a new reason appears
-        // (as WRITE_BUFFER_CAP_EXCEEDED did in 0.43.0).
+        // (as a newly added reason such as WRITE_BUFFER_CAP_EXCEEDED would).
         //
         // What IS assertable is the value's real contract: a SCREAMING_SNAKE token, and at least one
         // present on a run that deliberately provokes coded failures. That is what the API promises
-        // and what a partner branches on.
+        // and what a client branches on.
         const CODED_REASON_SHAPE = /^[A-Z][A-Z0-9_]*$/;
         for (const entry of response.entries) {
             expect(entry.status).toBeGreaterThanOrEqual(400);
@@ -232,8 +232,7 @@ describe('admin logs', () => {
 
     test('resource filter accepts the scripts surface (non-empty, all scripts)', async () => {
         // Pushing a script version is what seeds real `resource=scripts` traffic — the filter
-        // value was already being logged under, it just wasn't previously accepted as a query
-        // value. Seeding here (rather than relying on beforeAll) is what makes this non-vacuous.
+        // value is accepted as a query value for scripts traffic. Seeding here (rather than relying on beforeAll) is what makes this non-vacuous.
         await client.scripts.createScript({
             name: `smoke_logs_scripts_${uniqueTag()}`.replace(/-/g, '_'),
             source: 'vectros.records.query({ typeName: "smoke_logs_probe" });',

@@ -85,14 +85,10 @@ test('lookup_principal (lookup mode) forwards contextId as its own query param t
     t.skip(`'client' namespace not registered (00-setup-fixtures skipped or failed) — HTTP ${registered.status}`);
     return;
   }
-  // `type` doesn't need to name a real schema for this assertion — the backend's namespace-placement
-  // check runs before any schema lookup, so it fires regardless.
-  //
-  // Previously this test could only assert "doesn't error" — a direct probe found contextId
-  // silently accepted (200, empty result) even against a tenant-wide namespace, which didn't match
-  // this package's own documented contract. Root cause was a backend defect (a stale contextId read
-  // from a prior request on a reused server instance, now fixed) — re-probed directly against
-  // staging before tightening this assertion.
+  // `type` doesn't need to name a real schema for this assertion — the namespace-placement
+  // check runs before any schema lookup, so it fires regardless. The assertion is strict (a
+  // rejection, not just "doesn't error"): a contextId against a tenant-wide namespace must not be
+  // silently accepted with an empty result.
   const { client, close } = await spawnServer();
   try {
     const result = await client.callTool({

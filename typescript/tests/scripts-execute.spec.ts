@@ -228,9 +228,10 @@ describe('scripts: synchronous execution', () => {
 // ---------------------------------------------------------------------------
 // Read-your-own-writes inside one execution
 //
-// Every read and every guard used to be answered from the state that existed before the execution
-// started, so a script could contradict itself: delete a row and still list it, write the same row
-// twice and silently lose the first write, create two rows that collide only at commit.
+// Every read and every guard must be answered from the state the execution has built so far, not
+// the state that existed before it started; otherwise a script could contradict itself: delete a row
+// and still list it, write the same row twice and silently lose the first write, create two rows
+// that collide only at commit.
 //
 // These cells all run inside ONE execution and return their own observations, because that is the
 // only place the property is visible: from outside, after the commit, a script that read stale state
@@ -332,8 +333,9 @@ describe('scripts: an execution sees its own writes', () => {
     });
 
     test('a second write to the same row builds on the first, not on the pre-execution state', async () => {
-        // Two partial updates each used to merge onto the state before the execution, so the second
-        // silently discarded the first's fields — a data loss with no error anywhere.
+        // Two partial updates must each merge onto the latest staged state; merging onto the state
+        // before the execution would let the second silently discard the first's fields — a data loss
+        // with no error anywhere.
         const seeded = await client.records.createRecord({ body: {
             typeName: recordType,
             payload: { a: 'original-a', b: 'original-b', code: 'ryow-' + uniqueTag() },
@@ -359,8 +361,8 @@ describe('scripts: an execution sees its own writes', () => {
     });
 
     test('a uniqueness guard sees a row staged earlier in the same execution', async () => {
-        // Both writes used to be admitted and collide at commit. Now the second is refused while the
-        // script is still running, so the script can catch it and do something about it.
+        // The second write is refused while the script is still running (rather than both being
+        // admitted and colliding at commit), so the script can catch it and do something about it.
         const code = 'clash-' + uniqueTag();
         const source = [
             "vectros.records.create({ typeName: input.params.type, payload: { a: '1', code: input.params.code } });",
@@ -439,7 +441,7 @@ describe('scripts: an execution sees its own writes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The budgets. Each is a published number a partner sizes their integration
+// The budgets. Each is a published number you size an integration
 // against, and each fails in a direction they have to be able to handle.
 // ---------------------------------------------------------------------------
 
@@ -543,7 +545,7 @@ describe('scripts: the execution budgets', () => {
             scriptRef: { name, version: 'latest' },
             input: { tag, count: 120 },
         });
-        // A 400 with the stable `errorCode`, and the two numbers a partner needs in order to re-plan
+        // A 400 with the stable `errorCode`, and the two numbers a client needs in order to re-plan
         // the call as numeric fields: what the execution staged (`total`, after merging) and what one
         // atomic transaction may carry (`limit`). Asserting the fields, not that the words appear.
         expect(over.status).toBe(400);

@@ -10,20 +10,19 @@
  * known, correctly-shaped fixture instead of discovering one from the live
  * catalog and skipping when it's absent (a skipped test asserts nothing).
  *
- * Shape: ONE equality lookup field (`status` → a GSI slot) and ONE range-enabled
- * lookup field (`rank` → a range row, serving prefix + range lookups). We use a
+ * Shape: ONE equality lookup field (`status`) and ONE range-enabled
+ * lookup field (`rank`, serving prefix + range lookups). We use a
  * PURPOSE-BUILT range field rather than converting `status`, because `rangeEnabled`
- * is migration-locked once a field is first declared (it picks GSI-slot vs range-row
- * and cannot change, even via remove + re-add). Recreating the schema each run keeps
- * both the shape and that lock ledger deterministic.
+ * is fixed once a field is first declared (it cannot change, even via remove +
+ * re-add). Recreating the schema each run keeps the shape deterministic.
  */
 
 const BASE = (process.env.VECTROS_API_BASE_URL ?? 'https://api.vectros.ai').replace(/\/$/, '');
 const KEY = process.env.VECTROS_API_KEY;
 
 export const SMOKE_TYPE = 'mcp_smoke_record';
-export const SMOKE_EQUALITY_FIELD = 'status'; // equality lookup (GSI slot)
-export const SMOKE_RANGE_FIELD = 'rank'; // range + prefix lookup (range row, rangeEnabled)
+export const SMOKE_EQUALITY_FIELD = 'status'; // equality lookup
+export const SMOKE_RANGE_FIELD = 'rank'; // range + prefix lookup (rangeEnabled)
 export const SMOKE_COMPOSITE_FIELD_2 = 'area'; // second leg of the composite (status,area) lookup
 
 export const SMOKE_SCHEMA = {
@@ -122,10 +121,8 @@ function assertCreated(result: ApiResult, what: string): FixtureOutcome | undefi
 }
 
 // ── Namespace fixture ────────────────────────────────────────────────────────
-// API 0.40.0: `org`/`client` lost their special-cased auto-provisioning — every namespace,
-// `org`/`client` included, now needs an explicit `POST /v1/namespaces` registration (choosing
-// `entityBacked`) before `POST /v1/entities/{namespace}` will accept a create. Pre-0.40.0 this
-// fixture didn't exist because it didn't need to.
+// Every namespace, `org`/`client` included, needs an explicit `POST /v1/namespaces`
+// registration (choosing `entityBacked`) before `POST /v1/entities/{namespace}` will accept a create.
 const SMOKE_ENTITY_NAMESPACE = 'client';
 // Any value in [0, 1_000_000] unused by this tenant works; 2000 is what a real account-creation
 // auto-provision picks for `client` today, so reusing it here can never collide with one landing
@@ -178,7 +175,7 @@ export async function ensureSmokeEntityNamespace(): Promise<FixtureOutcome> {
 /**
  * Recreate the smoke schema from scratch — drain its (throwaway) records → deleteSchema →
  * create fresh with the intended shape → seed one record. Deterministic shape every run,
- * and a clean migration-lock ledger (the old schema, with any prior lookup-field shape, is
+ * and no leftover lookup-field shape from an earlier run (the old schema is
  * gone). Returns 'forbidden' if the key genuinely lacks scope to provision (a real
  * precondition — not an arbitrary skip); throws on any other failure (loud, not silent).
  */

@@ -101,6 +101,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `usage` | Usage counters after real operations. |
 | `usage-reconcile` | Cross-tenant usage reconciliation: the totals across your live and test tenants agree. |
 | `billing-exact` | Exact per-operation billing, pinned as before/after deltas rather than as directional assertions. Set `SMOKE_SHARED_TENANT=1` when other people use the tenant: the record cell then allows up to five attempts and passes only when one attempt reads the exact amounts. |
+| `delete-fee-race` | Two concurrent deletes of the same user are billed once, not twice. It reads a tenant-wide counter, so run it when nothing else writes to the tenant. |
 | `logs` | `GET /v1/admin/logs` — the API call log, its filters, and the delegation chain on delegate-minted traffic. |
 | `erasure-requests` | `POST`/`GET /v1/erasure-requests`: submit, poll to completion, and check the certificate's own claims, including a partial `contextScope` that keeps the identity (`identityRetained`) and the `purge` rule for subject types. |
 | `negative-paths` / `error-contract` | The error contract — asserting error *bodies*, not just status codes. |
@@ -120,6 +121,8 @@ behaviour without `VECTROS_LIVE_TENANT_ID` is described below):
   `access-profiles`, `capabilities`, `token-assume`, `erasure-requests`, `invite-validation`,
   `identity`, `logs` and `deleted-user-context-refusal`. Three of those skip the tests that need it — `cross-context-isolation`, `app-contexts` and
   `token-assume`; **the other seven fail**, so set it before running the full suite.
+
+Set `SMOKE_SKIP_SLOW=true` to skip the slow specs (multi-minute waits in `app-contexts`, `erasure-requests`, `issuers-token-exchange` and `trigger-firing`).
 
 ## Cleanup
 

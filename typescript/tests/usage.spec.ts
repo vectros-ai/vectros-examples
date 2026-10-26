@@ -137,7 +137,7 @@ describe('usage', () => {
         // externalId + schema lookups, weighted equality=1/range=3) — here the single equality `note`
         // field is 1 credit, so the `>= +1` delta holds.
         // typeName must match the schema's typeName (set in beforeAll with a
-        // unique tag) — using a literal here previously caused a 400 "typeName
+        // unique tag) — a literal would be refused with a 400 "typeName
         // does not match the referenced schema".
         const rec = await client.records.createRecord({ body: {
             typeName: recordType,
@@ -258,7 +258,7 @@ describe('usage', () => {
                     contextId: ctxA, scope: { allowedActions: ['billing:r'] },
                 })) as MintedToken;
                 const scoped = getScopedClient(minted.token);
-                // Measured live: naming a context outside the token's own reach is an
+                // Naming a context outside the token's own reach is an
                 // authorization refusal (403), not a structural validation error.
                 await expect(scoped.auth.getUsage({ contextId: ctxB })).rejects.toMatchObject({ statusCode: 403 });
             } finally {

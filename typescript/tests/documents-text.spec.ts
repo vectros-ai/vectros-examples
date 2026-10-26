@@ -5,7 +5,7 @@
  *
  * Test isolation strategy: capture `testStartedAt` in beforeAll and pass it
  * as `createdAfter` on every search call. Scopes results to content created
- * during THIS test run — orphan docs from prior smoke runs (or other specs
+ * during THIS test run — documents from prior smoke runs (or other specs
  * running in the same tenant) are invisible regardless of query semantics.
  * Cleaner than embedding unique markers in doc bodies; also exercises the
  * createdAfter filter (added in SDK 0.7.1) as part of smoke coverage.
@@ -137,16 +137,16 @@ describe('documents (text)', () => {
         docIds.push(doc.id!);
         expect(doc.indexStatus).toBe('PENDING_INDEX');
         await pollUntilIndexed(doc.id!, 'document');
-        // HYBRID rides the vector lane, whose query visibility lags INDEXED
-        // (eventually-consistent; see helpers' pollUntilSearchable header). 30s
-        // absorbs that tail — a timeout here is the visibility gap, not an
-        // indexing failure (which pollUntilIndexed above would have reported).
+        // SEMANTIC/HYBRID search can lag INDEXED slightly (see helpers'
+        // pollUntilSearchable header). 30s absorbs that — a timeout here is the
+        // visibility gap, not an indexing failure (which pollUntilIndexed above
+        // would have reported).
         await pollUntilSearchable('blood pressure', doc.id!, 30_000, 'HYBRID', testStartedAt);
 
-        // HYBRID's text lane uses phrase matching with slop=3, so a multi-word
+        // HYBRID's text component uses phrase matching with slop=3, so a multi-word
         // query only matches when those words appear within 3 word-positions
         // of each other in the body. Our 2-word "blood pressure" appears
-        // verbatim, so both the text and semantic lanes hit cleanly.
+        // verbatim, so both the text and semantic components hit cleanly.
         const results = await client.search.content({
             query: 'blood pressure',
             mode: 'HYBRID',
@@ -178,7 +178,7 @@ describe('documents (text)', () => {
         });
         const hit = (results.results ?? []).find((r) => r.documentId === docIds[0]);
         expect(hit).toBeDefined();
-        // SEMANTIC mode never invokes the text engine — textScore should be
+        // SEMANTIC mode never invokes text matching — textScore should be
         // 0 (not undefined; backend sets it to 0 explicitly to keep the field
         // stable for consumers iterating both modes' result shapes).
         expect(hit!.semanticScore).toBeGreaterThan(0);
@@ -196,11 +196,10 @@ describe('documents (text)', () => {
         });
         const hit = (results.results ?? []).find((r) => r.documentId === docIds[0]);
         expect(hit).toBeDefined();
-        // textScore is not asserted > 0 in TEXT mode — the text-lane backend
-        // serves highlighted snippets via an endpoint that does not expose
-        // per-hit scores. Results are ordered by score but the value is
+        // textScore is not asserted > 0 in TEXT mode — TEXT mode does not
+        // expose per-hit scores. Results are ordered by score but the value is
         // unavailable to consumers; the ordering is the rank signal. In
-        // HYBRID mode the text lane does return scores (see the records
+        // HYBRID mode the text component does return scores (see the records
         // HYBRID test).
         expect(hit!.semanticScore).toBe(0);
         // Order signal IS available: result-array index reflects rank.
@@ -323,9 +322,8 @@ describe('documents (text)', () => {
         await pollUntilIndexed(doc.id!, 'document');
         await pollUntilSearchable(newMarker, doc.id!, 15_000, 'TEXT', testStartedAt);
 
-        // The old marker MUST no longer surface for this doc. The text-lane
-        // delete-by-query for the old chunks runs asynchronously after
-        // updateDocument returns. Poll until the docId no longer appears
+        // The old marker MUST no longer surface for this doc. Removal of the old
+        // content from the index may complete after updateDocument returns. Poll until the docId no longer appears
         // in results for the old-marker query — proves the re-index path
         // both wrote the new content AND removed the old.
         await pollUntilSearchHitGone(oldMarker, doc.id!, 15_000, 'TEXT', testStartedAt);

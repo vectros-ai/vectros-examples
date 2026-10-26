@@ -31,7 +31,7 @@ interface MintedToken { token: string; expiresAt: number; }
 /**
  * Budget for the context-row-itself convergence poll (see `pollUntilGone`'s
  * use in the destroy-path test below) — several sequential >=60s self-tick
- * phases, measured live at ~3 minutes end-to-end. The Jest per-test timeout
+ * phases, about 3 minutes end-to-end. The Jest per-test timeout
  * on that test is DERIVED from this constant (+ margin for everything before
  * it), rather than a second hand-synced number, so the two can't drift.
  */
@@ -96,21 +96,13 @@ async function pollUntilLeftActive(
  *
  * Also used for the app-context ROW ITSELF (pass `() =>
  * tenantClient.auth.getAppContext({contextId})`, `CONTEXT_GONE_TIMEOUT_MS`) —
- * the full teardown convergence, one level past a per-row check. The
- * context-teardown emptiness gate proves that EVERY context-scoped model — the
- * four DATA models AND both ACCESS models (roles and access profiles) — must
- * read as truly empty before the background self-tick can flip the row to
- * `deleted` and remove it. A model left silently unprobed would leave the
- * context stuck in `purging` forever. That self-tick runs on a >=60s interval,
- * and each tick advances only ONE phase (audit-history drain, then
- * usage-ledger drain, then the emptiness check) — convergence is several
- * sequential >=60s ticks, not one. Measured live: ~3 minutes end-to-end from
- * an accepted delete to a 404; a 150s budget genuinely timed out on a real,
- * eventually-successful run, hence the wide default margin.
+ * the full teardown convergence, one level past a per-row check. Teardown is
+ * asynchronous and completes in several sequential steps, about 3 minutes
+ * end-to-end from an accepted delete to a 404, hence the wide default margin.
  *
  * Tolerates up to `maxTransientErrors` consecutive 429/502/503/504s before
  * giving up — a genuinely transient infra blip over a poll window that can
- * run several minutes against a real, shared staging environment shouldn't
+ * run several minutes against a real, shared environment shouldn't
  * fail the test outright. Any OTHER status (400/403/500/…) still fails fast,
  * on the first occurrence — those are never "try again in a moment" errors.
  */
@@ -334,12 +326,11 @@ describe('app-contexts', () => {
     // isn't set. Throwaway context + synthetic data only.
     //
     // SLOW TEST — per-test Jest timeout override (3rd arg), well above the
-    // suite's 180s default (jest.config.js). No fast/slow tagging exists in
-    // this harness, and one isn't worth adding for a single test: Jest's own
-    // per-test override is the built-in, idiomatic mechanism here. Measured
-    // live: ~3 minutes from an accepted delete to the context row's 404
-    // (CONTEXT_GONE_TIMEOUT_MS's own budget + margin for everything before
-    // it — the seed writes, the confirm-gate negatives, the per-row polls).
+    // suite's 180s default (jest.config.js). Jest's own per-test override is
+    // the idiomatic mechanism here. About 3 minutes elapse from an accepted
+    // delete to the context row's 404 (CONTEXT_GONE_TIMEOUT_MS's own budget +
+    // margin for everything before it — the seed writes, the confirm-gate
+    // negatives, the per-row polls).
     const liveTenantId = process.env.VECTROS_LIVE_TENANT_ID;
     (liveTenantId && !SKIP_SLOW ? test : test.skip)(
         'DELETE destroy-path: 202 + confirm gate + the cascade drains seeded data-plane AND access-plane content, ' +

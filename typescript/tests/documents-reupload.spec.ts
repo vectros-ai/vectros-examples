@@ -1,18 +1,17 @@
 /**
- * documents-reupload.spec.ts — regression gate: a file RE-upload
+ * documents-reupload.spec.ts — a file RE-upload
  * (re-initiating an upload with an existing externalId) must succeed WITHOUT
  * re-sending `indexMode` — the existing document already carries one and the
  * re-upload inherits it.
  *
- * Step 2 mirrors the data-plane app's replace-a-file call for an untyped document
- * (DocumentDetailPage's replace mutation): `{ fileName, fileType, externalId,
- * confirmUntyped }` and nothing else — no indexMode, no upsert. `confirmUntyped` is
- * there because the platform refuses an externalId with no schemaId unless an untyped
- * document is confirmed as intended. The MCP path cannot gate this
- * bug — its `document_ingest` client-side-defaults untyped docs to HYBRID, so
- * it always sends `indexMode` and masks the omission. Hence this SDK-level
- * spec is the regression gate. (The `upsert:true` variant of the same inherit
- * is covered by the backend unit tests.)
+ * Step 2 replaces a file on an untyped document with `{ fileName, fileType,
+ * externalId, confirmUntyped }` and nothing else — no indexMode, no upsert.
+ * `confirmUntyped` is there because the platform refuses an externalId with no
+ * schemaId unless an untyped document is confirmed as intended. The MCP path
+ * cannot check this — its `document_ingest` defaults untyped docs to HYBRID, so
+ * it always sends `indexMode` and masks the omission. Hence this check uses the
+ * SDK directly. (The `upsert:true` variant of the same inherit is not
+ * exercised here.)
  */
 import { client, getScopedClient } from '../src/client';
 import {
@@ -73,9 +72,9 @@ describe('documents (re-upload inherits indexMode)', () => {
         await pollUntilSearchable(OLD_MARKER, first.id!, 30_000, 'TEXT', testStartedAt);
 
         // ---- 2) RE-UPLOAD: the app's replace-file call, byte-for-byte — ONLY
-        // fileName/fileType/externalId (no indexMode, no upsert). Regression
-        // point: the backend must inherit the existing document's stored indexMode,
-        // not reject with "'indexMode' is required".
+        // fileName/fileType/externalId (no indexMode, no upsert). The server must
+        // inherit the existing document's stored indexMode, not reject with
+        // "'indexMode' is required".
         const second = await client.documents.uploadDocument({
             fileName: 'reupload-smoke.txt',
             fileType: 'text/plain',

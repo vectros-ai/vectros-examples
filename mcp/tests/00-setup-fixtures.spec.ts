@@ -10,13 +10,11 @@ import { ensureSmokeEntityNamespace, recreateSmokeSchema, seedSmokeDocument, SMO
  *   • the `mcp_smoke_record` schema (status = equality, rank = range) + a seeded record
  *     — for 10 (record_query), 11 (lifecycle), 12 (record hybrid_search);
  *   • a seeded, INDEXED document — for 06 (document_get, direct + search→get);
- *   • the `client` namespace, registered entity-backed — for 15 (lookup_principal). API
- *     0.40.0 dropped `org`/`client`'s special-cased auto-provisioning: every namespace now
- *     needs an explicit registration before an entity can be created in it, same as any
- *     namespace you register yourself.
+ *   • the `client` namespace, registered entity-backed — for 15 (lookup_principal). Every
+ *     namespace needs an explicit registration before an entity can be created in it.
  *
  * Recreating the schema each run also exercises the delete -> recreate path and keeps the
- * migration-locked lookup shape clean across runs.
+ * lookup shape clean across runs.
  */
 test('setup: provision the mcp_smoke_record schema + record, an indexed document, and the client namespace', async (t) => {
   if (!process.env.VECTROS_API_KEY) {

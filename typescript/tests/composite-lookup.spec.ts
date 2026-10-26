@@ -89,7 +89,7 @@ describe('composite lookup (fieldNames + values)', () => {
         const r5 = await create('mis-tagged area', 'open', 'billing,enterprise');
         r5open_commaArea = r5.id!;
 
-        // Lookup-field indexing rides the same pipeline as everything else on
+        // Lookup-field indexing is asynchronous like everything else on
         // the record — wait for each to reach INDEXED before querying lookups.
         await pollUntilIndexed(r1open_billing, 'record');
         await pollUntilIndexed(r2open_support, 'record');

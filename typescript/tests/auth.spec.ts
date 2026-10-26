@@ -340,9 +340,8 @@ describe('auth', () => {
         })).rejects.toMatchObject({ statusCode: 400 });
     });
 
-    // 0.40.0: POST /v1/auth/token's contextId-not-found 404 previously hand-assembled its body —
-    // {"message": ...} only, missing requestId, and no Content-Type header. It now returns the
-    // SAME envelope as every other error on the API. Raw fetch (not the SDK) so the wire body and
+    // POST /v1/auth/token's contextId-not-found 404 returns the SAME error envelope as every other
+    // error on the API (a message plus requestId, with a Content-Type header). Raw fetch (not the SDK) so the wire body and
     // headers are inspectable directly, same pattern as error-contract.spec.ts.
     test("mintToken with a nonexistent contextId → 404 with the standard error envelope (requestId, Content-Type)", async () => {
         const baseUrl = process.env.VECTROS_API_BASE_URL!.replace(/\/+$/, '');

@@ -2,24 +2,20 @@
  * documents-filterable-projection.spec.ts — "scalars filter, prose is content".
  *
  * This spec pins which schema-bound payload fields become `?filters=` targets and
- * exercises a fail-loud edge backstop. The rule ("declaration wins"): a schema field
+ * exercises a fail-loud validation backstop. The rule ("declaration wins"): a schema field
  * is a filter target IFF it is declared `filterable` (and non-sensitive). A large
  * free-text field declared `searchable` (or an undeclared >256 B string) is CONTENT,
- * not a filter — so it is NEVER projected into the S3-Vectors filterable metadata,
- * which is capped at 2048 B/vector.
+ * not a filter — so it is NEVER projected into the search metadata, which is capped
+ * at the filterable metadata size limit (2048 bytes).
  *
- * The core promise this pins (all previously UNCOVERED by smoke):
+ * The core promise this pins:
  *   1. A large free-text field ingests to INDEXED — NO silent async FAILED — and the
- *      document stays full-text searchable by its body. (Previously such a large field
- *      was projected filterable-by-default and blew the 2048 B cap → async FAILED.)
+ *      document stays full-text searchable by its body. (A large field must not be
+ *      projected filterable-by-default, which would exceed that size limit.)
  *   2. A declared-`filterable` field IS a `?filters=` target; a declared free-text
  *      (searchable, non-filterable) field is NOT.
- *   3. A declared-`filterable` VALUE over the 2048 B budget is rejected with a clean
- *      400 at ingest (the edge backstop) — not a silent FAILED downstream.
- *
- * (Chose a dedicated spec over inlining into documents-upload/search — this is a
- * self-contained feature with its own schema fixtures, and a per-feature file matches
- * the suite's one-spec-per-feature convention.)
+ *   3. A declared-`filterable` VALUE over the 2048-byte limit is rejected with a clean
+ *      400 at ingest (the validation backstop) — not a silent FAILED downstream.
  */
 import { client } from '../src/client';
 import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup } from '../src/helpers';
@@ -37,7 +33,7 @@ async function captureError(p: Promise<unknown>): Promise<{ statusCode?: number;
     throw new Error('expected the call to reject, but it resolved successfully');
 }
 
-// ~5 KB of prose — well past the 2048 B/vector filterable cap. Because the `notes`
+// ~5 KB of prose — well past the filterable metadata size limit (2048 bytes). Because the `notes`
 // field is declared searchable+non-filterable, this must NOT be projected as filter
 // metadata, so it never blows the budget.
 const BIG_PROSE =
@@ -45,7 +41,7 @@ const BIG_PROSE =
     'a patient encounter in detail, including history of present illness, review of systems, ' +
     'assessment, and plan. '.repeat(40);
 
-describe('documents (filterable projection + edge backstop)', () => {
+describe('documents (filterable projection + validation backstop)', () => {
     let schemaId: string;
     let testStartedAt: string;
     const docIds: string[] = [];
@@ -85,7 +81,7 @@ describe('documents (filterable projection + edge backstop)', () => {
             indexMode: 'HYBRID',
             schemaId,
             // The large free-text field — non-filterable by declaration, so it does
-            // NOT contribute to the 2048 B filterable-metadata budget.
+            // NOT count toward the filterable metadata size limit.
             payload: { category: 'clinical', notes: BIG_PROSE },
         } });
         docIds.push(doc.id!);
@@ -137,10 +133,10 @@ describe('documents (filterable projection + edge backstop)', () => {
         expect((byNotes.results ?? []).map((r) => r.documentId)).not.toContain(doc.id);
     }, 120_000);
 
-    test('declared-filterable value over the 2048 B budget → 400 at ingest (edge backstop)', async () => {
+    test('declared-filterable value over the 2048 B budget → 400 at ingest (validation backstop)', async () => {
         // `bigfilt` is declared filterable, so a large value DOES count against the
-        // filterable-metadata budget. The edge backstop catches it with a loud 400 at
-        // ingest rather than a silent FAILED when the async vector write hits the cap.
+        // filterable metadata size limit. The validation backstop catches it with a loud
+        // 400 at ingest rather than a silent FAILED later, during asynchronous indexing.
         const { statusCode, body } = await captureError(client.documents.ingestDocument({ body: {
             title: 'Over Budget ' + uniqueTag(),
             text: 'A document whose declared-filterable field overflows the vector budget.',

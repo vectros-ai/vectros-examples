@@ -16,18 +16,18 @@ test('MCP handshake + tools/list returns expected catalog', async () => {
     'document_get',
     'current_identity',
     'document_ingest',
-    // launch data-plane I/O (tier 1)
+    // data-plane I/O (group 1)
     'record_get',
     'record_create',
     'record_update',
     'record_delete',
-    // 0.41.0: record_batch_get (wraps POST /v1/records/batch-get)
+    // record_batch_get (wraps POST /v1/records/batch-get)
     'record_batch_get',
-    // 0.43.0: record_batch_write (wraps POST /v1/records/batch)
+    // record_batch_write (wraps POST /v1/records/batch)
     'record_batch_write',
-    // launch data-plane I/O (tier 2)
+    // data-plane I/O (group 2)
     'document_query',
-    // launch data-plane I/O (tier 3)
+    // data-plane I/O (group 3)
     'document_update',
     'document_delete',
     'folder_query',

@@ -7,21 +7,21 @@
  * ── WHY THIS IS WORTH A DEDICATED SPEC ───────────────────────────────────────────────────────
  *
  * A trigger that stops running is silent by nature. There is no HTTP response to inspect — the
- * write that fired it succeeded — so the failure record is the ONLY signal a partner ever gets that
+ * write that fired it succeeded — so the failure record is the ONLY signal a client ever gets that
  * their automation quietly stopped. If that record does not appear, or appears without the numbers,
- * the partner's first indication is whatever downstream state never got written.
+ * the client's first indication is whatever downstream state never got written.
  *
  * ── REACHING THE PRECONDITION, which is the whole difficulty ──────────────────────────────────
  *
  * It cannot be reached on a CREATE. The projected image is built from the fields the schema keeps on
  * the row, and a write whose `inline` fields total more than 224 KB is itself refused with a 400 —
  * the same number, deliberately, because `inline` exists to feed this projection. So `record` alone
- * can never exceed the cap; the write would have been rejected first. That premise is no longer
+ * can never exceed the cap; the write would have been rejected first. That premise is not
  * taken on trust: the first three cells below assert it, on the record AND the document path.
  *
  * An UPDATE is different, and is the only door: `record` and `previous` are BOTH projected and their
  * sizes ADD. Two images that are each individually legal — comfortably under the per-item inline
- * budget — sum past the cap. That is exactly the shape a partner hits in production: nothing about
+ * budget — sum past the cap. That is exactly the shape a client hits in practice: nothing about
  * either version of the row looks oversized, and the rule simply stops firing on updates.
  *
  * Each image below is ~130 KB: legal on its own, over the limit as a pair.
@@ -30,14 +30,14 @@
  *
  * A refusal-only cell passes just as well against a rule that never fires at all, which is the more
  * likely regression. So the same rule is then fired UNDER the cap (large `previous`, small `record`)
- * and must actually run. Without that, "no folder appeared" would be indistinguishable from "the
- * dispatcher is down".
+ * and must actually run. Without that, "no folder appeared" would be indistinguishable from "triggers
+ * are not firing".
  *
  * Its own fixture — schema, script, rule — rather than sharing `trigger-firing.spec.ts`'s: the
  * oversized row would otherwise fire every rule declared there, projecting a quarter-megabyte
  * through cells that have nothing to do with this one.
  *
- * Staging cost is real and bounded: one record, three writes, ~390 KB total, deleted at the end.
+ * The cost is real and bounded: one record, three writes, ~390 KB total, deleted at the end.
  */
 import { client } from '../src/client';
 import { uniqueTag, tryCleanup, pollUntil, expectReject } from '../src/helpers';
@@ -115,8 +115,8 @@ describe('triggers: the projected-input size cap', () => {
         ruleId = rule.id!;
 
         // A document-bound twin of the same shape, for the write-refusal cells below. Documents
-        // reach the identical guard through their own model, and the document path is the one that
-        // used to fail differently — so it needs its own fixture rather than an assumption.
+        // reach the identical guard through their own model, and the document path can fail
+        // differently — so it needs its own fixture rather than an assumption.
         docTypeName = `smoke_capdoc_${tag}`;
         const docSchema = await client.schemas.createSchema({ body: {
             typeName: docTypeName,
@@ -158,22 +158,22 @@ describe('triggers: the projected-input size cap', () => {
     // The header above argues that the cap is unreachable on a CREATE because a write whose inline
     // fields exceed 224 KB is itself refused with a 400. That argument is load-bearing — it is why
     // the cells below use an UPDATE — and until now the suite ASSERTED IT IN PROSE WITHOUT TESTING
-    // IT. If that guard regresses, the partner gets a 500 from the storage row's own 400 KB ceiling
+    // IT. If that guard regresses, the client gets a 500 from the storage row's own 400 KB ceiling
     // on a legal-looking write, and every other cell in this file stays green.
 
     test('a record write whose inline fields exceed 224 KB is refused 400, not 500', async () => {
         const err = await expectReject(client.records.createRecord({ body: {
             typeName: recordType, schemaId, payload: { big: 'x'.repeat(INPUT_MAX_BYTES + 16_000) },
         } }), 400);
-        // The status class alone is not the contract: this exists because the same write used to
-        // reach DynamoDB's item ceiling and surface as a 500. A refusal that does not name the
+        // The status class alone is not the contract: this exists because an over-budget
+        // write must not reach the storage item ceiling and surface as a 500. A refusal that does not name the
         // budget leaves the caller unable to tell an over-cap write from any other bad request.
         expect(JSON.stringify(err.body)).toMatch(/inline/i);
     }, 120_000);
 
-    test('...and a DOCUMENT write is refused the same way — the path that used to 500', async () => {
-        // The document half reaches the identical guard through its own model, and it is the half
-        // that actually failed differently before the fix, so it gets its own assertion rather than
+    test('...and a DOCUMENT write is refused the same way', async () => {
+        // The document half reaches the identical guard through its own model, and it can
+        // fail differently from the record half, so it gets its own assertion rather than
         // being assumed from the record one.
         const err = await expectReject(client.documents.ingestDocument({ body: {
             title: `Inline budget ${uniqueTag()}`,
