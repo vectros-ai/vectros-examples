@@ -51,11 +51,14 @@ export interface ApiResult {
   json: any;
 }
 
-/** Raw API call with the smoke root key. Schema/record management isn't an MCP tool. */
-export async function api(method: string, path: string, body?: unknown): Promise<ApiResult> {
+/**
+ * Raw API call with the smoke root key (or `key`, for a spec that must act in another tenant).
+ * Schema/record management isn't an MCP tool.
+ */
+export async function api(method: string, path: string, body?: unknown, key: string | undefined = KEY): Promise<ApiResult> {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

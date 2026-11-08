@@ -59,6 +59,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `null-sentinel-search` | The null sentinel in a search scope clause: adding `null` to a `data_scope` value list additionally reaches owner-less (tenant-level) rows, without widening past what the caller could already read — proven on both the text and the vector engine. |
 | `schema-reserved-fields` | The field ids a schema may not declare `filterable` — the platform's own search-index metadata keys — and where that check deliberately stops. |
 | `chat` / `rag` | Streaming inference and grounded RAG over your corpus; RAG's `search.limit` is bounded to 1–100. |
+| `stream-tolerance` | What this SDK's stream decoder does with a stream it did not expect, for chat, RAG and document ask: an event type or a field it does not know, an unknown event where `done` would be, keepalive comment lines, a frame that is not valid JSON or not an object, a connection cut mid-frame, and frames split across network writes (so a multi-byte character arrives in two pieces). The outcome of each case is pinned — which events are delivered and whether the call throws — and it differs between the TypeScript, Python and Java SDKs, so write your stream loop to handle them. It replays the streams in `fixtures/sse-tolerance/` through a local server, so it makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 | `provider-alias` | A `providerAlias` the tenant has not configured is refused with a `403` that names the alias, on chat, RAG and document ask. |
 | `models` | The current model catalog, the retired aliases it no longer lists, plan gating and per-region pricing. |
 
@@ -71,6 +72,13 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `trigger-firing` | A declared rule actually fires: a record write on a triggers-enabled schema dispatches its script asynchronously under the rule's own grant. Also that a chain is bounded: a rule whose script writes a record that fires it again recurses a few times and stops, with no failure recorded. |
 | `triggers-projection` | The declare-time half of a rule's field projection — which fields a rule may name in `fields`, and why. |
 | `triggers-input-cap` | The 224 KB ceiling on a trigger's projected input, and the `INPUT_TOO_LARGE` failure that names the size and the limit. |
+
+**Agents & runs**
+
+| Example | Demonstrates |
+|---|---|
+| `agents` | The stored-agent lifecycle on `/v1/agents`: a create fills in the documented defaults at version 1, and a second create of the same name returns the existing agent unchanged; `?upsert=true` writes a new version only when the definition differs; `PUT` writes the next version, a stale `expectedVersion` is a `409`, and earlier versions stay readable with `?version=N`; a tool outside the catalog, a write tool without `allowWrites`, and a budget below the minimum are each a `400`; retire, restore and purge; a definition at the 32,000-character prompt limit stores; an unknown id is a `404`. It starts no run and spends nothing. |
+| `runs` | A stored agent with one read-only tool runs end to end through `POST /v1/runs`: the event stream carries a `tool.completed` event and ends with one terminal `run.completed`, and the settled charge is non-zero, within the run's cap, and the same on the stream and on `GET /v1/runs/{id}`. A repeated `Idempotency-Key` starts nothing, cancelling a run that has already ended changes nothing, and an unknown run id is a `404`. **It is opt-in:** it is skipped unless you set `VECTROS_SMOKE_RUNS=1`. It makes a real, billed run (a few hundredths of a cent), needs agent runs switched on for your account by its owner, and its charge checks assume a prepaid inference balance (use the key of a prepaid tenant) (it uses `VECTROS_RUN_SMOKE_API_KEY` when set, otherwise `VECTROS_API_KEY`); `VECTROS_SMOKE_AGENT_MODEL` picks the model; `VECTROS_SMOKE_RUN_CONCURRENCY` sets how many runs start at once. |
 
 **Identity, access & auth**
 
@@ -116,6 +124,7 @@ behaviour without `VECTROS_LIVE_TENANT_ID` is described below):
 
 - `VECTROS_TEST_API_KEY` — your test-environment key (every account has one), for
   the tenant-isolation examples.
+- `VECTROS_SMOKE_RUNS=1` — opts in to the `runs` example, which makes a real, billed agent run (skipped otherwise). `VECTROS_RUN_SMOKE_API_KEY` — optional: the key that example uses instead of `VECTROS_API_KEY`.
 - `VECTROS_LIVE_TENANT_ID` — your tenant id. Needed by every example that mints a
   scoped key against a specific context: `cross-context-isolation`, `app-contexts`,
   `access-profiles`, `capabilities`, `token-assume`, `erasure-requests`, `invite-validation`,

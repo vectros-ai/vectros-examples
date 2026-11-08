@@ -49,12 +49,13 @@ describe('inference region confinement', () => {
         const stream = (await client.inference.chatInference({
             messages: [{ role: 'user', content: 'Reply with exactly one word: ok' }],
             maxTokens: 8,
-        })) as unknown as AsyncIterable<{ event?: string; inferenceBalanceCentsCharged?: number }>;
+        })) as unknown as AsyncIterable<{ event?: string; inferenceBalanceCentsChargedMilli?: number }>;
         const events = await collectStream(stream);
         const done = events.find((e) => e.event === 'done');
         expect(done).toBeDefined();
-        // US serving applies the region premium; the charge is a non-negative
-        // number (exact COGS is asserted at the unit/integration layer).
-        expect(done!.inferenceBalanceCentsCharged).toBeGreaterThanOrEqual(0);
+        // US serving applies the region premium; the charge is a non-negative whole
+        // number of milli-cents (exact COGS is asserted at the unit/integration layer).
+        expect(Number.isInteger(done!.inferenceBalanceCentsChargedMilli)).toBe(true);
+        expect(done!.inferenceBalanceCentsChargedMilli).toBeGreaterThanOrEqual(0);
     });
 });

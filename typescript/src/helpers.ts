@@ -118,6 +118,70 @@ export async function tryCleanup(label: string, fn: () => Promise<unknown>): Pro
 }
 
 /**
+ * Best-effort delete of a folder AFTER emptying it: its documents, then its records. A folder that
+ * still holds either is refused with a 400, `tryCleanup` swallows that, and the folder is stranded
+ * on the shared tenant for good — which is how a spec that files documents through a script (so it
+ * never saw their ids) leaked one folder per run. Never throws. It still cannot empty everything: it does not remove sub-folders,
+ * and the emptiness check the server makes can lag a delete that has only just been issued, so a folder may be refused once and
+ * stay; a caller that creates sub-folders must delete them first.
+ */
+export async function deleteFolderAndContents(folderId: string): Promise<void> {
+    // An empty id would turn the listings below into tenant-wide lists (the SDK drops an undefined parameter, and a blank
+    // `folderId` is "not by folder"), and this helper deletes what it lists: refuse it, and never touch the protected root.
+    if (!folderId) return;
+    let isRoot = false;
+    await tryCleanup(`read folder ${folderId}`, async () => {
+        isRoot = (await client.folders.getFolder({ id: folderId })).isProtected === true;
+    });
+    if (isRoot) return;
+    await tryCleanup(`empty folder ${folderId}`, async () => {
+        const docs = await drainCursor((startFrom) =>
+            client.documents.listDocuments(startFrom ? { folderId, startFrom, limit: 100 } : { folderId, limit: 100 }));
+        for (const d of docs) {
+            await tryCleanup(`delete document ${d.id}`, () => client.documents.deleteDocument({ id: d.id }));
+        }
+        const records = await drainCursor((startFrom) =>
+            client.records.listRecords(startFrom ? { folderId, startFrom, limit: 100 } : { folderId, limit: 100 }));
+        for (const r of records) {
+            await tryCleanup(`delete record ${r.id}`, () => client.records.deleteRecord({ id: r.id }));
+        }
+    });
+    await tryCleanup(`delete folder ${folderId}`, () => client.folders.deleteFolder({ id: folderId }));
+}
+
+/**
+ * Best-effort sweep of the folders a SCRIPT created on its own (a trigger's script has no ids to hand
+ * back): deletes, with their contents, every folder whose name `matches`. Run it LAST in a teardown, after the rules that
+ * fire the script and the script itself are deleted: a firing that was already queued can still land after the sweep (deleting a
+ * rule does not cancel it), so this narrows the leak rather than closing it. The listing is BOUNDED (at most `maxPages` pages of 100
+ * and `maxMs` milliseconds, then it stops and says so): a tenant that has accumulated thousands of folders must not turn a teardown
+ * hook into a timeout. Never throws.
+ */
+export async function sweepFolders(
+    matches: (name: string) => boolean,
+    { maxPages = 30, maxMs = 60_000 }: { maxPages?: number; maxMs?: number } = {},
+): Promise<void> {
+    await tryCleanup('sweep folders', async () => {
+        const deadline = Date.now() + maxMs;
+        let cursor: string | null | undefined;
+        let pages = 0;
+        do {
+            const page: any = await client.folders.listFolders(cursor ? { startFrom: cursor, limit: 100 } : { limit: 100 });
+            pages++;
+            for (const f of page.data ?? []) {
+                if (f.isProtected !== true && matches(f.name ?? '')) await deleteFolderAndContents(f.id);
+            }
+            cursor = page.nextCursor;
+            if (cursor && (pages >= maxPages || Date.now() > deadline)) {
+                // eslint-disable-next-line no-console
+                console.warn(`[cleanup] sweep folders stopped after ${pages} page(s): the tenant holds more folders than one sweep reads`);
+                return;
+            }
+        } while (cursor);
+    });
+}
+
+/**
  * Awaits `promise`, asserting it REJECTS with the given HTTP status code.
  * Returns the caught error (with its `body`, when the SDK attached one) so a
  * caller that needs to assert on the error body/shape can do so without a

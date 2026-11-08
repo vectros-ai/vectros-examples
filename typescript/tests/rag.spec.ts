@@ -90,7 +90,8 @@ describe('inference: /v1/rag', () => {
         const dones = events.filter((e) => e.event === 'done');
         expect(deltas.length).toBeGreaterThan(0);
         expect(dones.length).toBe(1);
-        expect(dones[0].inferenceBalanceCentsCharged).toBeGreaterThanOrEqual(0);
+        expect(Number.isInteger(dones[0].inferenceBalanceCentsChargedMilli)).toBe(true);
+        expect(dones[0].inferenceBalanceCentsChargedMilli).toBeGreaterThanOrEqual(0);
     });
 
     test('empty search results: search_results event still emitted, then LLM answers "no relevant content"', async () => {

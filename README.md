@@ -4,7 +4,7 @@ Runnable, end-to-end examples for the [Vectros](https://vectros.ai) API — in
 **TypeScript, Python, and Java**, plus the **CLI** and the **MCP server**. Each
 one talks to the real API and demonstrates a complete workflow: structured
 records, document ingestion, hybrid search, grounded RAG, identity and access,
-and inference.
+inference, and stored agents and their runs.
 
 These are complete, runnable workflows — not isolated snippets — that you run
 against your own account with your own API key.
@@ -24,6 +24,8 @@ Most examples run with your live API key. Some use your test key or tenant id:
 a few (tenant isolation, cross-context isolation) **skip themselves automatically**
 when those aren't set, and others **fail** without `VECTROS_LIVE_TENANT_ID` — see
 `.env.example` and the TypeScript README's Credentials section.
+The examples that make a real, billed agent run (`runs` in TypeScript, `23-agent-run` in the MCP
+examples) are opt-in: they are skipped unless you set `VECTROS_SMOKE_RUNS=1`.
 
 ## What's here
 

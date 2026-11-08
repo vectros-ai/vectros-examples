@@ -37,6 +37,10 @@ test('MCP handshake + tools/list returns expected catalog', async () => {
     // tool-surface parity
     'lookup_principal',
     'version_history',
+    // stored agents (wrap GET /v1/agents, POST /v1/runs, GET /v1/runs/{id})
+    'agent_list',
+    'agent_run',
+    'run_get',
   ].sort();
 
   const { client, close } = await spawnServer();

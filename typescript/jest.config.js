@@ -10,6 +10,8 @@ module.exports = {
   testEnvironment: 'node',
   testTimeout: 180_000,
   testMatch: ['<rootDir>/tests/**/*.spec.ts'],
+  // Marks this as the shipped examples: runs.spec.ts makes real, billed agent runs, so here it is skipped unless VECTROS_SMOKE_RUNS=1.
+  globals: { VECTROS_SMOKE_RUNS_OPT_IN: true },
   bail: false,
   verbose: true,
 };

@@ -50,7 +50,7 @@ class SseCommentFramesTest {
         frame("content_delta", ",\"delta\":\"Hello, \""),
         frame("content_delta", ",\"delta\":\"world\""),
         frame("done", ",\"inputTokens\":11,\"outputTokens\":7,\"model\":\"m\","
-            + "\"platformCreditsCharged\":0,\"inferenceBalanceCentsCharged\":0"));
+            + "\"platformCreditsCharged\":0,\"inferenceBalanceCentsChargedMilli\":0"));
 
     private static final List<String> WITH_COMMENTS = List.of(
         COMMENT, EVENT_FRAMES.get(0), COMMENT, COMMENT, EVENT_FRAMES.get(1), COMMENT, EVENT_FRAMES.get(2));

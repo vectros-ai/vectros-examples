@@ -2,7 +2,7 @@
  * folders.spec.ts — Folder CRUD, hierarchy, ownership filters, protection guards.
  */
 import { client } from '../src/client';
-import { uniqueTag, tryCleanup } from '../src/helpers';
+import { uniqueTag, tryCleanup, drainCursor } from '../src/helpers';
 
 describe('folders', () => {
     let userId: string;
@@ -193,8 +193,11 @@ describe('folders', () => {
     test('listFolders shows tenant-root folder with isProtected=true', async () => {
         // Tenant-root folder is created lazily when you first interact
         // with folders. Should be reachable via listFolders with no filters,
-        // and its isProtected flag must be true.
-        const folders = (await client.folders.listFolders({ limit: 100 })).data ?? [];
+        // and its isProtected flag must be true. The listing is paged and the root sorts
+        // wherever it sorts (it was last of 98 once), so read EVERY page: a first page of 100
+        // would call the root missing as soon as the tenant holds more folders than that.
+        const folders = await drainCursor((startFrom) =>
+            client.folders.listFolders(startFrom ? { startFrom, limit: 100 } : { limit: 100 }));
         const root = folders.find((f) => f.isProtected === true);
         expect(root).toBeDefined();
         // Verifies the parent of one of our created folders is this root.

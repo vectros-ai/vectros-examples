@@ -36,7 +36,7 @@ EVENT_FRAMES: List[str] = [
         outputTokens=7,
         model="m",
         platformCreditsCharged=0,
-        inferenceBalanceCentsCharged=0,
+        inferenceBalanceCentsChargedMilli=0,
     ),
 ]
 

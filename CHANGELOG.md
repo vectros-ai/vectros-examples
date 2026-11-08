@@ -5,6 +5,37 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.19.0 — 2026-11-07
+
+### Added
+
+- **A stored-agent lifecycle spec, `agents`:** create with the documented defaults, a repeated create returns the existing agent,
+  `?upsert=true` writes a new version only when the definition differs, a stale `expectedVersion` is `409`, earlier versions with
+  `?version=N`, the refusals (`400`), and retire, restore and purge.
+- **A run spec, `runs`:** a read-only tool call and a settled charge within a 25-cent cap, `GET /v1/runs/{id}` agreeing on the charge, an
+  idempotency replay, and cancelling an ended run. It makes a real, billed run, so it is skipped unless you set `VECTROS_SMOKE_RUNS=1`,
+  and it needs agent runs switched on for the tenant by an account owner.
+- **An MCP agent-run spec, `23-agent-run`:** `agent_list`, `agent_run` and `run_get` end to end, with one real, billed run; opt-in the same
+  way. The MCP handshake spec expects the three new tools.
+- **Stream-tolerance checks in the TypeScript, Python and Java SDK suites,** which replay shared raw event streams (an unknown event or
+  field, keepalive comments, a malformed frame, a cut connection, split frames) through each SDK's decoder with no API calls
+  (placeholder credentials are enough). The streams ship with the TypeScript example; the Python and Java checks skip without them.
+
+### Changed
+
+- **The examples target SDK 0.49.0** (`^0.49.0`, `vectros>=0.49.0,<0.50.0`, Java `0.49.0`). The MCP handshake, agents and re-upload
+  checks need `@vectros-ai/mcp-server` 0.19.0 or later.
+- **The file-upload checks cover a file with no extractable text** (a small image ends `SKIPPED` with `extraction.outcome: NO_TEXT` and a
+  `404` on its text) **and a long file** (150,000 characters extracted whole). The text-document checks read a text in parts with
+  `limit` and `offset` and filter the document list by `type`.
+- **The chat, RAG, residency and usage checks read the milli-cent fields** (`inferenceBalanceCentsChargedMilli`, `balanceCentsMilli`) and
+  pass only against API 0.49.0 or later.
+
+### Fixed
+
+- **The MCP re-upload check expects the server's note to list every state indexing can end in** (`INDEXED`, `SKIPPED`, `STORED`, `FAILED`).
+- **The smoke suite no longer leaves folders behind on a shared tenant.**
+
 ## 0.18.5 — 2026-10-25
 
 ### Changed

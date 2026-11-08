@@ -40,7 +40,9 @@ def test_chat_stream_deltas_then_done_with_billing(client):
     assert done.output_tokens > 0
     assert done.model
     assert done.platform_credits_charged > 0
-    assert done.inference_balance_cents_charged >= 0
+    # exact milli-cents (1 cent = 1000), never rounded to whole cents: a call that used tokens is charged
+    assert isinstance(done.inference_balance_cents_charged_milli, int)
+    assert done.inference_balance_cents_charged_milli > 0
 
 
 def test_chat_system_message_is_honored(client):

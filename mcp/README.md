@@ -24,7 +24,13 @@ The handshake and tool catalog; `hybrid_search`; `rag_ask` and `document_ask`
 `record_query` → `record_update` → `record_delete`); `record_batch_write` (both commit
 modes, and the all-items-failed shape the endpoint answers `200` for); `record_query`'s
 `folderId` and account-wide `recent` list modes; folder CRUD; `list_schemas`,
-`lookup_principal`, `version_history`, and `current_identity`.
+`lookup_principal`, `version_history`, and `current_identity`; and the agent tools
+(`agent_list`, `agent_run` with a budget, `run_get`; `agent_run` makes a real, billed run, so it is skipped unless you set `VECTROS_SMOKE_RUNS=1`) against an agent the example stores
+and removes itself.
+
+The examples need `@vectros-ai/mcp-server` 0.19.0 or later: that is the first version with the agent tools, and the
+handshake example expects the full list of 26 tools. `run.sh` runs the latest published version; set
+`VECTROS_MCP_SMOKE_PACKAGE` (for example `@vectros-ai/mcp-server@0.19.0`) to run another.
 
 ## Using the server with your own MCP client
 

@@ -39,7 +39,7 @@
  * tenant. That limit is covered separately in `triggers-input-cap.spec.ts`.
  */
 import { client } from '../src/client';
-import { uniqueTag, tryCleanup, expectReject, pollUntil } from '../src/helpers';
+import { uniqueTag, tryCleanup, expectReject, pollUntil, sweepFolders } from '../src/helpers';
 
 describe('triggers: the fields projection declaration', () => {
     const tag = uniqueTag().replace(/-/g, '_');
@@ -52,6 +52,8 @@ describe('triggers: the fields projection declaration', () => {
     const scriptIds: string[] = [];
     const triggerIds: string[] = [];
     const schemaIds: string[] = [];
+    // The disclosure cell writes ONE record; every live rule of this file fires its script on it, and the script (`noop-<recordId>`) files an empty folder per rule that nothing else removes.
+    let disclosureRecordId: string | undefined;
 
     beforeAll(async () => {
         // A trigger runs as a SERVICE principal holding a provisioned AccessProfile — without both,
@@ -114,6 +116,12 @@ describe('triggers: the fields projection declaration', () => {
             contextId: 'default', principalId: servicePrincipalId,
         }));
         await tryCleanup('delete service user', () => client.identity.deleteUser({ id: serviceUserId }));
+        // LAST: it lists the tenant's folders (bounded: 30 pages, 60 s), so the hook's time goes to the sweep after the deletions above, which it cannot undo. The rules and
+        // their scripts are gone by now, so a firing still in flight fails to resolve its script; one already past that point can land after
+        // this list and leak (deleting a rule does not cancel a queued firing), which narrows the leak and does not close it.
+        if (disclosureRecordId) {
+            await sweepFolders((name) => name === `noop-${disclosureRecordId}`);
+        }
     }, 120_000);
 
     /** A well-formed rule body; every cell overrides exactly the one thing it is about. */
@@ -426,6 +434,7 @@ describe('triggers: the fields projection declaration', () => {
                 userId: outsider.id!,
                 scopes: [`org:${org.id!}`],
             } as any });
+            disclosureRecordId = rec.id!;
 
             const expected = `trig7-redacted-${marker}`;
             const leakedName = `trig7-leaked-${marker}`;

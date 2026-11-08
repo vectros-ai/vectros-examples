@@ -2,7 +2,7 @@
 
 A short tour of the official Vectros CLI,
 [`@vectros-ai/cli`](https://www.npmjs.com/package/@vectros-ai/cli) — manage API
-keys, application contexts, access, and apply blueprints from your terminal.
+keys, application contexts, access, stored agents, and apply blueprints from your terminal.
 
 Unlike the SDK examples (which authenticate with an API key), the CLI signs you
 in interactively, so this is a guided walkthrough rather than an automated suite.
@@ -34,6 +34,7 @@ vectros context list   # your application contexts
 vectros --help                   # all commands
 vectros key issue --help         # mint a scoped API key
 vectros blueprint list           # browse the bundled blueprints
+vectros agents --help            # stored agents: list, get, create, and write a new version
 vectros bootstrap --help         # no-code: provision a blueprint + a scoped MCP credential
 ```
 

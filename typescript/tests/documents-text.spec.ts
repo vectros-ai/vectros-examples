@@ -279,6 +279,30 @@ describe('documents (text)', () => {
         // The sleep-apnea doc (owned by otherUserId) must NOT appear in this list
         const otherId = docIds.find((id) => id !== docIds[0] && id !== docIds[1]);
         if (otherId) expect(ids).not.toContain(otherId);
+
+        // `type` lists only documents bound to a schema of that type: a document bound to a schema of
+        // this run's own type is listed by it, and a type no document has lists none of them.
+        const typeName = 'smoke_doc_type_' + uniqueTag().replace(/[^A-Za-z0-9_]/g, '_');
+        const schema = await client.schemas.createSchema({ body: {
+            typeName, displayName: 'Smoke document type', allowedSurfaces: ['document'],
+        } });
+        try {
+            const typed = await client.documents.ingestDocument({ body: {
+                title: 'Typed ' + uniqueTag(), text: 'A document bound to a schema.', indexMode: 'NONE',
+                folderId, schemaId: schema.id!,
+            } });
+            docIds.push(typed.id!);
+            const ofType = await client.documents.listDocuments({ folderId, type: typeName, limit: 100 });
+            const ofTypeIds = (ofType.data ?? []).map((d) => d.id);
+            expect(ofTypeIds).toContain(typed.id);
+            expect(ofTypeIds).not.toContain(docIds[0]);
+            const none = await client.documents.listDocuments({ folderId, type: 'no_such_type_' + uniqueTag().replace(/[^A-Za-z0-9_]/g, '_'), limit: 100 });
+            expect((none.data ?? []).map((d) => d.id)).not.toContain(typed.id);
+            await client.documents.deleteDocument({ id: typed.id! });
+            docIds.splice(docIds.indexOf(typed.id!), 1);
+        } finally {
+            await tryCleanup('delete document schema', () => client.schemas.deleteSchema({ id: schema.id! }));
+        }
     });
 
     test('update document text → re-indexed, old content no longer matches', async () => {
@@ -353,5 +377,20 @@ describe('documents (text)', () => {
         expect(resp.text).toBeTruthy();
         expect(resp.text).toContain('blood pressure');
         expect(resp.id).toBe(docIds[0]);
+        expect(resp.totalLength).toBe([...resp.text!].length);
+        expect(resp.nextOffset).toBeUndefined();
+
+        // A long text can be read in parts: `limit` and `offset` count characters, and `nextOffset` says
+        // where the next part starts until the end is reached. The parts put together are the whole text.
+        const parts: string[] = [];
+        let offset: number | undefined = 0;
+        while (offset !== undefined && parts.length < 20) {
+            const part = await client.documents.getDocumentText({ id: docIds[0], offset, limit: 1000 });
+            expect(part.offset).toBe(offset);
+            parts.push(part.text!);
+            offset = part.nextOffset;
+        }
+        expect(parts.length).toBeGreaterThan(1);
+        expect(parts.join('')).toBe(resp.text);
     });
 });

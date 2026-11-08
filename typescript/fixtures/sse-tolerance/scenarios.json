@@ -1,0 +1,730 @@
+{
+ "//": "Raw server-sent-event streams replayed by a loopback server for the SDK stream-tolerance tests. A scenario's chunks are written and flushed one at a time, or, when chunkBytes is set, their UTF-8 bytes are written that many at a time (splitsMultiByte: the suites check that a write boundary really falls inside a multi-byte character); close 'abrupt' destroys the connection without ending the response. 'probes' name a delivered event (by type and occurrence) and a field it carried that the SDK has no property for: the outcome records true or false for whether the field survived, and null when the SDK delivered no such event. 'expect' holds the pinned outcome per language SDK; 'measuredAgainst' records the SDKs the pins were measured against, and any SDK or generator upgrade is a reason to re-measure.",
+ "measuredAgainst": {
+  "apiVersion": "0.49.0",
+  "generators": {
+   "typescript": "3.70.7",
+   "python": "5.12.11",
+   "java": "4.8.11"
+  },
+  "note": "SDKs generated from the API specification of that release; the done event carries inferenceBalanceCentsChargedMilli. Re-measure after any SDK or generator upgrade."
+ },
+ "scenarios": [
+  {
+   "id": "chat-baseline",
+   "route": "chat",
+   "description": "Two content deltas then the terminal done event.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-keepalive-comments",
+   "route": "chat",
+   "description": "Keepalive comment lines before, between and after frames; no id: line.",
+   "close": "clean",
+   "chunks": [
+    ": keepalive\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    ": keepalive\n\n",
+    ": keepalive\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-unknown-event",
+   "route": "chat",
+   "description": "An event type this SDK has no class for, between two known events.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: x_future_event\ndata: {\"type\":\"x_future_event\",\"event\":\"x_future_event\",\"index\":1,\"source\":\"doc-1\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "x_future_event",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true
+     ],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      null
+     ],
+     "warnings": 1,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "?",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      null
+     ],
+     "error": null
+    }
+   },
+   "probes": [
+    {
+     "event": "x_future_event",
+     "nth": 0,
+     "field": "index"
+    }
+   ]
+  },
+  {
+   "id": "chat-unknown-field",
+   "route": "chat",
+   "description": "A known event type carrying fields this SDK does not know.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\",\"futureField\":{\"x\":1},\"anotherNew\":\"y\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"serviceTier\":\"standard\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true,
+      true
+     ],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true,
+      true
+     ],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true,
+      true
+     ],
+     "error": null
+    }
+   },
+   "probes": [
+    {
+     "event": "content_delta",
+     "nth": 0,
+     "field": "futureField"
+    },
+    {
+     "event": "done",
+     "nth": 0,
+     "field": "serviceTier"
+    }
+   ]
+  },
+  {
+   "id": "chat-unknown-terminal",
+   "route": "chat",
+   "description": "The stream ends with an event type this SDK has no class for instead of done.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: x_future_done\ndata: {\"type\":\"x_future_done\",\"event\":\"x_future_done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "x_future_done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 1,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "?"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-keepalive-after-id",
+   "route": "chat",
+   "description": "Frames carry id: lines and keepalive comments follow them.",
+   "close": "clean",
+   "chunks": [
+    ": keepalive\n\n",
+    "id: 1\nevent: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    ": keepalive\n\n",
+    "id: 2\nevent: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    ": keepalive\n\n",
+    "id: 3\nevent: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 2,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-malformed-frame",
+   "route": "chat",
+   "description": "A frame whose data is not valid JSON, between two valid deltas.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: content_delta\ndata: {not json}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta"
+     ],
+     "text": "Hel",
+     "probes": [],
+     "error": "SyntaxError"
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 2,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-non-object-json",
+   "route": "chat",
+   "description": "Frames whose data is valid JSON but not an object (null, an array), between valid deltas.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: content_delta\ndata: null\n\n",
+    "event: content_delta\ndata: [1,2]\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"lo\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "<null>",
+      "<array>",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 2,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "<null>",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-abrupt-close",
+   "route": "chat",
+   "description": "The connection is cut after one delta and a partial frame, with no terminal event.",
+   "close": "abrupt",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hel\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_del"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta"
+     ],
+     "text": "Hel",
+     "probes": [],
+     "error": "TypeError"
+    },
+    "python": {
+     "delivered": [
+      "content_delta"
+     ],
+     "text": "Hel",
+     "probes": [],
+     "warnings": 0,
+     "error": "RemoteProtocolError"
+    },
+    "java": {
+     "delivered": [
+      "content_delta"
+     ],
+     "text": "Hel",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "chat-split-chunks",
+   "route": "chat",
+   "description": "The same frames written 2 bytes at a time, so frame boundaries and the bytes of a multi-byte character are split across network writes.",
+   "close": "clean",
+   "chunks": [
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"h\u00e9llo \ud83d\ude00\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "content_delta",
+      "done"
+     ],
+     "text": "h\u00e9llo \ud83d\ude00",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "content_delta",
+      "done"
+     ],
+     "text": "h\u00e9llo \ud83d\ude00",
+     "probes": [],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "content_delta",
+      "done"
+     ],
+     "text": "h\u00e9llo \ud83d\ude00",
+     "probes": [],
+     "error": null
+    }
+   },
+   "chunkBytes": 2,
+   "splitsMultiByte": true
+  },
+  {
+   "id": "rag-baseline",
+   "route": "rag",
+   "description": "Search results, one delta, then done.",
+   "close": "clean",
+   "chunks": [
+    "event: search_results\ndata: {\"type\":\"search_results\",\"event\":\"search_results\",\"results\":[],\"totalResults\":0,\"searchTimeMs\":4,\"hasMore\":false}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hello\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "rag-unknown-event",
+   "route": "rag",
+   "description": "An unknown event type after the search results.",
+   "close": "clean",
+   "chunks": [
+    "event: search_results\ndata: {\"type\":\"search_results\",\"event\":\"search_results\",\"results\":[],\"totalResults\":0,\"searchTimeMs\":4,\"hasMore\":false}\n\n",
+    "event: x_future_tool_event\ndata: {\"type\":\"x_future_tool_event\",\"event\":\"x_future_tool_event\",\"name\":\"lookup\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hello\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "search_results",
+      "x_future_tool_event",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 1,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "search_results",
+      "?",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "rag-unknown-field",
+   "route": "rag",
+   "description": "The search results event carries a field this SDK does not know.",
+   "close": "clean",
+   "chunks": [
+    "event: search_results\ndata: {\"type\":\"search_results\",\"event\":\"search_results\",\"rerankScore\":0.5,\"results\":[],\"totalResults\":0,\"searchTimeMs\":4,\"hasMore\":false}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hello\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true
+     ],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true
+     ],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "search_results",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [
+      true
+     ],
+     "error": null
+    }
+   },
+   "probes": [
+    {
+     "event": "search_results",
+     "nth": 0,
+     "field": "rerankScore"
+    }
+   ]
+  },
+  {
+   "id": "document-ask-baseline",
+   "route": "document-ask",
+   "description": "Document context, one delta, then done.",
+   "close": "clean",
+   "chunks": [
+    "event: document_context\ndata: {\"type\":\"document_context\",\"event\":\"document_context\",\"documentId\":\"doc-1\",\"title\":\"Doc\",\"textBytes\":12,\"model\":\"test-model\"}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hello\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "document_context",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "document_context",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 0,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "document_context",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  },
+  {
+   "id": "document-ask-unknown-event",
+   "route": "document-ask",
+   "description": "An unknown event type after the document context.",
+   "close": "clean",
+   "chunks": [
+    "event: document_context\ndata: {\"type\":\"document_context\",\"event\":\"document_context\",\"documentId\":\"doc-1\",\"title\":\"Doc\",\"textBytes\":12,\"model\":\"test-model\"}\n\n",
+    "event: x_future_marker\ndata: {\"type\":\"x_future_marker\",\"event\":\"x_future_marker\",\"page\":2}\n\n",
+    "event: content_delta\ndata: {\"type\":\"content_delta\",\"event\":\"content_delta\",\"delta\":\"Hello\"}\n\n",
+    "event: done\ndata: {\"type\":\"done\",\"event\":\"done\",\"inputTokens\":3,\"outputTokens\":2,\"model\":\"test-model\",\"platformCreditsCharged\":0.1,\"inferenceBalanceCentsChargedMilli\":1000}\n\n"
+   ],
+   "expect": {
+    "typescript": {
+     "delivered": [
+      "document_context",
+      "x_future_marker",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    },
+    "python": {
+     "delivered": [
+      "document_context",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "warnings": 1,
+     "error": null
+    },
+    "java": {
+     "delivered": [
+      "document_context",
+      "?",
+      "content_delta",
+      "done"
+     ],
+     "text": "Hello",
+     "probes": [],
+     "error": null
+    }
+   }
+  }
+ ]
+}

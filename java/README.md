@@ -32,6 +32,7 @@ needed — and resolves the SDK from Maven Central. Requires a JDK 21+ on
 | `IssuersTokenExchangeSmokeTest` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
 | `LogsSmokeTest` | `delegationChain` on `GET /v1/admin/logs` entries — present on delegate-minted traffic, null on ordinary traffic. |
 | `SseCommentFramesTest` | A streamed chat answer that carries SSE comment lines (lines starting with a colon) yields the same events as the same stream without them. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
+| `StreamToleranceTest` | What this SDK's stream decoder does with an event type or field it does not know, keepalive comment lines, a frame that is not valid JSON or not an object, a connection cut mid-frame, and frames split across network writes, for chat, RAG and document ask. The recorded streams are the TypeScript example's (`../typescript/fixtures/sse-tolerance/`) and are not in this directory, so here the test reports one skip; copy them to `../fixtures/sse-tolerance/` to run it. A local server stands in for the API, so it makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 
 `CrossContextSmokeTest` needs `VECTROS_LIVE_TENANT_ID` and is skipped when it's unset (see
 `../.env.example`). `CapabilitiesSmokeTest` and `LogsSmokeTest` need it too and **fail** rather

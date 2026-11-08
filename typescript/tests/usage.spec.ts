@@ -32,7 +32,7 @@ interface UsageReport {
         writes?: { count: number; indexCount?: number };
     };
     inference?: {
-        balanceCents: number;
+        balanceCentsMilli: number;
         endpoints: {
             chat?: { calls: number };
             rag?: { calls: number };
@@ -44,13 +44,13 @@ interface UsageReport {
             id: string;
             credits: { used: number; usedMilli: number };
             search: { queries: { hybrid: { count: number } } };
-            inference?: { balanceCents?: number; endpoints?: Record<string, { calls: number }> };
+            inference?: { balanceCentsMilli?: number; endpoints?: Record<string, { calls: number }> };
         };
         test: {
             id: string;
             credits: { used: number; usedMilli: number };
             search: { queries: { hybrid: { count: number } } };
-            inference?: { balanceCents?: number; endpoints?: Record<string, { calls: number }> };
+            inference?: { balanceCentsMilli?: number; endpoints?: Record<string, { calls: number }> };
         };
     };
 }
@@ -269,11 +269,15 @@ describe('usage', () => {
     });
 
     describe('inference section', () => {
-        test('inference.balanceCents is non-negative', async () => {
+        test('inference.balanceCentsMilli is a whole number of milli-cents', async () => {
             const usage = (await client.auth.getUsage()) as unknown as UsageReport;
-            // balanceCents is your pre-paid inference ledger — can be 0
-            // but never negative (deduct path floors at 0 + queues recharge).
-            expect(usage.inference?.balanceCents ?? 0).toBeGreaterThanOrEqual(0);
+            // balanceCentsMilli is your pre-paid inference ledger in thousandths of a cent (1 cent = 1000). It is
+            // usually 0 or more, but a call that cost more than its hold is trued up afterwards, which can leave it
+            // below zero; so only its type is asserted. A missing field is a failure, not a zero.
+            const balance = usage.inference?.balanceCentsMilli;
+            expect(Number.isInteger(balance)).toBe(true);
+            // the whole-cent field was replaced, not kept beside the milli one
+            expect(usage.inference ?? {}).not.toHaveProperty('balanceCents');
         });
 
         test('inference.endpoints has chat / rag / ask keys', async () => {

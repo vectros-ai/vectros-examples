@@ -20,11 +20,17 @@ function joinDeltas(events: any[]): string {
         .join('');
 }
 
+// A fixed system note of about 1,000 tokens (about 4,000 characters). The charge is the exact cost rounded to the nearest milli-cent, so a very short call on a cheap
+// model can round to 0: the default model's input rate is about 0.011 milli-cents per token, so this note alone costs several milli-cents.
+const LONG_SYSTEM_NOTE = 'You are answering a connectivity check. ' + Array.from({ length: 60 },
+    (_, i) => `Reference line ${i + 1}: this sentence is padding and asks for nothing.`).join(' ');
+
 describe('inference: /v1/chat', () => {
     // ANCHOR — streaming chat returns deltas then a done event with billing fields
     test('chat stream produces content_delta events then a done event', async () => {
         const stream = await client.inference.chatInference({
             messages: [
+                { role: 'system', content: LONG_SYSTEM_NOTE },
                 { role: 'user', content: 'Say "hello smoke test" exactly, no more.' },
             ],
             // The default model reasons before it answers and that counts against maxTokens: leave room for the text.
@@ -47,7 +53,12 @@ describe('inference: /v1/chat', () => {
         expect(done.outputTokens).toBeGreaterThan(0);
         expect(done.model).toBeTruthy();
         expect(done.platformCreditsCharged).toBeGreaterThan(0);
-        expect(done.inferenceBalanceCentsCharged).toBeGreaterThanOrEqual(0);
+        // The inference charge is the exact cost in milli-cents (1 cent = 1000), rounded to the nearest
+        // milli-cent. The system note makes the prompt long enough that it cannot round to zero.
+        expect(done.inputTokens).toBeGreaterThanOrEqual(400);
+        expect(Number.isInteger(done.inferenceBalanceCentsChargedMilli)).toBe(true);
+        expect(done.inferenceBalanceCentsChargedMilli).toBeGreaterThan(0);
+        expect(done).not.toHaveProperty('inferenceBalanceCentsCharged');
     });
 
     test('system message is honored (assistant follows the instruction)', async () => {

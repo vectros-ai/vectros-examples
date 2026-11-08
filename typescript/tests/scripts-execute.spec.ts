@@ -14,7 +14,7 @@
  */
 import { client } from '../src/client';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
-import { uniqueTag, tryCleanup, drainCursor } from '../src/helpers';
+import { uniqueTag, tryCleanup, drainCursor, deleteFolderAndContents } from '../src/helpers';
 
 function baseUrl(): string {
     const u = process.env.VECTROS_API_BASE_URL;
@@ -99,7 +99,7 @@ describe('scripts: synchronous execution', () => {
             await tryCleanup(`delete document ${id}`, () => client.documents.deleteDocument({ id }));
         }
         for (const id of folderIds) {
-            await tryCleanup(`delete folder ${id}`, () => client.folders.deleteFolder({ id }));
+            await deleteFolderAndContents(id);   // a script may have filed documents into it that this spec never saw
         }
         for (const id of scriptIds) {
             await tryCleanup(`delete script ${id}`, () => rawJson('DELETE', `/v1/scripts/${id}`, undefined));
@@ -271,7 +271,7 @@ describe('scripts: an execution sees its own writes', () => {
             await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
         }
         for (const id of folderIds) {
-            await tryCleanup(`delete folder ${id}`, () => client.folders.deleteFolder({ id }));
+            await deleteFolderAndContents(id);   // a script may have filed documents into it that this spec never saw
         }
         for (const id of schemaIds) {
             await tryCleanup(`delete schema ${id}`, () => client.schemas.deleteSchema({ id }));
@@ -451,7 +451,7 @@ describe('scripts: the execution budgets', () => {
 
     afterAll(async () => {
         for (const id of folderIds) {
-            await tryCleanup(`delete folder ${id}`, () => client.folders.deleteFolder({ id }));
+            await deleteFolderAndContents(id);   // a script may have filed documents into it that this spec never saw
         }
         for (const id of scriptIds) {
             await tryCleanup(`delete script ${id}`, () => rawJson('DELETE', `/v1/scripts/${id}`, undefined));

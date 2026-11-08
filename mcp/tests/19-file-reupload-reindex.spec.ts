@@ -93,8 +93,13 @@ test('file re-upload re-extracts + re-indexes the new file (same id, old content
     assert.equal(first.indexStatus, 'PENDING_INDEX', 'first ingest is accepted async (PENDING_INDEX)');
     assert.match(
       String(first._note),
-      /Poll document_get\(id\) until indexStatus is INDEXED\./,
+      /Poll document_get\(id\) until indexStatus is INDEXED, SKIPPED/,
       'first-time ingest keeps the simple polling guidance',
+    );
+    assert.doesNotMatch(
+      String(first._note),
+      /fileItemId/,
+      'first-time ingest does not carry the re-upload guidance',
     );
 
     // 2) Wait for INDEXED; the OLD marker must be searchable for THIS doc.

@@ -32,6 +32,7 @@ supports Python 3.8 and later).
 | `test_issuers_token_exchange` | The trusted BYO-IdP issuer registry and RFC 8693 token exchange. |
 | `test_logs` | `delegationChain` on `GET /v1/admin/logs` entries — present on delegate-minted traffic, null on ordinary traffic. |
 | `test_sse_comment_frames` | A streamed chat answer that carries SSE comment lines (a line starting with a colon) yields the same events as the same stream without them. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
+| `test_stream_tolerance` | What this SDK's stream decoder does with an event type or field it does not know, keepalive comment lines, a frame that is not valid JSON or not an object, a connection cut mid-frame, and frames split across network writes, for chat, RAG and document ask. The recorded streams are the TypeScript example's (`../typescript/fixtures/sse-tolerance/`) and are not in this directory, so here the test reports one skip; copy them to `../fixtures/sse-tolerance/` to run it. A local server stands in for the API, so it makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 | `test_client_timeouts` | The suite's HTTP client has an explicit 60-second read timeout and a 10-second connect timeout. Makes no API calls; `run.sh` still needs both variables set, and any placeholder value works. |
 
 `test_cross_context` needs `VECTROS_LIVE_TENANT_ID` and skips itself when it's unset (see

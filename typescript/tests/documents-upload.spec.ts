@@ -5,7 +5,7 @@
  */
 import * as fs from 'fs';
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, presignedUploadHeaders } from '../src/helpers';
+import { uniqueTag, pollUntil, pollUntilIndexed, pollUntilSearchable, tryCleanup, presignedUploadHeaders, expectReject } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE, SAMPLE_PDF_SEMANTIC_PHRASE } from '../src/fixtures';
 
 interface MintedToken { token: string; expiresAt: number; }
@@ -271,6 +271,52 @@ describe('documents (upload)', () => {
         const disposition = dl.headers.get('content-disposition');
         expect(disposition).toBeTruthy();
         expect(disposition!.toLowerCase()).toMatch(/^attachment/);
+    });
+
+    /** Uploads `body` as a new file document and returns its id, once its bytes are in. */
+    async function uploadBytes(fileName: string, fileType: string, body: Buffer): Promise<string> {
+        const upload = await client.documents.uploadDocument({ fileName, fileType, indexMode: 'HYBRID', userId });
+        docIds.push(upload.id!);
+        const putResp = await fetch(upload.uploadUrl!, {
+            method: 'PUT',
+            body,
+            headers: { 'Content-Type': fileType, ...presignedUploadHeaders(upload) },
+        });
+        expect(putResp.status).toBe(200);
+        return upload.id!;
+    }
+
+    test('a file with no extractable text ends SKIPPED, says why, and serves no placeholder as its text', async () => {
+        // A 1x1 PNG: an image holds no text. It must end SKIPPED (stored, downloadable, not searchable) with
+        // `extraction.outcome` naming the reason, never INDEXED with a placeholder string as its text.
+        const png = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64');
+        const id = await uploadBytes('smoke-no-text.png', 'image/png', png);
+
+        const terminal = await pollUntil('a terminal indexStatus for the image', async () => {
+            const doc = await client.documents.getDocument({ id });
+            return ['INDEXED', 'SKIPPED', 'STORED', 'FAILED'].includes(doc.indexStatus ?? '') ? doc : undefined;
+        }, 120_000);
+        expect(terminal.indexStatus).toBe('SKIPPED');
+        // `extraction` is read structurally so this spec compiles against an SDK published before the field.
+        const extraction = (terminal as { extraction?: { outcome?: string; truncated?: boolean } }).extraction;
+        expect(extraction?.outcome).toBe('NO_TEXT');
+        expect(extraction?.truncated).toBe(false);
+
+        await expectReject(client.documents.getDocumentText({ id }), 404);
+    });
+
+    test('a long text file is extracted whole, past the old 100,000-character cut', async () => {
+        const line = 'vectros long extraction smoke line\n';   // 35 characters
+        const body = Buffer.from(line.repeat(Math.ceil(150_000 / line.length)), 'utf8');
+        const id = await uploadBytes('smoke-long.txt', 'text/plain', body);
+
+        await pollUntilIndexed(id, 'document', 120_000);
+        const text = await client.documents.getDocumentText({ id });
+        expect((text.text ?? '').length).toBeGreaterThan(149_000);
+        const loaded = await client.documents.getDocument({ id });
+        expect((loaded as { extraction?: { outcome?: string } }).extraction?.outcome).toBe('OK');
     });
 });
 
