@@ -5,7 +5,7 @@
  */
 import * as fs from 'fs';
 import { client, getScopedClient } from '../src/client';
-import { uniqueTag, pollUntil, pollUntilIndexed, pollUntilSearchable, tryCleanup, presignedUploadHeaders, expectReject } from '../src/helpers';
+import { uniqueTag, pollUntil, pollUntilIndexed, pollUntilSearchable, tryCleanup, presignedUploadHeaders, expectReject, withSize } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE, SAMPLE_PDF_SEMANTIC_PHRASE } from '../src/fixtures';
 
 interface MintedToken { token: string; expiresAt: number; }
@@ -34,7 +34,8 @@ describe('documents (upload)', () => {
     test('presigned upload handshake: request URL → PUT bytes → poll INDEXED', async () => {
         // Step 1: request a presigned URL
         const requestedAt = Date.now();
-        const upload = await client.documents.uploadDocument({
+        // `size` (the exact byte length of the PUT below) binds the URL to this type and length
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'smoke-test-clinical-note.pdf',
             fileType: 'application/pdf',
             indexMode: 'HYBRID',
@@ -46,7 +47,7 @@ describe('documents (upload)', () => {
                 category: 'clinical-note',
                 source: 'smoke-test',
             },
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         docIds.push(upload.id!);
         expect(upload.uploadUrl).toMatch(/^https:\/\//);
         // expiresAt is ISO-8601 UTC (Vectros uses LLM-friendly timestamps),
@@ -98,11 +99,11 @@ describe('documents (upload)', () => {
     // request ever reaches this API — hence a raw status check, not the
     // SDK's typed error.
     test('presigned upload URL rejects a PUT missing the required precondition header, or sending the wrong value', async () => {
-        const upload = await client.documents.uploadDocument({
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'smoke-missing-header.pdf',
             fileType: 'application/pdf',
             indexMode: 'NONE',
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         docIds.push(upload.id!);
         const body = fs.readFileSync(SAMPLE_PDF_PATH);
 
@@ -122,11 +123,11 @@ describe('documents (upload)', () => {
     });
 
     test('presigned upload URL is single-use: replaying it after a successful PUT is rejected', async () => {
-        const upload = await client.documents.uploadDocument({
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'smoke-single-use.pdf',
             fileType: 'application/pdf',
             indexMode: 'NONE',
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         docIds.push(upload.id!);
         const body = fs.readFileSync(SAMPLE_PDF_PATH);
         const headers = { 'Content-Type': 'application/pdf', ...presignedUploadHeaders(upload) };
@@ -275,7 +276,7 @@ describe('documents (upload)', () => {
 
     /** Uploads `body` as a new file document and returns its id, once its bytes are in. */
     async function uploadBytes(fileName: string, fileType: string, body: Buffer): Promise<string> {
-        const upload = await client.documents.uploadDocument({ fileName, fileType, indexMode: 'HYBRID', userId });
+        const upload = await client.documents.uploadDocument(withSize({ fileName, fileType, indexMode: 'HYBRID', userId }, body));
         docIds.push(upload.id!);
         const putResp = await fetch(upload.uploadUrl!, {
             method: 'PUT',
@@ -286,9 +287,20 @@ describe('documents (upload)', () => {
         return upload.id!;
     }
 
-    test('a file with no extractable text ends SKIPPED, says why, and serves no placeholder as its text', async () => {
-        // A 1x1 PNG: an image holds no text. It must end SKIPPED (stored, downloadable, not searchable) with
-        // `extraction.outcome` naming the reason, never INDEXED with a placeholder string as its text.
+    test('a fileType that is not a media type (type/subtype) is refused before any document is made', async () => {
+        // `pdf` was once stored as given; the field takes a media type (`application/pdf`), or is left out and inferred from
+        // `fileName`. API 0.50.0 or later.
+        const refused = await expectReject(
+            client.documents.uploadDocument({ fileName: `${uniqueTag()}.pdf`, fileType: 'pdf', indexMode: 'HYBRID', userId }),
+            400,
+        );
+        expect(JSON.stringify(refused.body)).toContain('type/subtype');
+    });
+
+    test('an image is stored but not read: it ends SKIPPED, says why, and serves no placeholder as its text', async () => {
+        // A 1x1 PNG. Text is extracted only from document formats, decided from the file's content, so an image is
+        // stored and downloadable but never read: it ends SKIPPED with `extraction.outcome` NOT_EXTRACTED and
+        // `detectedType` naming what the content is, never INDEXED with a placeholder string as its text.
         const png = Buffer.from(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
             'base64');
@@ -299,10 +311,11 @@ describe('documents (upload)', () => {
             return ['INDEXED', 'SKIPPED', 'STORED', 'FAILED'].includes(doc.indexStatus ?? '') ? doc : undefined;
         }, 120_000);
         expect(terminal.indexStatus).toBe('SKIPPED');
-        // `extraction` is read structurally so this spec compiles against an SDK published before the field.
-        const extraction = (terminal as { extraction?: { outcome?: string; truncated?: boolean } }).extraction;
-        expect(extraction?.outcome).toBe('NO_TEXT');
-        expect(extraction?.truncated).toBe(false);
+        // `extraction` and `detectedType` are read structurally so this spec compiles against an SDK published before them.
+        const read = terminal as { extraction?: { outcome?: string; truncated?: boolean }; detectedType?: string };
+        expect(read.extraction?.outcome).toBe('NOT_EXTRACTED');
+        expect(read.extraction?.truncated).toBe(false);
+        expect(read.detectedType).toBe('image/png');
 
         await expectReject(client.documents.getDocumentText({ id }), 404);
     });
@@ -357,7 +370,7 @@ describe('documents (upload — scope ownership)', () => {
         const orgScope = `org:${inScopeOrgId}`;
 
         // ── Upload with an org scope (the upload-scopes surface) ──────────────
-        const upload = await client.documents.uploadDocument({
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'smoke-scoped-upload.pdf',
             fileType: 'application/pdf',
             indexMode: 'HYBRID',
@@ -365,7 +378,7 @@ describe('documents (upload — scope ownership)', () => {
             // uploaded file, the file-upload analogue of text-ingest's scopes.
             scopes: [orgScope],
             payload: { category: 'scoped-upload' },
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         docIds.push(upload.id!);
 
         const body = fs.readFileSync(SAMPLE_PDF_PATH);

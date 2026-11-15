@@ -48,7 +48,7 @@ async function captureError(p: Promise<unknown>): Promise<{ statusCode?: number;
 
 // A bulk value comfortably past the 4 KB externalization threshold. Under the
 // LARGE_PAYLOAD profile the record externalizes regardless of size, but an
-// over-threshold value keeps the fixture honest against STANDARD too.
+// over-threshold value keeps the fixture valid against STANDARD too.
 const BULK = 'The quick brown fox jumps over the lazy dog. '.repeat(200); // ~9 KB
 
 describe('records (payload tiering + PUT truncation guard)', () => {

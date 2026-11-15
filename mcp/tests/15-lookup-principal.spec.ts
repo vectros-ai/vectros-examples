@@ -78,7 +78,7 @@ test('lookup_principal (lookup mode) forwards contextId as its own query param t
   //
   // Requires the `client` namespace to already be registered (00-setup-fixtures) — an unregistered
   // namespace answers 200/empty instead of rejecting, which would fail this assertion for the WRONG
-  // reason. Check first and skip honestly rather than let that surface as a misleading assertion
+  // reason. Check first and skip explicitly rather than let that surface as a misleading assertion
   // failure.
   const registered = await api('GET', '/v1/namespaces/client');
   if (registered.status !== 200) {

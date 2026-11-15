@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -558,9 +559,17 @@ def test_list_access_profiles_resolves_email_per_row(client, ctx_id):
         ctx_id, principal_id=f"usr_{user_b.id}", scopes=[vectros.ScopeClause(allowed_actions=["records:r"])],
     )
     try:
-        # Root key holds users:r implicitly -- email present, and correctly per-row.
-        page = client.auth.list_access_profiles(ctx_id)
-        rows = {p.principal_id: p.email for p in (page.data or [])}
+        # Root key holds users:r implicitly -- email present, and correctly per-row. The list is
+        # eventually consistent, so a profile created a moment ago may be missing from the first
+        # read: list again until both appear (bounded), then assert.
+        wanted = {f"usr_{user_a.id}", f"usr_{user_b.id}"}
+        deadline = time.monotonic() + 20
+        while True:
+            page = client.auth.list_access_profiles(ctx_id)
+            rows = {p.principal_id: p.email for p in (page.data or [])}
+            if wanted <= rows.keys() or time.monotonic() > deadline:
+                break
+            time.sleep(1)
         assert rows.get(f"usr_{user_a.id}") == email_a
         assert rows.get(f"usr_{user_b.id}") == email_b
 

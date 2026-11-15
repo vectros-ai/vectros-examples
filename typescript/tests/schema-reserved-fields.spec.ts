@@ -80,6 +80,18 @@ describe('schemas: reserved search-index metadata field ids', () => {
             'document surface refuses filterable %s',
             async (fieldId) => { await expectRefused(['document'], fieldId); },
         );
+
+        // Keys the search index writes on both surfaces: the `_geo_` prefix (a location field's generated keys) and the two
+        // public-copy markers, which are matched in any letter case. API 0.50.0 or later.
+        test.each([
+            ['record', '_geo_where'],
+            ['document', '_geo_where'],
+            ['record', 'publicCopy'],
+            ['document', 'public_copy_owner'],
+            ['record', 'PublicCopy'],
+        ])('%s surface refuses filterable %s', async (surface, fieldId) => {
+            await expectRefused([surface], fieldId);
+        });
     });
 
     // -------------------------------------------------------------------------

@@ -5,6 +5,47 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.20.0 — 2026-11-14
+
+### Added
+
+- **`public-view-geo-precision.spec.ts`** (opt-in, `GEO_SEARCH_CHECK=1`): a projection public view with a `geo` field under
+  `"exact"` and under a 1000 m grid, read through `GET /v1/records/{id}/public-view`, and the `PUBLIC_VIEW_GEO_PRECISION_REQUIRED`
+  and `_INVALID` refusals. Needs public access turned on and geo fields enabled for the account the API key belongs to.
+- **`public-media-profile`:** a document type with `fileProfile: PUBLIC_MEDIA` and the refusals the profile adds, among them an
+  upload without `size` (`SIZE_REQUIRED`); with `size`, the storage service refuses a PUT with another `Content-Type` or length.
+- **`public-media-asset`:** the `asset` and `assets` field types and their refusals (`ASSET_FIELD_NOT_ALLOWED`,
+  `ASSET_NOT_ATTACHABLE`). The image publish-state check is skipped unless `PUBLIC_MEDIA_PROCESSING=1`, since
+  no image completes processing in this version.
+- **`public-view-projection`:** a record type whose `publicView` lists some of its fields; `GET /v1/records/{id}/public-view`
+  returns only those, archiving the record unpublishes it, and a `pv_` type name is refused. This spec and `public-media-asset`
+  need the account's public access turned on by the account owner; without it they fail saying so.
+- **`self-erasure`:** the refusals that come before an end user's own deletion (`/v1/me/erasure`): a root key
+  (`SELF_ERASURE_SCOPED_TOKEN_REQUIRED`), a context that has not turned the feature on (`SELF_ERASURE_NOT_ENABLED`), no identity
+  provider (`SELF_ERASURE_NO_ACTIVE_ISSUER`), a grace period over 30 days, and an unknown request id.
+- **`documents-hostile-file`:** a DOCX zip bomb uploaded beside the sample files ends `SKIPPED` with
+  `extraction.outcome: UNREADABLE`, and the other files are indexed.
+
+### Changed
+
+- **The examples target SDK 0.50.0** (`^0.50.0`, `vectros>=0.50.0,<0.51.0`, Java `0.50.0`). The new and changed checks need API
+  0.50.0.
+- **The upload specs send `size` and every header in `requiredHeaders`.**
+- **`runs`** (opt-in, `VECTROS_SMOKE_RUNS=1`) also covers a stored script offered as a tool, the `rag_ask` tool within
+  `budget.ragMaxInferenceCents` (the key also needs `inference:r`, `search:r` and `documents:c`, `documents:r` and `documents:d`), a
+  per-agent daily cap (`402 AGENT_BUDGET_EXHAUSTED`), and `GET /v1/runs`.
+- **`scripts-execute`:** declaring an operation in `optInOperations` needs the capability mapped to it.
+- **`schema-reserved-fields`:** a filterable field whose id starts with `_geo_`, or is `publicCopy` or `public_copy_owner`, is
+  refused.
+- **`documents-upload`:** a `fileType` that is not a media type (`pdf`) is refused with `400`, and a small image ends `SKIPPED` with
+  `extraction.outcome: NOT_EXTRACTED`.
+- **`usage`:** checks the credit fields `admissionLimit`, `includedCredits` and `overage`.
+- **`issuers-token-exchange`:** in Python and Java, listing access profiles retries for up to 20 seconds until the new profiles
+  appear, since the list is eventually consistent; in TypeScript and Java, the one-active-issuer-per-context check registers in a
+  context of its own.
+- **`public-view-projection`:** every call uses the same API key, so the org and its records are in the same tenant; the owner
+  erasure check is opt-in (`PUBLIC_VIEW_ERASURE_CHECK=1`) and reports the erasure request's state when it does not complete.
+
 ## 0.19.0 — 2026-11-07
 
 ### Added

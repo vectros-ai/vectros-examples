@@ -269,23 +269,29 @@ describe('issuers + token exchange', () => {
 
         // A context has exactly one active issuer, and a pending registration already holds its
         // context, so a second registration is refused before the first is ever verified.
-        // DIFFERENT (issuer, audience) pair, SAME context.
+        // DIFFERENT (issuer, audience) pair, SAME context. The context is this test's own: the shared
+        // context has issuers registered and deleted by earlier tests, and a deletion's asynchronous
+        // clean-up must not be able to interleave with this check.
         test('a second DISTINCT issuer in the SAME context is refused — one active IdP per context', async () => {
+            const oneCtxId = ('oneidp' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: oneCtxId, name: 'one-idp spec (ts)' } });
             const firstId = ('oneidp1' + uniqueTag()).slice(0, 31);
             const secondId = ('oneidp2' + uniqueTag()).slice(0, 31);
             try {
                 await client.auth.registerIssuer({
                     issuerId: firstId, issuer: `https://${uniqueTag()}.example.com/`,
                     jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                    audience: `aud-${uniqueTag()}`, contextId: ctxId,
+                    audience: `aud-${uniqueTag()}`, contextId: oneCtxId,
                 });
                 await expectReject(client.auth.registerIssuer({
                     issuerId: secondId, issuer: `https://${uniqueTag()}.example.com/`,
                     jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                    audience: `aud-${uniqueTag()}`, contextId: ctxId,
+                    audience: `aud-${uniqueTag()}`, contextId: oneCtxId,
                 }), 400);
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: firstId }));
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: secondId }));
+                await tryCleanup('app context', () => client.auth.deleteAppContext({ contextId: oneCtxId, confirm: oneCtxId }));
             }
         });
 

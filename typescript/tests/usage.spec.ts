@@ -14,7 +14,14 @@ import { uniqueTag, tryCleanup, collectStream } from '../src/helpers';
 // loose. Narrow here to what the assertions actually touch.
 interface UsageReport {
     period: string;
-    credits: { used: number; usedMilli: number; limit?: number };
+    credits: {
+        used: number;
+        usedMilli: number;
+        limit?: number | null;
+        admissionLimit?: number | null;
+        includedCredits?: number | null;
+        overage?: number | null;
+    };
     search: {
         queries: {
             text: { count: number };
@@ -95,6 +102,22 @@ describe('usage', () => {
         expect(usage.search.queries.hybrid.count).toBeGreaterThanOrEqual(0);
         expect(usage.tenants.live.id).toBeTruthy();
         expect(usage.tenants.test.id).toBeTruthy();
+    });
+
+    test('credits report where requests stop, the included credits and the overage', async () => {
+        // An account-wide key (not confined to an app context), so all three are reported: `overage` is a whole number of credits, and
+        // with a monthly limit the stop level is at least that limit (equal without overage). API 0.50.0 or later.
+        const { credits } = (await client.auth.getUsage()) as unknown as UsageReport;
+        expect(Number.isInteger(credits.overage)).toBe(true);
+        expect(credits.overage).toBeGreaterThanOrEqual(0);
+        if (typeof credits.limit === 'number') {
+            expect(typeof credits.admissionLimit).toBe('number');
+            expect(credits.admissionLimit as number).toBeGreaterThanOrEqual(credits.limit);
+            expect(typeof credits.includedCredits).toBe('number');
+        } else {
+            // No monthly limit: there is no level where requests stop.
+            expect(credits.admissionLimit ?? null).toBeNull();
+        }
     });
 
     test('search queries increment hybrid count by >= 3 after 3 searches', async () => {

@@ -466,25 +466,46 @@ export async function collectStream<T>(
 }
 
 /**
- * The extra header a presigned upload URL requires, as named by the upload response.
+ * The headers a presigned upload URL requires, as named by the upload response.
  *
- * The platform can bake a conditional-write precondition (for example
- * `If-None-Match: *`, which makes the URL single-use) into the URL's own
- * signature. A PUT that omits that header, or changes its value, fails
- * signature validation with a 403 before the bytes are accepted.
+ * The platform bakes headers into the URL's own signature: a conditional-write
+ * precondition (`If-None-Match: *`, which makes the URL single-use) and, when
+ * the request declared `size`, the Content-Type the URL was signed for.
+ * A PUT that omits one, or changes its value, fails signature validation with a
+ * 403 before the bytes are accepted.
  *
- * Read from the response, never hard-coded, and only when the response carries
- * a name, so the same spec runs against an API version that does not return
- * these fields yet. Read off the raw response because the SDK version in use
- * may predate the fields.
+ * `requiredHeaders` (every header, as a map) when the response carries it; else
+ * the older single `requiredHeaderName`/`requiredHeaderValue` pair, so the same
+ * spec runs against an API version that does not return the map yet. Spread it
+ * AFTER your own `Content-Type`, so the signed one wins. Read off the raw
+ * response because the SDK version in use may predate the fields.
  */
 export function presignedUploadHeaders(response: unknown): Record<string, string> {
     if (typeof response !== 'object' || response === null) return {};
-    const { requiredHeaderName, requiredHeaderValue } = response as {
+    const { requiredHeaders, requiredHeaderName, requiredHeaderValue } = response as {
+        requiredHeaders?: unknown;
         requiredHeaderName?: unknown;
         requiredHeaderValue?: unknown;
     };
+    if (typeof requiredHeaders === 'object' && requiredHeaders !== null) {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(requiredHeaders as Record<string, unknown>)) {
+            if (typeof v === 'string') out[k] = v;
+        }
+        if (Object.keys(out).length > 0) return out;
+    }
     if (typeof requiredHeaderName !== 'string' || requiredHeaderName === '') return {};
     if (typeof requiredHeaderValue !== 'string') return {};
     return { [requiredHeaderName]: requiredHeaderValue };
+}
+
+/**
+ * The upload-init request with `size`, the exact byte length of the
+ * body the spec will PUT. Typed as the request it extends, so a spec compiles
+ * against an SDK that predates the field (such an SDK may not send it: the
+ * upload is then unbound, as before; a public-media type needs the raw API).
+ */
+export function withSize<T extends object>(request: T, body: Uint8Array | string): T {
+    const size = typeof body === 'string' ? Buffer.byteLength(body) : body.byteLength;
+    return { ...request, size } as T;
 }

@@ -243,7 +243,7 @@ describe('invite validation', () => {
     // acceptUrl is validated whenever it is SUPPLIED, not only when an email is sent. With
     // sendEmail:false the platform never mails the link, but it still hands the caller an accept link
     // built from it, so a javascript:, plain-http or IP-literal value would be stored and returned as
-    // a ready-to-use link. The control (a valid https URL is accepted) keeps the refusals honest. A
+    // a ready-to-use link. The control (a valid https URL is accepted) keeps the refusals meaningful. A
     // javascript: value is tested separately below: the API's request filter answers it before
     // the request reaches this validation, so it says nothing about the validator.
     // -------------------------------------------------------------------

@@ -25,7 +25,7 @@
  */
 import * as fs from 'fs';
 import { client } from '../src/client';
-import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, withRateLimitRetry, presignedUploadHeaders } from '../src/helpers';
+import { uniqueTag, pollUntilIndexed, pollUntilSearchable, tryCleanup, withRateLimitRetry, presignedUploadHeaders, withSize } from '../src/helpers';
 import { SAMPLE_PDF_PATH, SAMPLE_PDF_KNOWN_PHRASE } from '../src/fixtures';
 
 const BASE_URL = process.env.VECTROS_API_BASE_URL!;
@@ -83,11 +83,11 @@ describe('documents (storeText retention contract)', () => {
     });
 
     test('file upload DEFAULT retains extracted text — /text serves it', async () => {
-        const upload = await client.documents.uploadDocument({
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'storetext-default.pdf',
             fileType: 'application/pdf',
             indexMode: 'TEXT',
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         docIds.push(upload.id!);
         await putPdf(upload);
         await pollUntilIndexed(upload.id!, 'document', 120_000);
@@ -100,12 +100,12 @@ describe('documents (storeText retention contract)', () => {
     });
 
     test('file upload storeText=false: indexed + downloadable, text discarded — /text 404, /ask 409', async () => {
-        const upload = await client.documents.uploadDocument({
+        const upload = await client.documents.uploadDocument(withSize({
             fileName: 'storetext-false.pdf',
             fileType: 'application/pdf',
             indexMode: 'TEXT',
             storeText: false,
-        });
+        }, fs.readFileSync(SAMPLE_PDF_PATH)));
         const id = upload.id!;
         docIds.push(id);
         await putPdf(upload);
@@ -127,7 +127,7 @@ describe('documents (storeText retention contract)', () => {
         const dlResp = await fetch(dl.downloadUrl!);
         expect(dlResp.status).toBe(200);
 
-        // /ask rejects honestly — there is no retained text to interrogate.
+        // /ask rejects the call — there is no retained text to interrogate.
         await expect(client.inference.documentAsk({
             id,
             prompt: 'Summarize this document.',

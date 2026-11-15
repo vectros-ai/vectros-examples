@@ -251,20 +251,27 @@ class IssuersTokenExchangeSmokeTest {
     void secondDistinctIssuerInSameContextRefusedOneActiveIdpPerContext() {
         // A context has exactly one active issuer, and a pending registration already holds its
         // context, so a second registration is refused before the first is ever verified.
-        // DIFFERENT (issuer, audience) pair, SAME context.
+        // DIFFERENT (issuer, audience) pair, SAME context. The context is this test's own: the class's
+        // shared context has issuers registered and deleted by earlier tests, and a deletion's
+        // asynchronous clean-up must not be able to interleave with this check.
+        String oneCtxId = slug("oneidp");
+        Smoke.live().auth().createAppContext(AppContextRequest.builder().contextId(oneCtxId).name("one-idp spec (java)").build());
         String firstId = slug("oneidp1");
         String secondId = slug("oneidp2");
         try {
             Smoke.live().auth().registerIssuer(IssuerRequest.builder()
                 .issuerId(firstId).issuer("https://" + Smoke.uniqueTag() + ".example.com/")
                 .jwksUri("https://www.googleapis.com/oauth2/v3/certs")
-                .audience("aud-" + Smoke.uniqueTag()).contextId(ctxId).build());
+                .audience("aud-" + Smoke.uniqueTag()).contextId(oneCtxId).build());
             Smoke.expectStatus(() -> Smoke.live().auth().registerIssuer(IssuerRequest.builder()
                 .issuerId(secondId).issuer("https://" + Smoke.uniqueTag() + ".example.com/")
                 .jwksUri("https://www.googleapis.com/oauth2/v3/certs")
-                .audience("aud-" + Smoke.uniqueTag()).contextId(ctxId).build()), 400);
+                .audience("aud-" + Smoke.uniqueTag()).contextId(oneCtxId).build()), 400);
         } finally {
             try { Smoke.live().auth().deleteIssuer(firstId); } catch (RuntimeException ignored) { }
+            try { Smoke.live().auth().deleteIssuer(secondId); } catch (RuntimeException ignored) { }
+            try { Smoke.live().auth().deleteAppContext(oneCtxId,
+                DeleteAppContextRequest.builder().confirm(oneCtxId).build()); } catch (RuntimeException ignored) { }
         }
     }
 
@@ -541,10 +548,22 @@ class IssuersTokenExchangeSmokeTest {
             .scopes(List.of(ScopeClause.builder().allowedActions(List.of("records:r")).build()))
             .build());
         try {
-            // Root key holds users:r implicitly — email present, and correctly per-row.
-            var page = Smoke.live().auth().listAccessProfiles(ctxId,
-                ai.vectros.resources.auth.requests.ListAccessProfilesRequest.builder().build());
-            var rows = page.getData().orElseThrow();
+            // Root key holds users:r implicitly — email present, and correctly per-row. The list is
+            // eventually consistent, so a profile created a moment ago may be missing from the first
+            // read: list again until both appear (bounded), then assert.
+            java.util.Set<String> wanted = java.util.Set.of(
+                "usr_" + userA.getId().orElseThrow(), "usr_" + userB.getId().orElseThrow());
+            long deadline = System.currentTimeMillis() + 20_000;
+            List<ai.vectros.types.AccessProfileResponse> rows;
+            while (true) {
+                rows = Smoke.live().auth().listAccessProfiles(ctxId,
+                    ai.vectros.resources.auth.requests.ListAccessProfilesRequest.builder().build())
+                    .getData().orElseThrow();
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                rows.forEach(p -> p.getPrincipalId().ifPresent(seen::add));
+                if (seen.containsAll(wanted) || System.currentTimeMillis() > deadline) break;
+                try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
             String foundEmailA = rows.stream()
                 .filter(p -> ("usr_" + userA.getId().orElseThrow()).equals(p.getPrincipalId().orElse(null)))
                 .findFirst().flatMap(p -> p.getEmail()).orElse(null);

@@ -989,14 +989,14 @@ describe('capabilities (granted_capabilities)', () => {
     // -----------------------------------------------------------------------
 
     describe('readAccessLogDefault', () => {
-        test('a freshly created context reports null: the field is set on UPDATE only', async () => {
+        test('a context created without the field reports null (no context default)', async () => {
             const ctx = ('capr' + uniqueTag()).slice(0, 31);
             const created = await client.auth.createAppContext({
                 body: { contextId: ctx, name: 'readAccessLogDefault probe' },
             });
             try {
-                // `create` accepts no value for this field, so a new context always reports null (no
-                // context default set). The update call below is the only way a value gets in.
+                // The create omits the field, so the new context reports null (no context default set):
+                // an omitted field is left unset, not defaulted to false.
                 expect(created.readAccessLogDefault ?? null).toBeNull();
                 const fetched = await client.auth.getAppContext({ contextId: ctx });
                 expect(fetched.readAccessLogDefault ?? null).toBeNull();

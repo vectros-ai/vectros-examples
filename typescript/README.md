@@ -36,6 +36,9 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `patch` | RFC-7386 merge-PATCH: partial update, optimistic-lock conflicts. |
 | `type-fidelity` | A schema's declared field types survive the full round trip, and a partial update never trips a type error on a field it did not touch. |
 | `composite-lookup` | A lookup declared over several fields at once (`fieldNames` + the `field=a,b` / `values` query form), including the partial-tuple grouping behavior, the `sortFrom`/`sortTo` sort-key window, and the array-typed `values` parameter's encoding. |
+| `public-view-projection` | A record type whose `publicView` lists some of its fields: the record's public view holds only those, and archiving unpublishes it. Needs the account's public access turned on by the account owner. |
+| `public-media-asset` | The `asset` and `assets` field types and their refusals. Needs the account's public access turned on by the account owner. |
+| `public-view-geo-precision` | A projection public view with a `geo` field published `exact` and on a 1000 m grid, and the precision refusals. Opt-in (`GEO_SEARCH_CHECK=1`); needs public access turned on and geo fields enabled for the account. |
 
 **Documents & folders**
 
@@ -49,6 +52,8 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `documents-filterable-projection` | Which schema-bound payload fields become `?filters=` targets — a field is a filter target because it was declared `filterable`, not because it happens to be short. |
 | `folders` | Folder hierarchy and protection rules. |
 | `documents-untyped-externalid` | An `externalId` needs a `schemaId`: without one the request is a `400`, unless it also passes `confirmUntyped`; the file-upload route follows the same rule. |
+| `documents-hostile-file` | A zip bomb ends `SKIPPED` with `extraction.outcome: UNREADABLE`, while the files uploaded beside it are indexed. |
+| `public-media-profile` | A `fileProfile: PUBLIC_MEDIA` document type, the refusals it adds, and an upload bound to its declared `size` and type. |
 | `external-id-collision` | An `externalId` can no longer be moved onto a slot another document or entity already holds. |
 
 **Search & inference**
@@ -112,6 +117,7 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `delete-fee-race` | Two concurrent deletes of the same user are billed once, not twice. It reads a tenant-wide counter, so run it when nothing else writes to the tenant. |
 | `logs` | `GET /v1/admin/logs` — the API call log, its filters, and the delegation chain on delegate-minted traffic. |
 | `erasure-requests` | `POST`/`GET /v1/erasure-requests`: submit, poll to completion, and check the certificate's own claims, including a partial `contextScope` that keeps the identity (`identityRetained`) and the `purge` rule for subject types. |
+| `self-erasure` | `/v1/me/erasure`: the refusals that come before an end user's own deletion, including `SELF_ERASURE_NOT_ENABLED` for a context that has not turned the feature on. |
 | `negative-paths` / `error-contract` | The error contract — asserting error *bodies*, not just status codes. |
 | `cors-preflight` | The browser preflight contract: the headers a browser-hosted SDK caller needs permitted in order to read an API error at all. |
 | `vectros-version-header` | The `Vectros-Version` request header — sent explicitly, echoed back on a supported version, and rejected with `400` on an unrecognized one. |

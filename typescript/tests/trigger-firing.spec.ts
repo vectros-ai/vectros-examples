@@ -328,7 +328,7 @@ describe('triggers: a declared rule fires', () => {
         // and letting it redden here would make an unrelated race look like a DELETE-projection
         // defect, so the record is left to settle first.
         //
-        // The settle is also the more honest scenario: a client deleting a row is deleting one that
+        // The settle is also the more realistic scenario: a client deleting a row is deleting one that
         // has existed, not one written microseconds earlier.
         await sleep(30_000);
         await client.records.deleteRecord({ id: rec.id! });

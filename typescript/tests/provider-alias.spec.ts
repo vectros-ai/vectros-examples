@@ -11,7 +11,7 @@
  * credential and a signed waiver, neither of which a shared test tenant holds, so it is covered
  * at the unit level instead. All three inference routes accept the field, and each is checked.
  *
- * The control call (same request, no alias) is what keeps the refusal honest: without it a 403
+ * The control call (same request, no alias) is what keeps the refusal meaningful: without it a 403
  * could be any unrelated failure of the route.
  */
 import { client } from '../src/client';

@@ -16,6 +16,14 @@
  *   - a run is cancellable only while it works: cancelling the ended run answers 200 with its final
  *     state and changes nothing
  *   - `GET /v1/runs/{id}` of an id no run has is 404
+ *   - `GET /v1/runs` lists the run (the root key names the context; filtered to the test's own agent and by status), and refuses a root
+ *     key that names neither `contextId` nor `userId`
+ *   - a stored script offered to an agent as a tool: the run calls it (outcome `OK`), `GET /v1/runs/{id}`
+ *     names the script and the exact version that ran, and the execution is counted in `GET /v1/usage`
+ *   - an agent listing rag_ask answers a question from a fixture document the key can read: the call is OK, the answer was
+ *     generated, and the run's settled charge (which includes the answer) stays within the run's cap; the document is deleted afterwards
+ *   - an agent's period cap counts each run's charge: after one run, `GET /v1/agents/{id}` reports that charge as the day's and the
+ *     month's spend, and a run that no longer fits the day's cap is refused `402 AGENT_BUDGET_EXHAUSTED`, naming the period
  *
  * The charge assertions assume a PREPAID tenant: a run reserves its budget from the tenant's inference balance and the charge is what it
  * spent. On a tenant billed for usage afterwards both amounts are 0 (see `usage` on `GET /v1/runs/{id}`), and the non-zero checks below fail
@@ -191,9 +199,10 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
     : 'agent runs: a tool call and a settled charge (skipped: set VECTROS_SMOKE_RUNS=1 to make real, billed runs)', () => {
     const tag = uniqueTag();
     const created: string[] = [];
+    const scriptVersions: string[] = [];
 
     afterAll(async () => {
-        // Retire then purge every agent this file created. A step that did not succeed is reported, not swallowed.
+        // Retire then purge every agent this file created, then delete its script versions. A step that did not succeed is reported, not swallowed.
         for (const id of created) {
             await tryCleanup(`retire agent ${id}`, async () => {
                 const r = await call('DELETE', `/v1/agents/${id}`);
@@ -204,9 +213,15 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
                 if (r.status !== 200) throw new Error(`purge returned ${r.status}`);
             });
         }
+        for (const id of scriptVersions) {
+            await tryCleanup(`delete script version ${id}`, async () => {
+                const r = await call('DELETE', `/v1/scripts/${id}`);
+                if (r.status !== 200 && r.status !== 204) throw new Error(`delete returned ${r.status}`);
+            });
+        }
     });
 
-    async function createAgent(suffix: string): Promise<Json> {
+    async function createAgent(suffix: string, periods?: Json[]): Promise<Json> {
         const r = await call('POST', '/v1/agents', {
             name: `${tag}-${suffix}`,
             description: 'Smoke test agent: counts records with one read-only tool.',
@@ -214,7 +229,7 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
             system: `You count records. Call the ${TOOL} tool exactly once, then answer in one short sentence.`,
             tools: [{ name: TOOL }],
             limits: { maxSteps: 4, maxTokensPerCall: 512, maxToolCalls: 2 },
-            budget: { maxInferenceCents: CAP_CENTS },
+            budget: { maxInferenceCents: CAP_CENTS, ...(periods ? { periods } : {}) },
         });
         expectStatus(r, 201);
         created.push(r.body.id);
@@ -314,7 +329,92 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
             expect(stored).not.toContain(prompt);
             const answer = ev.filter((e) => e.type === 'message.delta').map((e) => String(e.text ?? '')).join('');
             if (answer.length >= 8) expect(stored).not.toContain(answer);
+
+            // ---- the run, listed: the root key names the context; the agent is this test's own, so the run is the only one ----
+            // A filtered listing may answer a short or even empty page with a `nextCursor` (the scan has a budget per request), so the
+            // pages are followed to the end rather than the first one being taken as the whole answer.
+            const listAll = async (query: string): Promise<Json[]> => {
+                const rows: Json[] = [];
+                let cursor: string | undefined;
+                for (let page = 0; page < 20; page++) {
+                    const reply = await call('GET', `/v1/runs?${query}${cursor ? `&startFrom=${encodeURIComponent(cursor)}` : ''}`);
+                    expectStatus(reply, 200);
+                    rows.push(...(reply.body.data as Json[]));
+                    cursor = reply.body.nextCursor ?? undefined;
+                    if (!cursor) return rows;
+                }
+                throw new Error(`GET /v1/runs?${query} still had a nextCursor after 20 pages`);
+            };
+            const agentQuery = `contextId=default&agentId=${encodeURIComponent(agent.id)}`;
+            const listed = await listAll(`${agentQuery}&limit=5`);
+            expect(listed.map((r: Json) => r.id)).toEqual([s.runId]);
+            expect(listed[0].status).toBe('COMPLETED');
+            expect(listed[0].usage).toBeUndefined();
+            const completed = await listAll(`${agentQuery}&status=COMPLETED`);
+            expect(completed.map((r: Json) => r.id)).toEqual([s.runId]);
+            const running = await listAll(`${agentQuery}&status=RUNNING`);
+            expect(running).toEqual([]);
         }
+    }, 600_000);
+
+    test('a stored script offered as a tool runs, and the run names the script version it ran', async () => {
+        // A script that reads nothing and writes nothing: it echoes its input, so the check is about the tool path, not the data.
+        const scriptName = `${tag}-echo`;
+        const pushed = await call('POST', '/v1/scripts', {
+            name: scriptName,
+            source: "({ echoed: input.params.word, length: input.params.word.length });",
+            inputSchema: {
+                type: 'object',
+                properties: { word: { type: 'string', description: 'The word to echo back.' } },
+                required: ['word'],
+            },
+        });
+        expectStatus(pushed, 201);
+        scriptVersions.push(pushed.body.id);
+        expect(pushed.body.inputSchema.required).toEqual(['word']);
+
+        const toolName = 'echo_word';
+        const agent = await call('POST', '/v1/agents', {
+            name: `${tag}-script-tool`,
+            description: 'Smoke test agent: calls one stored script as a tool.',
+            model: MODEL,
+            system: `You echo words. Call the ${toolName} tool exactly once with the word you are given, then answer in one short sentence.`,
+            tools: [{ name: toolName, script: { name: scriptName, version: 'latest' }, description: 'Echoes a word back.' }],
+            limits: { maxSteps: 4, maxTokensPerCall: 512, maxToolCalls: 2 },
+            budget: { maxInferenceCents: CAP_CENTS },
+        });
+        expectStatus(agent, 201);
+        created.push(agent.body.id);
+        expect(agent.body.tools[0].script).toEqual({ name: scriptName, version: 'latest' });
+
+        const usageBefore = await call('GET', '/v1/usage');
+        expectStatus(usageBefore, 200);
+        const executionsBefore: number = usageBefore.body.execution?.executions ?? 0;
+
+        const prompt = `Echo the word "${tag}" using the ${toolName} tool once.`;
+        let s = await startRun(agent.body.id, prompt, `${tag}-script-key`);
+        if (answeredWithoutTool(s)) {
+            console.warn(`run ${s.runId} completed without calling ${toolName}; retrying that run once`);
+            s = await startRun(agent.body.id, prompt, `${tag}-script-key-retry`);
+        }
+        if (s.status !== 200) throw new Error(explainRefusal(s));
+        const last = s.events[s.events.length - 1];
+        expect(last.type).toBe('run.completed');
+        const toolEvents = s.events.filter((e) => e.type === 'tool.completed');
+        if (toolEvents.length === 0) throw new Error(`the run completed without calling ${toolName}`);
+        expect(toolEvents.map((e) => [e.tool, e.outcome])).toEqual(toolEvents.map(() => [toolName, 'OK']));
+
+        // `latest` was resolved once, at run start: the run names the exact version it ran
+        const read = await eventually(() => call('GET', `/v1/runs/${s.runId}`), (r) => r.status === 200 && r.body.terminal === true);
+        expectStatus(read, 200);
+        const scriptCall = read.body.toolCalls.find((c: Json) => c.tool === toolName);
+        expect(scriptCall.outcome).toBe('OK');
+        expect(scriptCall.script).toEqual({ name: scriptName, version: String(pushed.body.scriptVersion) });
+
+        // the execution is billed once, on the script execution meter, and counted in the usage report
+        const usageAfter = await eventually(() => call('GET', '/v1/usage'),
+            (r) => r.status === 200 && (r.body.execution?.executions ?? 0) > executionsBefore);
+        expect(usageAfter.body.execution.executions).toBeGreaterThan(executionsBefore);
     }, 600_000);
 
     test('the same Idempotency-Key never starts a second run, and an ended run cannot be cancelled into a different state', async () => {
@@ -346,7 +446,124 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
         expect(after.body.usage).toEqual(before.body.usage);
     }, 300_000);
 
+    test('a period cap counts each run\'s charge, and a run that no longer fits is refused 402 naming the period', async () => {
+        // The day's cap equals the per-run budget: the first run reserves all of it and fits exactly; once its (non-zero) charge is
+        // counted, a second run's whole budget no longer fits, so the second start is refused before anything is reserved or charged.
+        const agent = await createAgent('period-cap', [{ period: 'DAY', maxInferenceCents: CAP_CENTS }]);
+        // The periods in force before the run: if the day or the month (at UTC-05:00) turns before the read below, the run's charge counts in
+        // the previous one, and the test says so instead of failing.
+        const before = await call('GET', `/v1/agents/${agent.id}`);
+        expectStatus(before, 200);
+        const startOf = (body: Json, period: string): string | undefined =>
+            (body.periodUsage ?? []).find((u: Json) => u.period === period)?.periodStart;
+        const first = await startRun(agent.id, `Reply with the single word: ready. (${tag})`, `${tag}-period-1`);
+        if (first.status !== 200) throw new Error(explainRefusal(first));
+        const end = first.events[first.events.length - 1];
+        if (end.type !== 'run.completed') throw new Error(`the first run did not complete: ${JSON.stringify(end)}`);
+        const charged = end.inferenceBalanceCentsChargedMilli;
+        expect(charged).toBeGreaterThan(0);
+
+        const read = await call('GET', `/v1/agents/${agent.id}`);
+        expectStatus(read, 200);
+        if (startOf(read.body, 'DAY') !== startOf(before.body, 'DAY') || startOf(read.body, 'MONTH') !== startOf(before.body, 'MONTH')) {
+            console.warn('the day or the month turned during the first run; the period counts were not checked this time');
+            return;
+        }
+        expect(startOf(read.body, 'DAY')).toMatch(/T\d{2}:\d{2}:\d{2}-05:00$/);
+        const usage = new Map<string, Json>((read.body.periodUsage ?? []).map((u: Json) => [u.period, u]));
+        expect([...usage.keys()]).toEqual(['DAY', 'MONTH']);
+        expect(usage.get('DAY')!.maxInferenceCents).toBe(CAP_CENTS);
+        expect(usage.get('DAY')!.spentCentsMilli).toBe(charged);
+        expect(usage.get('DAY')!.reservedCentsMilli).toBe(0);
+        expect(usage.get('MONTH')!.maxInferenceCents).toBeUndefined();
+        expect(usage.get('MONTH')!.spentCentsMilli).toBe(charged);
+
+        const second = await startRun(agent.id, `Reply with the single word: ready. (${tag})`, `${tag}-period-2`);
+        if (second.status === 200) {
+            // The one way this can pass legitimately: the day (at UTC-05:00) turned between the two runs. Say so instead of failing.
+            const now = await call('GET', `/v1/agents/${agent.id}`);
+            const dayNow = (now.body.periodUsage ?? []).find((u: Json) => u.period === 'DAY');
+            if (dayNow && dayNow.periodStart !== usage.get('DAY')!.periodStart) {
+                console.warn('the day turned between the two runs; the refusal was not exercised this time');
+                return;
+            }
+            throw new Error(`the second run should not fit the day's cap: ${JSON.stringify(second.events[0])}`);
+        }
+        expect(second.status).toBe(402);
+        expect(second.refusal?.errorCode).toBe('AGENT_BUDGET_EXHAUSTED');
+        expect(second.refusal?.period).toBe('DAY');
+        expect(second.refusal?.resetsAt).toBe(usage.get('DAY')!.resetsAt);
+        expect(second.runId).toBeNull();
+    }, 300_000);
+
+    test('rag_ask answers from the caller\'s content, inside the run\'s budget', async () => {
+        // A document only this run's question matches; rag_ask searches it and the run's model answers from it. The key needs
+        // documents:c/r/d, search:r and inference:r (rag_ask refuses a caller without inference:r, which shows here as HTTP_403).
+        const doc = await call('POST', '/v1/documents', {
+            title: `rag_ask smoke ${tag}`,
+            text: `The Quillmere archive (${tag}) is opened only by its two wardens together, and every opening is written in the warden ledger.`,
+            indexMode: 'HYBRID',
+        });
+        if (doc.status !== 201 && doc.status !== 200) throw new Error(`the fixture document was refused ${doc.status}: ${JSON.stringify(doc.body)}`);
+        try {
+            const indexed = await eventually(() => call('GET', `/v1/documents/${doc.body.id}`),
+                (r) => r.status === 200 && ['INDEXED', 'FAILED'].includes(r.body.indexStatus));
+            expect(indexed.body.indexStatus).toBe('INDEXED');
+            let found = false;
+            for (let i = 0; i < 30 && !found; i++) {
+                const hit = await call('POST', '/v1/search', { query: 'Quillmere archive wardens', mode: 'HYBRID', limit: 10 });
+                found = hit.status === 200 && (hit.body.results ?? []).some((r: Json) => r.documentId === doc.body.id);
+                if (!found) await sleep(2000);
+            }
+            if (!found) throw new Error('the fixture document is INDEXED but a HYBRID search did not find it within 60 s');
+
+            const agent = await call('POST', '/v1/agents', {
+                name: `${tag}-rag-ask`,
+                description: 'Smoke test agent: answers one question with rag_ask.',
+                model: MODEL,
+                system: 'Call the rag_ask tool exactly once with the question you are given as its query. Then reply with one word: '
+                    + 'ANSWERED if its result has a non-empty answer, otherwise EMPTY.',
+                tools: [{ name: 'rag_ask' }],
+                limits: { maxSteps: 3, maxTokensPerCall: 256, maxToolCalls: 1 },
+                budget: { maxInferenceCents: CAP_CENTS, ragMaxInferenceCents: 10 },
+            });
+            expectStatus(agent, 201);
+            created.push(agent.body.id);
+            expect(agent.body.budget.ragMaxInferenceCents).toBe(10);
+
+            const s = await startRun(agent.body.id, 'Who must be present to open the Quillmere archive?', `${tag}-rag-key`);
+            if (s.status !== 200) throw new Error(explainRefusal(s));
+            const calls = s.events.filter((e) => e.type === 'tool.completed' && e.tool === 'rag_ask');
+            if (calls.length === 0) throw new Error('the run completed without calling rag_ask');
+            if (calls[0].code === 'HTTP_403') throw new Error('rag_ask was refused: the key needs inference:r');
+            expect(calls.map((e) => e.outcome)).toEqual(['OK']);
+            // the final word is the last model call's complete text: a model may write before its tool call
+            const completed = s.events.filter((e) => e.type === 'message.completed' && (e.text ?? '').trim() !== '');
+            const answer = (completed.length ? completed[completed.length - 1].text : '').trim();
+            expect(answer.toUpperCase().replace(/^[*_ ]+/, '')).toMatch(/^ANSWERED/);
+            const last = s.events[s.events.length - 1];
+            expect(last.type).toBe('run.completed');
+
+            // the charge (which includes the answer) is read once settled: the stream carries it only when it settled at once
+            const read = await eventually(() => call('GET', `/v1/runs/${s.runId}`),
+                (r) => r.status === 200 && r.body.terminal === true && r.body.usage !== undefined);
+            expect(read.body.toolCalls.filter((c: Json) => c.tool === 'rag_ask').map((c: Json) => c.outcome)).toEqual(['OK']);
+            expect(read.body.usage.inferenceBalanceCentsChargedMilli).toBeGreaterThan(0);
+            expect(read.body.usage.inferenceBalanceCentsChargedMilli).toBeLessThanOrEqual(CAP_MILLI);
+        } finally {
+            await tryCleanup(`delete document ${doc.body.id}`, async () => {
+                const r = await call('DELETE', `/v1/documents/${doc.body.id}`);
+                if (r.status !== 200 && r.status !== 204) throw new Error(`delete returned ${r.status}`);
+            });
+        }
+    }, 300_000);
+
     test('an id no run has is 404', async () => {
         expectStatus(await call('GET', '/v1/runs/00000000000000000000000000000000'), 404);
+    });
+
+    test('the run list refuses a root key that names neither a context nor a user, and an unknown status', async () => {
+        expectStatus(await call('GET', '/v1/runs'), 400);
+        expectStatus(await call('GET', '/v1/runs?contextId=default&status=DONE'), 400);
     });
 });

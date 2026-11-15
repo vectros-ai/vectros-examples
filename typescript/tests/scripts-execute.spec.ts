@@ -157,6 +157,24 @@ describe('scripts: synchronous execution', () => {
         expect(status).toBe(403);
     });
 
+    test('declaring an operation in optInOperations on a push needs the capability mapped to it', async () => {
+        const minted = (await client.auth.mintToken({
+            scope: { allowedActions: ['scripts:c'] },
+        })) as { token: string };
+        const name = 'smoke-declares-' + uniqueTag();
+        // The placeholder is not a real operation name: a token that holds no capability for declaring operations is refused for the
+        // missing capability before any value is looked at, so the 403 below is the capability, not an unknown value.
+        const refused = await rawJson('POST', '/v1/scripts', { name, source: '1;', optInOperations: ['placeholder.operation'] },
+            { token: minted.token });
+        expect(refused.status).toBe(403);
+        expect(String(refused.json?.message)).toContain('needs the capability mapped to it');
+        // The pair: the same token pushes the same script with an empty list, so the 403 above was the capability, not the scope.
+        const accepted = await rawJson('POST', '/v1/scripts', { name, source: '1;', optInOperations: [] }, { token: minted.token });
+        expect(accepted.status).toBe(201);
+        expect(accepted.json.optInOperations).toEqual([]);
+        scriptIds.push(accepted.json.id as string);
+    });
+
     test('scripts:x alone runs the script, but its writes still need the data permissions', async () => {
         const minted = (await client.auth.mintToken({
             scope: { allowedActions: ['scripts:x:' + scriptName] },

@@ -23,6 +23,7 @@ import {
     tryCleanup,
     presignedUploadHeaders,
     expectReject,
+    withSize,
 } from '../src/helpers';
 
 interface MintedToken { token: string; expiresAt: number; }
@@ -50,20 +51,23 @@ describe('documents (re-upload inherits indexMode)', () => {
 
     test('re-upload without indexMode succeeds: same id, inherited mode, new content indexed, old gone', async () => {
         // ---- 1) CREATE: initial upload declares indexMode (the app's create path).
-        const first = await client.documents.uploadDocument({
+        // Each init declares `size`, the exact byte length of the body PUT after it.
+        const oldBody = `Original file body. Marker ${OLD_MARKER}. Lorem ipsum dolor.`;
+        const newBody = `Replacement file body. Marker ${NEW_MARKER}. Sit amet consectetur.`;
+        const first = await client.documents.uploadDocument(withSize({
             fileName: 'reupload-smoke.txt',
             fileType: 'text/plain',
             indexMode: 'HYBRID',
             externalId,
             confirmUntyped: true,
-        });
+        }, oldBody));
         docIds.push(first.id!);
         expect(first.created).toBe(true);
         expect(first.uploadUrl).toMatch(/^https:\/\//);
 
         const putOld = await fetch(first.uploadUrl!, {
             method: 'PUT',
-            body: `Original file body. Marker ${OLD_MARKER}. Lorem ipsum dolor.`,
+            body: oldBody,
             headers: { 'Content-Type': 'text/plain', ...presignedUploadHeaders(first) },
         });
         expect(putOld.status).toBe(200);
@@ -75,12 +79,12 @@ describe('documents (re-upload inherits indexMode)', () => {
         // fileName/fileType/externalId (no indexMode, no upsert). The server must
         // inherit the existing document's stored indexMode, not reject with
         // "'indexMode' is required".
-        const second = await client.documents.uploadDocument({
+        const second = await client.documents.uploadDocument(withSize({
             fileName: 'reupload-smoke.txt',
             fileType: 'text/plain',
             externalId,
             confirmUntyped: true,
-        });
+        }, newBody));
         expect(second.created).toBe(false);
         expect(second.id).toBe(first.id);
         expect(second.uploadUrl).toMatch(/^https:\/\//);
@@ -88,7 +92,7 @@ describe('documents (re-upload inherits indexMode)', () => {
         // ---- 3) PUT the replacement bytes → re-extract → re-index.
         const putNew = await fetch(second.uploadUrl!, {
             method: 'PUT',
-            body: `Replacement file body. Marker ${NEW_MARKER}. Sit amet consectetur.`,
+            body: newBody,
             headers: { 'Content-Type': 'text/plain', ...presignedUploadHeaders(second) },
         });
         expect(putNew.status).toBe(200);
