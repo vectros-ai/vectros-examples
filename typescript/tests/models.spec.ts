@@ -76,6 +76,30 @@ describe('inference models', () => {
         }
     });
 
+    test('a model with prompt-cache prices lists them as per-1K rates in both regions, following the region premium', async () => {
+        // `cachePricing` is present only for a model whose prompt-cache tokens are charged at their own rates (read, 5-minute write, 1-hour write); the
+        // catalog never advertises a rate of 0 for an unpriced model. The US rates follow the same region premium as the input and output rates.
+        const catalog = await client.inference.listInferenceModels();
+        const priced = catalog.models.filter((m: any) => m.cachePricing !== undefined && m.cachePricing !== null);
+        expect(priced.length).toBeGreaterThan(0);
+        for (const model of priced as any[]) {
+            const cp = model.cachePricing;
+            for (const region of ['base', 'us'] as const) {
+                for (const kind of ['read', 'write5m', 'write1h'] as const) {
+                    expect(typeof cp[region][kind]).toBe('number');
+                    expect(cp[region][kind]).toBeGreaterThan(0);
+                }
+                // reading a cached prefix is never dearer than writing it, and the one-hour write is never cheaper than the five-minute one
+                expect(cp[region].read).toBeLessThanOrEqual(cp[region].write5m);
+                expect(cp[region].write1h).toBeGreaterThanOrEqual(cp[region].write5m);
+            }
+            const premium = model.regionPricing.regionPremiumFactor;
+            for (const kind of ['read', 'write5m', 'write1h'] as const) {
+                expect(cp.us[kind]).toBeCloseTo(cp.base[kind] * premium, 4);
+            }
+        }
+    });
+
     test('default model is available on the free plan', async () => {
         // The default model is what gets used when callers omit `model` from
         // the request. Free-plan customers expect that path to work — gating

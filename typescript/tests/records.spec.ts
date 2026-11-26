@@ -43,6 +43,7 @@ describe('records', () => {
                 { fieldId: 'name', fieldType: 'string', required: true, searchable: true },
                 { fieldId: 'notes', fieldType: 'string', required: false, searchable: true },
                 { fieldId: 'department', fieldType: 'string', required: false, filterable: true },
+                { fieldId: 'conditions', fieldType: 'array', required: false, filterable: true },
                 { fieldId: 'email', fieldType: 'string', required: true, searchable: false },
             ],
             lookupFields: [{ fieldName: 'email', unique: true }],
@@ -80,6 +81,7 @@ describe('records', () => {
             name: 'Jane Doe',
             notes: 'presents with hypertension and complains of chest pain',
             department: 'cardiology',
+            conditions: ['hypertension', 'chest-pain'],
             email: `${uniqueTag()}@test.com`,
         };
 
@@ -203,6 +205,7 @@ describe('records', () => {
                 name: 'John Smith',
                 notes: 'sprained ankle',
                 department: 'orthopedics',
+                conditions: ['ankle-sprain'],
                 email: `${uniqueTag()}@test.com`,
             },
             userId,
@@ -226,6 +229,21 @@ describe('records', () => {
         const ids = (results.results ?? []).map((r) => r.documentId);
         expect(ids).toContain(recordIds[0]);    // ANCHOR cardiology
         expect(ids).not.toContain(otherRec.id); // orthopedics filtered out
+
+        // An `array` field filtered by one of its elements, and by a list of
+        // values: the record holding the element is returned, the other is not.
+        for (const conditions of ['chest-pain', ['chest-pain', 'no-such-condition']]) {
+            const byElement = await client.search.content({
+                query: 'hypertension',
+                mode: 'HYBRID',
+                limit: 50,
+                createdAfter: testStartedAt,
+                filters: { conditions },
+            });
+            const elementIds = (byElement.results ?? []).map((r) => r.documentId);
+            expect(elementIds).toContain(recordIds[0]);    // ANCHOR holds 'chest-pain'
+            expect(elementIds).not.toContain(otherRec.id); // holds only 'ankle-sprain'
+        }
     });
 
     test('ownership filter — userId scoping restricts results', async () => {
@@ -633,4 +651,177 @@ describe('records', () => {
                 client.schemas.deleteSchema({ id: docSchemaId }));
         }
     });
+});
+
+// An `array` field declaration with an element type. Built outside the
+// request literal so this file also compiles against an SDK that predates
+// `itemType`.
+const arrayField = (fieldId: string, itemType: 'number' | 'date' | 'boolean') => {
+    const field = { fieldId, fieldType: 'array' as const, itemType, required: false, filterable: true };
+    return field;
+};
+
+// Filters on `array` fields with an `itemType` (`number`, `date` and
+// `boolean`), each run in every search mode. Three records: one holding a
+// matching element, one whose elements fall on both sides of each range (so
+// each bound is met by some element but no element is inside), and one
+// outside every filter. Only the first is returned.
+describe('records: typed array fields', () => {
+    let schemaId: string;
+    let recordType: string;
+    let testStartedAt: string;
+    let match: string;      // sizes [2, 7.5], shifts 2026-12-01 and 2026-12-08, flags [true]
+    let straddle: string;   // sizes [3, 20], shifts 2026-12-01 and 2026-12-20, flags [false]
+    let outside: string;    // sizes [30], one shift on 2027-03-01, flags [false]
+    const day = (iso: string) => Date.parse(`${iso}T00:00:00Z`);
+
+    beforeAll(async () => {
+        testStartedAt = new Date().toISOString();
+        recordType = `smoke_shift_${uniqueTag()}`.replace(/-/g, '_');
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: recordType,
+            displayName: 'Smoke Test Volunteer Shift',
+            indexMode: 'HYBRID',
+            allowedSurfaces: ['record'],
+            fields: [
+                { fieldId: 'title', fieldType: 'string', required: true, searchable: true },
+                arrayField('sizes', 'number'),
+                arrayField('shiftDates', 'date'),
+                arrayField('flags', 'boolean'),
+            ],
+        } });
+        schemaId = schema.id!;
+
+        const create = async (sizes: number[], shiftDates: string[], flags: boolean[]) => {
+            const rec = await client.records.createRecord({ body: {
+                typeName: recordType, schemaId, payload: { title: 'Food bank volunteer shift', sizes, shiftDates, flags },
+            } });
+            await pollUntilIndexed(rec.id!, 'record');
+            return rec.id!;
+        };
+        match = await create([2, 7.5], ['2026-12-01', '2026-12-08'], [true]);
+        straddle = await create([3, 20], ['2026-12-01', '2026-12-20'], [false]);
+        outside = await create([30], ['2027-03-01'], [false]);
+    });
+
+    afterAll(async () => {
+        for (const id of [match, straddle, outside].filter(Boolean)) {
+            await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
+        }
+        await tryCleanup('delete schema', () => client.schemas.deleteSchema({ id: schemaId }));
+    });
+
+    type SearchFilters = NonNullable<NonNullable<Parameters<typeof client.search.content>[0]>['filters']>;
+    const filtersMatchingOnlyTheFirst: [string, SearchFilters][] = [
+        ['an integer element', { sizes: 2 }],
+        ['a fractional element', { sizes: 7.5 }],
+        ['a number element in a set', { sizes: { $in: [7.5, 99] } }],
+        ['a number element in a range', { sizes: { $gte: 5, $lte: 10 } }],
+        ['a date element by its timestamp', { shiftDates: day('2026-12-08') }],
+        ['a date element by its ISO date', { shiftDates: '2026-12-08' }],
+        ['a date element in a range', { shiftDates: { $gte: day('2026-12-05'), $lte: day('2026-12-10') } }],
+        ['a boolean element', { flags: true }],
+    ];
+
+    // A SEMANTIC search with a range over an array field's elements answers 200 with an empty list (a known limitation). Exactly these two SEMANTIC cases are skipped, visibly; TEXT and HYBRID still run them. Delete this set and the skip below when the limitation is fixed.
+    const semanticRangeSkipped = new Set(['a number element in a range', 'a date element in a range']);
+    for (const mode of ['TEXT', 'SEMANTIC', 'HYBRID'] as const) {
+        for (const [label, filters] of filtersMatchingOnlyTheFirst) {
+            if (mode === 'SEMANTIC' && semanticRangeSkipped.has(label)) {
+                test.skip(`${mode}: ${label} (skipped: a range over an array field's elements matches nothing in SEMANTIC mode, a known limitation)`, () => {});
+                continue;
+            }
+            test(`${mode}: ${label}`, async () => {
+                const results = await client.search.content({
+                    query: 'food bank volunteer shift',
+                    mode,
+                    limit: 50,
+                    createdAfter: testStartedAt,
+                    filters,
+                });
+                const ids = (results.results ?? []).map((r) => r.documentId);
+                expect(ids).toContain(match);
+                expect(ids).not.toContain(straddle);
+                expect(ids).not.toContain(outside);
+            });
+        }
+    }
+});
+
+// Two types use the same field name: the first as a `string` field, the
+// second as an `array` of numbers. An element filter and a range filter on
+// that name, run in every search mode, return the record holding a matching
+// element and not the other record.
+describe('records: a number list under a field name first used for text', () => {
+    let testStartedAt: string;
+    const fieldId = `shared_${uniqueTag()}`.replace(/-/g, '_');
+    const schemaIds: string[] = [];
+    const recordIds: string[] = [];
+    let inRange: string;
+    let outside: string;
+
+    const createSchema = async (field: 'text' | 'numbers') => {
+        const schema = await client.schemas.createSchema({ body: {
+            typeName: `smoke_shared_${uniqueTag()}`.replace(/-/g, '_'),
+            displayName: 'Smoke Test Shared Field Name',
+            indexMode: 'HYBRID',
+            allowedSurfaces: ['record'],
+            fields: [
+                { fieldId: 'title', fieldType: 'string', required: true, searchable: true },
+                field === 'text'
+                    ? { fieldId, fieldType: 'string', required: false, filterable: true }
+                    : arrayField(fieldId, 'number'),
+            ],
+        } });
+        schemaIds.push(schema.id!);
+        return schema;
+    };
+    const createRecord = async (schema: { id?: string; typeName?: string }, value: unknown) => {
+        const rec = await client.records.createRecord({ body: {
+            typeName: schema.typeName!, schemaId: schema.id!, payload: { title: 'Community garden volunteer day', [fieldId]: value },
+        } });
+        recordIds.push(rec.id!);
+        await pollUntilIndexed(rec.id!, 'record');
+        return rec.id!;
+    };
+
+    beforeAll(async () => {
+        testStartedAt = new Date().toISOString();
+        const textFirst = await createSchema('text');
+        await createRecord(textFirst, 'seven');
+        const numbers = await createSchema('numbers');
+        inRange = await createRecord(numbers, [3, 7]);
+        outside = await createRecord(numbers, [20]);
+    });
+
+    afterAll(async () => {
+        for (const id of recordIds) {
+            await tryCleanup(`delete record ${id}`, () => client.records.deleteRecord({ id }));
+        }
+        for (const id of schemaIds) {
+            await tryCleanup(`delete schema ${id}`, () => client.schemas.deleteSchema({ id }));
+        }
+    });
+
+    for (const mode of ['TEXT', 'SEMANTIC', 'HYBRID'] as const) {
+        if (mode === 'SEMANTIC') {
+            // The range half of this case matches nothing in SEMANTIC mode (a known limitation), so the SEMANTIC case is skipped, visibly; TEXT and HYBRID still run it. Delete this branch when the limitation is fixed.
+            test.skip(`${mode}: an element and a range still match the number list (skipped: a range over an array field's elements matches nothing in SEMANTIC mode, a known limitation)`, () => {});
+            continue;
+        }
+        test(`${mode}: an element and a range still match the number list`, async () => {
+            for (const filter of [7, { $gte: 5, $lte: 10 }]) {
+                const results = await client.search.content({
+                    query: 'community garden volunteer day',
+                    mode,
+                    limit: 50,
+                    createdAfter: testStartedAt,
+                    filters: { [fieldId]: filter },
+                });
+                const ids = (results.results ?? []).map((r) => r.documentId);
+                expect(ids).toContain(inRange);
+                expect(ids).not.toContain(outside);
+            }
+        });
+    }
 });

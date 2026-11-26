@@ -107,6 +107,26 @@ describe('capabilities (granted_capabilities)', () => {
         }
     });
 
+    test('public-publish and script-egress-declare are recognized names: a profile carrying them is accepted and reads back with them', async () => {
+        // The opposite of the unrecognized-name case above: the two newest names must be on the list, or a role that grants them could not be written. The
+        // clause is read back through the profile, so this proves the names are stored as granted, not merely tolerated on the way in.
+        const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+        const principalId = `usr_${user.id}`;
+        try {
+            const created = await client.auth.createAccessProfile({
+                contextId: ctxId,
+                body: { principalId, scopes: [{ allowed_actions: ['schemas:cu', 'scripts:c'], granted_capabilities: ['public-publish', 'script-egress-declare'] }] },
+            });
+            expect(created.principalId).toBe(principalId);
+            const loaded = await client.auth.getAccessProfile({ contextId: ctxId, principalId });
+            const granted = ((loaded.scopes?.[0] as any)?.granted_capabilities ?? []) as string[];
+            expect([...granted].sort()).toEqual(['public-publish', 'script-egress-declare']);
+        } finally {
+            await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId }));
+            await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+        }
+    });
+
     test('a "*" in allowed_actions confers ZERO capabilities — it is not a wildcard here', async () => {
         // '*' would ordinarily satisfy almost any allowed_actions check; delegate-mint is the
         // cheapest capability to probe with no extra setup (binding a scoped key to a DIFFERENT
@@ -1126,6 +1146,117 @@ describe('capabilities (granted_capabilities)', () => {
                     client.auth.deleteAccessProfile({ contextId: ctxB, principalId: `usr_${other.id}` }));
                 await tryCleanup('other user', () => client.identity.deleteUser({ id: other.id! }));
                 await tryCleanup('context B', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // public-keys — the publishable-key verbs. Not a capability: a control-plane resource gated by the verb alone
+    // (c issue, r list, d revoke), confined to the credential's own app context. Exercised here through the same
+    // real mint path as the capabilities above. Every key is issued in this file's own fresh context and revoked
+    // before the test ends, so no other context's keys are touched.
+    // -----------------------------------------------------------------------
+    describe('public-keys', () => {
+        // The key list is the tenant's keys oldest first, filtered to the caller's context AFTER the page is read, so pages can be
+        // short and a new key is rarely on page one: every read here follows nextCursor to the end.
+        async function allPublicKeys(c: VectrosClient) {
+            const out: Array<{ keyId?: string; contextId?: string; status?: string }> = [];
+            for (let startFrom: string | undefined, pages = 0; pages < 50; pages++) {
+                const page = await c.auth.listPublicAppKeys({ limit: 100, ...(startFrom ? { startFrom } : {}) });
+                out.push(...(page.data ?? []));
+                startFrom = page.nextCursor ?? undefined;
+                if (!startFrom) break;
+            }
+            return out;
+        }
+
+        test('without a public-keys verb the key routes are 403; public-keys:r lists but cannot issue', async () => {
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            try {
+                const none = await mintCapableKey(ctxId, user.id!, ['records:r'], undefined);
+                try {
+                    await expect(none.scoped.auth.listPublicAppKeys({})).rejects.toMatchObject({ statusCode: 403 });
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: none.keyId }));
+                }
+                const reader = await mintCapableKey(ctxId, user.id!, ['public-keys:r'], undefined);
+                try {
+                    for (const k of await allPublicKeys(reader.scoped)) expect(k.contextId).toBe(ctxId);
+                    await expect(reader.scoped.auth.createPublicAppKey({ contextId: ctxId })).rejects.toMatchObject({ statusCode: 403 });
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId: reader.keyId }));
+                }
+            } finally {
+                await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+            }
+        });
+
+        test("another context's key is never listed to a confined credential, and revoking it is the uniform 404", async () => {
+            const ctxB = ('capb' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: ctxB, name: 'capabilities spec, second context' } });
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            let foreignKeyId: string | undefined;
+            try {
+                const foreign = await client.auth.createPublicAppKey({ contextId: ctxB, keyClass: 'pub' });
+                foreignKeyId = foreign.keyId!;
+                const { scoped, keyId } = await mintCapableKey(ctxId, user.id!, ['public-keys:crd'], undefined);
+                try {
+                    expect((await allPublicKeys(scoped)).map((k) => k.keyId)).not.toContain(foreignKeyId);
+                    await expect(scoped.auth.revokePublicAppKey({ keyId: foreignKeyId })).rejects.toMatchObject({ statusCode: 404 });
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId }));
+                }
+            } finally {
+                if (foreignKeyId) await tryCleanup('foreign publishable key', () => client.auth.revokePublicAppKey({ keyId: foreignKeyId! }));
+                await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
+                await tryCleanup('context B', () => client.auth.deleteAppContext({ contextId: ctxB, confirm: ctxB }));
+            }
+        });
+
+        test('public-keys:crd issues, lists and revokes in its OWN context only; another context is 403', async () => {
+            const user = await client.identity.createUser({ body: { externalId: uniqueTag() } });
+            const issued: string[] = [];
+            try {
+                const { scoped, keyId } = await mintCapableKey(ctxId, user.id!, ['public-keys:crd'], undefined);
+                try {
+                    const key = await scoped.auth.createPublicAppKey({ contextId: ctxId, keyClass: 'pub' });
+                    issued.push(key.keyId!);
+                    expect(key.appKey).toMatch(/^pub_/);
+                    expect(key.contextId).toBe(ctxId);
+                    expect(key.status).toBe('ACTIVE');
+                    expect(key.serverSecret).toBeUndefined();
+
+                    // The credential is confined to ctxId: issuing for the default context is refused before any
+                    // existence check, whatever that context holds.
+                    await expect(scoped.auth.createPublicAppKey({ contextId: 'default' })).rejects.toMatchObject({ statusCode: 403 });
+
+                    // the list is read from an index that catches up shortly after a write
+                    let listed = await allPublicKeys(scoped);
+                    for (let i = 0; i < 10 && !listed.some((k) => k.keyId === key.keyId); i++) {
+                        await sleep(2000);
+                        listed = await allPublicKeys(scoped);
+                    }
+                    expect(listed.map((k) => k.keyId)).toContain(key.keyId);
+                    for (const k of listed) expect(k.contextId).toBe(ctxId);
+
+                    const revoked = await scoped.auth.revokePublicAppKey({ keyId: key.keyId! });
+                    expect((revoked.revoked ?? []).map((k) => k.keyId)).toContain(key.keyId);
+                    let after = await allPublicKeys(scoped);
+                    for (let i = 0; i < 10 && after.find((k) => k.keyId === key.keyId)?.status !== 'REVOKED'; i++) {
+                        await sleep(2000);
+                        after = await allPublicKeys(scoped);
+                    }
+                    expect(after.find((k) => k.keyId === key.keyId)?.status).toBe('REVOKED');
+                    issued.length = 0;
+                } finally {
+                    await tryCleanup('probe key', () => client.auth.revokeScopedKey({ keyId }));
+                }
+            } finally {
+                for (const k of issued) await tryCleanup('publishable key', () => client.auth.revokePublicAppKey({ keyId: k }));
+                await tryCleanup('profile', () => client.auth.deleteAccessProfile({ contextId: ctxId, principalId: `usr_${user.id}` }));
+                await tryCleanup('user', () => client.identity.deleteUser({ id: user.id! }));
             }
         });
     });

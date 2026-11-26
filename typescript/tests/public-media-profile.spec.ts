@@ -100,6 +100,27 @@ describe('public-media document types', () => {
         schemaIds.push(plainSchemaId);
     });
 
+    // Where public images are not enabled in this environment, every upload of a public-media type is refused with 503
+    // PUBLIC_ACCESS_UNAVAILABLE. One probe decides, and asserts that refusal, so the upload cases below either run in full or the
+    // refusal itself is what this spec checked: never a silent pass.
+    let processing: boolean | undefined;
+    async function imagesProcessed(): Promise<boolean> {
+        if (processing === undefined) {
+            const probe = await call('POST', '/v1/documents/upload', {
+                fileName: 'probe.png', fileType: 'image/png', schemaId: mediaSchemaId, size: PNG.length,
+            });
+            if (probe.status === 503) {
+                expect(probe.body.errorCode).toBe('PUBLIC_ACCESS_UNAVAILABLE');
+                processing = false;
+            } else {
+                expect(probe.status).toBe(201);
+                docIds.push(probe.body.id);
+                processing = true;
+            }
+        }
+        return processing;
+    }
+
     afterAll(async () => {
         for (const id of docIds) {
             await tryCleanup(`delete doc ${id}`, () => call('DELETE', `/v1/documents/${id}`));
@@ -128,12 +149,15 @@ describe('public-media document types', () => {
         expectRefused(await call('POST', '/v1/documents', {
             title: 'not an image', text: 'hello', schemaId: mediaSchemaId,
         }), 400, 'PUBLIC_MEDIA_TEXT_NOT_ALLOWED');
+        if (!(await imagesProcessed())) return;   // the probe asserted the 503
         expectRefused(await call('POST', '/v1/documents/upload', {
-            fileName: 'p.png', fileType: 'image/png', schemaId: mediaSchemaId, indexMode: 'NONE',
+            // `size` is sent so the refusal under test is the indexMode, not a missing size
+            fileName: 'p.png', fileType: 'image/png', schemaId: mediaSchemaId, indexMode: 'NONE', size: PNG.length,
         }), 409, 'PUBLIC_MEDIA_TYPE_CHANGE_NOT_ALLOWED');
     });
 
     test('once the upload arrives the file cannot be replaced, the type cannot change, and there is no text', async () => {
+        if (!(await imagesProcessed())) return;   // the probe asserted the 503
         const externalId = `smoke-photo-${tag}`;
         const init = await call('POST', '/v1/documents/upload', {
             fileName: 'p.png', fileType: 'image/png', schemaId: mediaSchemaId, externalId, size: PNG.length,
@@ -167,6 +191,7 @@ describe('public-media document types', () => {
 
     // Bound uploads
     test('a public-media upload without size, of a type it does not accept, or over its limit is refused', async () => {
+        if (!(await imagesProcessed())) return;   // the probe asserted the 503
         expectRefused(await call('POST', '/v1/documents/upload', {
             fileName: 'p.png', fileType: 'image/png', schemaId: mediaSchemaId,
         }), 400, 'SIZE_REQUIRED');
@@ -183,6 +208,7 @@ describe('public-media document types', () => {
     });
 
     test('a bound upload: the storage service refuses another Content-Type or another length, and takes the declared one', async () => {
+        if (!(await imagesProcessed())) return;   // the probe asserted the 503
         const init = await call('POST', '/v1/documents/upload', {
             fileName: 'b.png', fileType: 'image/png', schemaId: mediaSchemaId, size: PNG.length,
         });
@@ -208,13 +234,11 @@ describe('public-media document types', () => {
         expect(exact.status).toBe(200);
     });
 
-    test('a plain upload without size is unbound, exactly as before; with size it is bound', async () => {
-        const unbound = await call('POST', '/v1/documents/upload', {
+    test('a plain upload without size is refused (size is required for every upload); with size it is bound', async () => {
+        // API 0.51.0 or later.
+        expectRefused(await call('POST', '/v1/documents/upload', {
             fileName: 'u.txt', fileType: 'text/plain', schemaId: plainSchemaId,
-        });
-        expect(unbound.status).toBe(201);
-        docIds.push(unbound.body.id);
-        expect(unbound.body.requiredHeaders).toEqual({ 'If-None-Match': '*' });
+        }), 400, 'SIZE_REQUIRED');
         const bound = await call('POST', '/v1/documents/upload', {
             fileName: 'b.txt', fileType: 'text/plain; charset=utf-8', schemaId: plainSchemaId, size: 5,
         });
@@ -228,7 +252,8 @@ describe('public-media document types', () => {
 
     test('the profile cannot be added to a type that already has documents', async () => {
         const init = await call('POST', '/v1/documents/upload', {
-            fileName: 'l.pdf', fileType: 'application/pdf', schemaId: plainSchemaId,
+            // the upload is only started, never PUT, so any positive size will do
+            fileName: 'l.pdf', fileType: 'application/pdf', schemaId: plainSchemaId, size: 1,
         });
         expect(init.status).toBe(201);
         docIds.push(init.body.id);

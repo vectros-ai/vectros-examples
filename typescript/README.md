@@ -34,9 +34,17 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | `records-tiering-safety` | Payload tiering: once a payload is externalized, list and lookup return only the inline projection — and the guard that stops a `PUT` truncating what it did not read. |
 | `records-ttl` | The write-time contract for an absolute record TTL (`expiresAt`): the opt-in gate, the minimum floor, rejection of a malformed value, and that setting or extending an expiry is never dropped as a no-op. The reap itself runs on a schedule, so no test observes the deletion. |
 | `patch` | RFC-7386 merge-PATCH: partial update, optimistic-lock conflicts. |
+| `instant-field` | The `instant` field type: a value in any offset is stored and returned in UTC, an offset-less value is a `400`, and lookups and search range filters compare by time. |
+| `public-list-by-lookup` | An anonymous list of a public type by a lookup field it publishes: only the published records of that value, never a private field. Needs public access on and a public budget. |
+| `array-item-limits` | `validation.maxItems` on an `array` field: over the limit is a `400`, at the limit succeeds, a record stored over it is still updatable. |
 | `type-fidelity` | A schema's declared field types survive the full round trip, and a partial update never trips a type error on a field it did not touch. |
 | `composite-lookup` | A lookup declared over several fields at once (`fieldNames` + the `field=a,b` / `values` query form), including the partial-tuple grouping behavior, the `sortFrom`/`sortTo` sort-key window, and the array-typed `values` parameter's encoding. |
 | `public-view-projection` | A record type whose `publicView` lists some of its fields: the record's public view holds only those, and archiving unpublishes it. Needs the account's public access turned on by the account owner. |
+| `lookup-addition` | Adding a lookup to a type that already has records: a record written before the lookup is found by it only after its next write. |
+| `public-filter-only-search` | An anonymous search with a filter and no `q` lists the published records that match: never a draft, the same records in the same order when paged, and an `array` element match. Needs public access on, a public budget, and public text search allowed by the account owner. |
+| `public-instant-filters` | An anonymous search filters an `instant` field by an exact moment, by a range (a day runs from its first millisecond to its last) and by a set, in every search mode the type offers. Needs public access on, a public budget, and public text, semantic and hybrid search allowed by the account owner. |
+| `public-search-sort` | An anonymous search ordered by a field: ascending and descending, records without a value last, the same order on every page. Needs public access on, a public budget, and public text search allowed by the account owner. |
+| `public-search` | An anonymous search with a publishable key finds a published record by a word in a public field, serves only the public fields, and refuses a forged key. Needs public access on, a public budget, and public text search allowed by the account owner. |
 | `public-media-asset` | The `asset` and `assets` field types and their refusals. Needs the account's public access turned on by the account owner. |
 | `public-view-geo-precision` | A projection public view with a `geo` field published `exact` and on a 1000 m grid, and the precision refusals. Opt-in (`GEO_SEARCH_CHECK=1`); needs public access turned on and geo fields enabled for the account. |
 
@@ -61,6 +69,8 @@ Every spec in `tests/` is listed here. They run independently — read one on it
 | Example | Demonstrates |
 |---|---|
 | `search` | Cross-content hybrid search, pagination (`hasMore`, the full 1–100 `limit` range), unique-document dedup, `externalId` on hits, and `textScore` in `TEXT` mode. |
+| `search-field-order` | Ordering search results by a `number` or `date` field (`sortBy`, `order`), records without a value last, and the refusals. |
+| `search-one-row-per-record` | A record created and written again at once is one search result row. |
 | `null-sentinel-search` | The null sentinel in a search scope clause: adding `null` to a `data_scope` value list additionally reaches owner-less (tenant-level) rows, without widening past what the caller could already read — proven on both the text and the vector engine. |
 | `schema-reserved-fields` | The field ids a schema may not declare `filterable` — the platform's own search-index metadata keys — and where that check deliberately stops. |
 | `chat` / `rag` | Streaming inference and grounded RAG over your corpus; RAG's `search.limit` is bounded to 1–100. |

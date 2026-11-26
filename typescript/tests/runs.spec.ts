@@ -118,7 +118,7 @@ interface Started {
 }
 
 /** Starts a run and reads its event stream to the end. A refused start has no events and carries the error body. */
-async function startRun(agentId: string, input: string, idempotencyKey: string): Promise<Started> {
+async function startRun(agentId: string, input: string, idempotencyKey: string, budgetCents: number = CAP_CENTS, agentVersion?: number, readOnly: boolean = true): Promise<Started> {
     const t0 = Date.now();
     const resp = await fetch(`${baseUrl()}/v1/runs`, {
         method: 'POST',
@@ -129,9 +129,10 @@ async function startRun(agentId: string, input: string, idempotencyKey: string):
         },
         body: JSON.stringify({
             agentId,
+            ...(agentVersion !== undefined ? { agentVersion } : {}),
             input: { text: input },
-            budget: { maxInferenceCents: CAP_CENTS },
-            readOnly: true,
+            budget: { maxInferenceCents: budgetCents },
+            readOnly,
         }),
         // A stream that never ends must fail this call, not hang the file: the run is billed up to its cap either way.
         signal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
@@ -494,6 +495,133 @@ suite(RUNS_ENABLED ? 'agent runs: a tool call and a settled charge'
         expect(second.refusal?.period).toBe('DAY');
         expect(second.refusal?.resetsAt).toBe(usage.get('DAY')!.resetsAt);
         expect(second.runId).toBeNull();
+    }, 300_000);
+
+    test('a run of an older version whose budget is above the agent\'s period cap is refused 400 BUDGET_EXCEEDS_PERIOD_CAP before anything is reserved or charged', async () => {
+        // The caps of the agent's NEWEST version apply to every run, and a cap may not be below its own version's per-run budget, so the refusal is reachable only
+        // through an older version: version 1 has a per-run budget of 30 cents and no cap; version 2 (budget 25) adds a DAY cap of 25. A run of version 1 asking for 26
+        // (below version 1's budget, above the cap) can never fit however long it waits: the refusal names the period, carries no `resetsAt`, and starts no run.
+        // It is an admission refusal: no model is called and nothing is charged.
+        const definition = (budget: Json): Json => ({
+            name: `${tag}-period-exceeds`,
+            description: 'Smoke test agent: counts records with one read-only tool.',
+            model: MODEL,
+            system: `You count records. Call the ${TOOL} tool exactly once, then answer in one short sentence.`,
+            tools: [{ name: TOOL }],
+            limits: { maxSteps: 4, maxTokensPerCall: 512, maxToolCalls: 2 },
+            budget,
+        });
+        const v1 = await call('POST', '/v1/agents', definition({ maxInferenceCents: CAP_CENTS + 5 }));
+        expectStatus(v1, 201);
+        created.push(v1.body.id);
+        const v2 = await call('PUT', `/v1/agents/${v1.body.id}`, definition({ maxInferenceCents: CAP_CENTS, periods: [{ period: 'DAY', maxInferenceCents: CAP_CENTS }] }));
+        expectStatus(v2, 200);
+        expect(v2.body.version).toBe(2);
+
+        const refused = await startRun(v1.body.id, `Reply with the single word: ready. (${tag})`, `${tag}-exceeds-1`, CAP_CENTS + 1, 1);
+        expect(refused.status).toBe(400);
+        expect(refused.refusal?.errorCode).toBe('BUDGET_EXCEEDS_PERIOD_CAP');
+        expect(refused.refusal?.period).toBe('DAY');
+        expect(refused.refusal?.resetsAt).toBeUndefined();
+        expect(String(refused.refusal?.message ?? '')).toContain(String(CAP_CENTS));
+        expect(refused.runId).toBeNull();
+    }, 60_000);
+
+    test('one run reads a record, reads a document\'s text, searches content and updates the record: each tool call ends OK', async () => {
+        // ONE billed run on the small model (the smallest prompt that exercises the four tools). The fixtures are a record type with one string field, a record,
+        // and a text document with a marker phrase the search finds; all are deleted afterwards. The run is NOT read-only (the update writes the record).
+        const typeName = `smoke_runtools_${tag.replace(/[^A-Za-z0-9_]/g, '_')}`;
+        const marker = `Fennlark${tag.replace(/[^A-Za-z0-9]/g, '')}`;
+        // what was created, so the finally deletes exactly that wherever the test dies
+        let schemaId: string | undefined;
+        let ownerId: string | undefined;
+        let recordId: string | undefined;
+        let docId: string | undefined;
+        try {
+            const schema = await call('POST', '/v1/schemas', {
+                typeName, displayName: 'Run tools probe', allowedSurfaces: ['record'], indexMode: 'NONE', capabilities: { readAccessLog: true },
+                fields: [{ fieldId: 'title', fieldType: 'string' }],
+            });
+            expectStatus(schema, 201);
+            schemaId = schema.body.id;
+            // a read is logged against the record's owners, so the record has one: a user
+            const owner = await call('POST', '/v1/users', { externalId: `runtools-${tag}`, email: `runtools-${uniqueTag()}@example.com` });
+            if (owner.status >= 300) throw new Error(`the fixture user was refused ${owner.status}: ${JSON.stringify(owner.body)}`);
+            ownerId = owner.body.id;
+            const record = await call('POST', '/v1/records', { typeName, schemaId: schema.body.id, userId: owner.body.id, payload: { title: 'before' } });
+            expectStatus(record, 201);
+            recordId = record.body.id;
+            const doc = await call('POST', '/v1/documents', {
+                title: `run tools ${tag}`, text: `The ${marker} ledger is kept by the north gatekeeper.`, indexMode: 'HYBRID',
+            });
+            if (doc.status !== 201 && doc.status !== 200) throw new Error(`the fixture document was refused ${doc.status}: ${JSON.stringify(doc.body)}`);
+            docId = doc.body.id;
+            const indexed = await eventually(() => call('GET', `/v1/documents/${doc.body.id}`),
+                (r) => r.status === 200 && ['INDEXED', 'FAILED'].includes(r.body.indexStatus));
+            expect(indexed.body.indexStatus).toBe('INDEXED');
+
+            const agent = await call('POST', '/v1/agents', {
+                name: `${tag}-run-tools`,
+                description: 'Smoke test agent: calls four data tools once each.',
+                model: MODEL,
+                system: 'Call each of these tools exactly once, in this order, with exactly the arguments the user message gives: records_get, documents_text, '
+                    + 'search_content, records_update. Then reply with the one word: done.',
+                tools: [{ name: 'records_get' }, { name: 'documents_text' }, { name: 'search_content' }, { name: 'records_update', allowWrites: true }],
+                limits: { maxSteps: 8, maxTokensPerCall: 512, maxToolCalls: 6, maxWrites: 1 },
+                budget: { maxInferenceCents: CAP_CENTS },
+            });
+            expectStatus(agent, 201);
+            created.push(agent.body.id);
+
+            const input = `records_get: id ${record.body.id}. documents_text: id ${doc.body.id}. search_content: query "${marker}". `
+                + `records_update: id ${record.body.id}, payload {"title": "after"}.`;
+            const s = await startRun(agent.body.id, input, `${tag}-run-tools-1`, CAP_CENTS, undefined, false);
+            if (s.status !== 200) throw new Error(explainRefusal(s));
+            expect(s.events[s.events.length - 1].type).toBe('run.completed');
+
+            const read = await eventually(() => call('GET', `/v1/runs/${s.runId}`),
+                (r) => r.status === 200 && r.body.terminal === true && r.body.usage !== undefined);
+            const outcomes = (tool: string) => read.body.toolCalls.filter((c: Json) => c.tool === tool).map((c: Json) => c.outcome);
+            for (const tool of ['records_get', 'documents_text', 'search_content', 'records_update']) {
+                expect({ tool, outcomes: outcomes(tool) }).toEqual({ tool, outcomes: ['OK'] });
+            }
+            const after = await call('GET', `/v1/records/${record.body.id}`);
+            expectStatus(after, 200);
+            expect(after.body.payload.title).toBe('after');
+            // The change and the read the run made carry who made them: `actingVia` names the kind (agent-run), the agent and the run, beside the caller.
+            // the version history is read from an index that settles shortly after the write (one run read it at once, another did not): look for up to 60 s
+            const versionsPath = `/v1/records/${record.body.id}/versions`;
+            let versions = await call('GET', versionsPath);
+            for (let i = 0; i < 12 && !(versions.status === 200 && (versions.body.data ?? []).some((v: Json) => v.actingVia?.runId === s.runId)); i++) {
+                await sleep(5000);
+                versions = await call('GET', versionsPath);
+            }
+            console.log(`record versions: ${JSON.stringify(versions.body).slice(0, 600)}`);
+            expectStatus(versions, 200);
+            const viaRun = (versions.body.data ?? []).filter((v: Json) => v.actingVia?.runId === s.runId);
+            expect(viaRun.length).toBeGreaterThan(0);
+            expect(viaRun[0].actingVia.kind).toBe('agent-run');
+            expect(viaRun[0].actingVia.actorId).toBe(agent.body.id);
+            // the log settles shortly after the read, so look for up to 90 s
+            const logQuery = `/v1/admin/access-log?contextId=default&subjectType=user&subjectId=${owner.body.id}&resourceId=${record.body.id}`;
+            let accessLog = await call('GET', logQuery);
+            for (let i = 0; i < 18 && !(accessLog.status === 200 && (accessLog.body.data ?? []).some((e: Json) => e.actingVia?.runId === s.runId)); i++) {
+                await sleep(5000);
+                accessLog = await call('GET', logQuery);
+            }
+            console.log(`read-access log: ${JSON.stringify(accessLog.body).slice(0, 1500)}`);
+            const readViaRun = (accessLog.body.data ?? []).filter((e: Json) => e.actingVia?.runId === s.runId);
+            expect(readViaRun.length).toBeGreaterThan(0);
+            expect(readViaRun[0].actingVia.kind).toBe('agent-run');
+            expect(readViaRun[0].actingVia.actorId).toBe(agent.body.id);
+            // The recorded cost of this run, in milli-cents and dollars, is printed for the person who reads the log (the run is billed)
+            console.log(`run-tools run ${s.runId} charged ${read.body.usage.inferenceBalanceCentsChargedMilli} milli-cents (${read.body.usage.inferenceBalanceCentsChargedMilli / 100000} dollars)`);
+        } finally {
+            if (docId) await tryCleanup(`delete document ${docId}`, () => call('DELETE', `/v1/documents/${docId}`));
+            if (recordId) await tryCleanup(`delete record ${recordId}`, () => call('DELETE', `/v1/records/${recordId}`));
+            if (schemaId) await tryCleanup(`delete schema ${schemaId}`, () => call('DELETE', `/v1/schemas/${schemaId}`));
+            if (ownerId) await tryCleanup(`delete user ${ownerId}`, () => call('DELETE', `/v1/users/${ownerId}`));
+        }
     }, 300_000);
 
     test('rag_ask answers from the caller\'s content, inside the run\'s budget', async () => {

@@ -470,7 +470,7 @@ describe('access-profiles', () => {
             await expect(client.auth.createAccessProfile({
                 contextId: ctxId,
                 body: {
-                    principalId: 'bad:format',  // colon is the EntityKey separator — must reject
+                    principalId: 'bad:format',  // colon is the internal key separator — must reject
                     scopes: [{ allowed_actions: ['records:r'] }],
                 },
             })).rejects.toMatchObject({ statusCode: 400 });

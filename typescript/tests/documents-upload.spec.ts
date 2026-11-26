@@ -287,11 +287,27 @@ describe('documents (upload)', () => {
         return upload.id!;
     }
 
+    test('an untyped upload without size is refused with SIZE_REQUIRED before any document is made', async () => {
+        // `size` (the exact length in bytes) is required for every upload. API 0.51.0 or later. The request is cast because the
+        // SDK's own type requires `size`: this sends what a client that leaves it out would send.
+        const externalId = `no-size-${uniqueTag()}`;
+        const request = { fileName: `${uniqueTag()}.pdf`, fileType: 'application/pdf', indexMode: 'HYBRID', userId, externalId,
+            confirmUntyped: true } as unknown as Parameters<typeof client.documents.uploadDocument>[0];
+        const refused = await expectReject(client.documents.uploadDocument(request), 400);
+        expect(JSON.stringify(refused.body)).toContain('SIZE_REQUIRED');
+        // nothing was made: the same externalId with size creates the document (201, created: true)
+        const created = await client.documents.uploadDocument(withSize({ fileName: 'after.pdf', fileType: 'application/pdf',
+            indexMode: 'HYBRID', userId, externalId, confirmUntyped: true }, 'four'));
+        docIds.push(created.id!);
+        expect(created.created).toBe(true);
+    });
+
     test('a fileType that is not a media type (type/subtype) is refused before any document is made', async () => {
         // `pdf` was once stored as given; the field takes a media type (`application/pdf`), or is left out and inferred from
         // `fileName`. API 0.50.0 or later.
         const refused = await expectReject(
-            client.documents.uploadDocument({ fileName: `${uniqueTag()}.pdf`, fileType: 'pdf', indexMode: 'HYBRID', userId }),
+            // `size` is sent so the refusal under test is the fileType, not a missing size
+            client.documents.uploadDocument({ fileName: `${uniqueTag()}.pdf`, fileType: 'pdf', indexMode: 'HYBRID', userId, size: 1 }),
             400,
         );
         expect(JSON.stringify(refused.body)).toContain('type/subtype');

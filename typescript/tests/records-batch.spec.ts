@@ -460,12 +460,12 @@ describe('records: batch limits', () => {
     test('exactly 50 items is accepted under all_or_nothing too, when the records are plain', async () => {
         // The positive control for the ITEM cap on the transactional mode: 50 plain records (one row
         // each) fit in one transaction with room to spare, so this commits — and a server that
-        // refused every all_or_nothing batch could not pass it.
-        const tag = `plain-${uniqueTag()}`;
+        // refused every all_or_nothing batch could not pass it. Plain means no externalId: each
+        // externalId adds a row to the transaction, and 50 records that each carry one do not fit.
         const resp: any = await client.records.batchWriteRecords({
             atomicity: 'all_or_nothing',
             items: Array.from({ length: 50 }, (_, i) => ({
-                typeName: narrowType, externalId: `${tag}-${i}`, payload: { a: `a${i}` },
+                typeName: narrowType, payload: { a: `a${i}` },
             })),
         });
         for (const r of resp.results ?? []) if (r?.id) wideRecordIds.push(r.id);
@@ -475,7 +475,7 @@ describe('records: batch limits', () => {
     });
 
     test('a smaller batch of the SAME wide records commits, so the refusal below is about ROWS, not the schema', async () => {
-        // The positive control for the row limit. Ten wide records are roughly fifty rows: under
+        // The positive control for the row limit. Ten wide records are about sixty rows: under
         // the bound, so they commit atomically. Without this, the refusal below would pass equally
         // well against a server that refused every batch on this schema.
         const resp: any = await client.records.batchWriteRecords({

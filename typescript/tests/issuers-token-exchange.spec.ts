@@ -107,6 +107,14 @@ async function rawAuthedPost(
     return { status: resp.status, parsed: rawBody ? JSON.parse(rawBody) : {} };
 }
 
+async function rawAuthedGet(path: string): Promise<{ status: number; parsed: Record<string, unknown> }> {
+    const key = process.env.VECTROS_API_KEY;
+    if (!key) throw new Error('VECTROS_API_KEY required');
+    const resp = await fetch(`${baseUrl()}${path}`, { headers: { Authorization: `Bearer ${key}` } });
+    const rawBody = await resp.text();
+    return { status: resp.status, parsed: rawBody ? JSON.parse(rawBody) : {} };
+}
+
 interface OAuthErrorBody {
     error: string;
     error_description: string;
@@ -230,6 +238,48 @@ describe('issuers + token exchange', () => {
                 expect(second.audience).toBe(audience);
             } finally {
                 await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+            }
+        });
+
+        // A pending registration that cannot be verified with a claim challenge asks a platform operator
+        // to approve it. The request records a note and queues the registration; it never activates it.
+        // This suite never approves (that is an operator action), and the registration is deleted in
+        // `finally`, which also removes it from the operator queue.
+        test('request-approval records the request on a pending registration, keeps its time on a repeat, and needs a note', async () => {
+            const issuerId = ('appr' + uniqueTag()).slice(0, 31);
+            const otherCtxId = ('apc' + uniqueTag()).slice(0, 31);
+            await client.auth.createAppContext({ body: { contextId: otherCtxId, name: 'request-approval spec' } });
+            try {
+                const created = await client.auth.registerIssuer({
+                    issuerId, issuer: `https://${uniqueTag()}.example.com/`,
+                    jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                    audience: `aud-${uniqueTag()}`, contextId: otherCtxId,
+                });
+                expect(created.status).toBe('pending_verification');
+
+                const path = `/v1/auth/issuers/${issuerId}/request-approval`;
+                const first = await rawAuthedPost(path, { note: 'Smoke test: please ignore, deleted at once.' });
+                expect(first.status).toBe(200);
+                expect(first.parsed.approvalStatus).toBe('requested');
+                expect(first.parsed.status).toBe('pending_verification');
+                const requestedAt = first.parsed.approvalRequestedAt;
+                expect(typeof requestedAt).toBe('string');
+
+                const read = await rawAuthedGet(`/v1/auth/issuers/${issuerId}`);
+                expect(read.status).toBe(200);
+                expect(read.parsed.approvalStatus).toBe('requested');
+                expect(read.parsed.approvalRequestedAt).toBe(requestedAt);
+
+                const repeat = await rawAuthedPost(path, { note: 'Smoke test: a second note.' });
+                expect(repeat.status).toBe(200);
+                expect(repeat.parsed.approvalRequestedAt).toBe(requestedAt);
+
+                const noNote = await rawAuthedPost(path, {});
+                expect(noNote.status).toBe(400);
+            } finally {
+                await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+                await tryCleanup('request-approval context', () =>
+                    client.auth.deleteAppContext({ contextId: otherCtxId, confirm: otherCtxId }));
             }
         });
 
@@ -367,6 +417,98 @@ describe('issuers + token exchange', () => {
                 }), 400);
             } finally {
                 await tryCleanup('role', () => client.auth.deleteRole({ contextId: ctxId, roleId }));
+            }
+        });
+
+        // 0.50.0 — acceptedIdTokenClientIds: the client ids (an OAuth application's id) whose ID tokens the self-erasure proof check accepts besides the
+        // registration's own `audience`. Registered through raw HTTP: the installed SDK build may not model the field yet. Only the registration's
+        // contract is reachable here (a proof check needs a token from a real IdP): the list is stored and read back, and the format rules refuse
+        // a list over ten entries, a blank entry and a duplicate before anything is stored.
+        test('acceptedIdTokenClientIds is stored and read back; an oversized, blank or duplicated list is a 400', async () => {
+            const register = (issuerId: string, acceptedIdTokenClientIds: unknown) => rawAuthedPost('/v1/auth/issuers', {
+                issuerId, issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId, acceptedIdTokenClientIds,
+            });
+            const issuerId = ('acid' + uniqueTag()).slice(0, 31);
+            const clientIds = [`web-${uniqueTag()}.apps.example.com`, `ios-${uniqueTag()}.apps.example.com`];
+            const created = await register(issuerId, clientIds);
+            try {
+                if (created.status !== 201) throw new Error(`expected 201, got ${created.status}: ${JSON.stringify(created.parsed)}`);
+                expect(created.parsed.acceptedIdTokenClientIds).toEqual(clientIds);
+                const read = await client.auth.getIssuer({ issuerId });
+                expect((read as any).acceptedIdTokenClientIds).toEqual(clientIds);
+            } finally {
+                // NOT best-effort: while this registration is alive it holds the context, and every later registration in it would be refused on that
+                // instead of on its own contents, so the refusals below would pass for the wrong reason
+                if (created.status === 201) await client.auth.deleteIssuer({ issuerId });   // a registration that was not made has nothing to delete (and a 404 would hide the real error)
+            }
+
+            const refused: Array<[string, unknown, string]> = [
+                ['more than ten entries', Array.from({ length: 11 }, (_, i) => `client-${i}.apps.example.com`), 'acceptedIdTokenClientIds has 11 entries'],
+                ['a blank entry', ['ok.apps.example.com', '   '], 'is blank'],
+                ['a duplicated entry', ['dup.apps.example.com', 'dup.apps.example.com'], 'is duplicated'],
+            ];
+            for (const [label, ids, words] of refused) {
+                const id = ('acbad' + uniqueTag()).slice(0, 31);
+                const r = await register(id, ids);
+                if (r.status === 201 || r.status === 200) await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId: id }));
+                if (r.status !== 400) throw new Error(`${label}: expected 400, got ${r.status}: ${JSON.stringify(r.parsed)}`);
+                // the refusal is the list's own, not the context being claimed
+                if (!JSON.stringify(r.parsed).includes(words)) throw new Error(`${label}: the 400 does not say "${words}": ${JSON.stringify(r.parsed)}`);
+            }
+        });
+
+        // 0.50.0 — a self-signup entry may name more roles than one: `additional_role_ids`, composed after `role_id`. Raw HTTP as above. The registration
+        // contract is what is reachable (an actual signup needs a live token exchange, which this file cannot make): the list is stored and read back
+        // in order, more than nine entries or a repeat of `role_id` is a 400, and an ELEVATED role in the list is refused as it is for `role_id`
+        // (the check is on the union of the roles the entry names).
+        test('a selfSignupPolicies entry with additional_role_ids is stored in order; too many, a repeat or an elevated additional role is a 400', async () => {
+            const mkRole = async (prefix: string, actions: string[]) => {
+                const roleId = (prefix + uniqueTag()).slice(0, 31);
+                await client.auth.createRole({ contextId: ctxId, body: { roleId, name: prefix, scopes: [{ allowed_actions: actions }] } });
+                return roleId;
+            };
+            const first = await mkRole('addrf', ['records:r']);
+            const second = await mkRole('addrs', ['search:r']);
+            const elevated = await mkRole('addre', ['*']);
+            const register = (issuerId: string, policy: Record<string, unknown>) => rawAuthedPost('/v1/auth/issuers', {
+                issuerId, issuer: `https://${uniqueTag()}.example.com/`,
+                jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
+                audience: `aud-${uniqueTag()}`, contextId: ctxId, selfSignupPolicies: [policy],
+            });
+            const issuerIds: string[] = [];
+            try {
+                const okId = ('addok' + uniqueTag()).slice(0, 31);
+                issuerIds.push(okId);
+                const created = await register(okId, { signup_type: 'member', role_id: first, additional_role_ids: [second] });
+                if (created.status !== 201) throw new Error(`expected 201, got ${created.status}: ${JSON.stringify(created.parsed)}`);
+                expect((created.parsed.selfSignupPolicies as any[])[0].additional_role_ids).toEqual([second]);
+                const read = await client.auth.getIssuer({ issuerId: okId });
+                expect(((read as any).selfSignupPolicies[0]).additional_role_ids).toEqual([second]);
+
+                // the positive registration holds the context while it is alive, and a later registration there is refused on that, not on its policy:
+                // delete it (checked, not best-effort) before the refusals
+                await client.auth.deleteIssuer({ issuerId: okId });
+                issuerIds.pop();
+
+                const refused: Array<[string, Record<string, unknown>, string]> = [
+                    ['ten additional roles', { signup_type: 'member', role_id: first, additional_role_ids: Array.from({ length: 10 }, (_, i) => `extra-role-${i}`) }, 'additional_role_ids has 10 entries'],
+                    ['role_id repeated in the list', { signup_type: 'member', role_id: first, additional_role_ids: [first] }, 'role_id'],
+                    ['an elevated additional role', { signup_type: 'member', role_id: first, additional_role_ids: [elevated] }, 'elevated'],
+                ];
+                for (const [label, policy, words] of refused) {
+                    const id = ('addbad' + uniqueTag()).slice(0, 31);
+                    issuerIds.push(id);
+                    const r = await register(id, policy);
+                    if (r.status !== 400) throw new Error(`${label}: expected 400, got ${r.status}: ${JSON.stringify(r.parsed)}`);
+                    // not the context being claimed: the 400 is about the policy
+                    if (/already has an active issuer/.test(JSON.stringify(r.parsed))) throw new Error(`${label}: refused on the context claim, not on the policy: ${JSON.stringify(r.parsed)}`);
+                    if (words && !JSON.stringify(r.parsed).includes(words)) throw new Error(`${label}: the 400 does not mention "${words}": ${JSON.stringify(r.parsed)}`);
+                }
+            } finally {
+                for (const issuerId of issuerIds) await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
+                for (const roleId of [first, second, elevated]) await tryCleanup('role', () => client.auth.deleteRole({ contextId: ctxId, roleId }));
             }
         });
 
@@ -681,39 +823,36 @@ describe('issuers + token exchange', () => {
     // DELETE /v1/app-contexts/{contextId} cascades to a bound issuer registration
     // -----------------------------------------------------------------------
 
-    describe('deleting an app context permanently retires a bound issuer registered under it', () => {
-        // 0.44.0 — deleting an app context now tears down every issuer registration still bound to
-        // it, and if that registration ever had a bound user, its issuerId is PERMANENTLY retired
-        // (the same "was permanently retired" invariant/message the pre-existing operator
-        // force-release path already carries): a fresh registration attempt under a NEW context with
-        // the same issuerId stays refused forever, because the users bound through this issuerId are
-        // tenant-wide and survive the context teardown untouched — re-registering the slug under a
-        // new trust anchor would silently re-point them.
+    describe('deleting an app context retires a bound issuer: only the same provider can register it again', () => {
+        // 0.44.0 — deleting an app context tears down every issuer registration still bound to it, and if that
+        // registration ever had a bound user, its issuerId is retired. 0.51.0 — the retirement records the removed
+        // registration's trust anchor (issuer, jwksUri, audience, subClaim; exact strings), so a new registration
+        // under the same issuerId with the SAME anchor is allowed, and any other one is refused with a 400 carrying
+        // errorCode ISSUER_ID_RETIRED. The users bound through the issuerId are tenant-wide and survive the context
+        // teardown, so a different anchor (above all, a different jwksUri) must never reach them.
         //
-        // A login-free way to reach a genuinely bound state exists on this suite already (see
-        // "DELETE is refused with 409 once a real user is bound" above, and the subClaim test in the
-        // PUT describe block): invitation activation's externalSubject field is the one call site
-        // that honors a caller-supplied value, so no live JWKS/OIDC round trip is needed.
+        // A login-free way to reach a genuinely bound state exists on this suite already (see "DELETE is refused with
+        // 409 once a real user is bound" above, and the subClaim test in the PUT describe block): invitation
+        // activation's externalSubject field is the one call site that honors a caller-supplied value, so no live
+        // JWKS/OIDC round trip is needed.
         //
         // The teardown itself is an async, per-tick background drain (same convergence primitive as
-        // app-contexts.spec.ts's own SLOW destroy-path test, which takes about 3 minutes) — so this
-        // polls rather than asserting immediately. Until the drain has actually deleted the old row,
-        // a re-registration attempt with the same issuerId hits the ordinary tenant-wide idempotent
-        // echo instead (200, echoing the OLD, now-deleted-context row) — that is treated as "not yet
-        // converged", not a test failure; only a genuine 4xx or an unexpected status ends the poll.
+        // app-contexts.spec.ts's own SLOW destroy-path test, which takes about 3 minutes) — so this polls rather than
+        // asserting immediately. Until the drain has deleted the old row, a registration attempt with the same issuerId
+        // hits the ordinary tenant-wide idempotent echo instead (200, echoing the OLD row): "not yet converged", not a
+        // failure. The poll uses the MISMATCHED registration, so a converged answer is always a refusal and the poll can
+        // never itself create a row.
         (!SKIP_SLOW ? test : test.skip)(
-            "deleting a context permanently retires its bound issuer's issuerId — a fresh " +
-            'registration under a new context stays refused (SLOW — background teardown drain)',
+            "deleting a context retires its bound issuer's issuerId — a different provider is refused, the same one " +
+            'registers again (SLOW — background teardown drain)',
             async () => {
                 const throwawayCtxId = ('retctx' + uniqueTag()).slice(0, 31);
                 await client.auth.createAppContext({ body: { contextId: throwawayCtxId, name: 'issuer retirement spec' } });
                 const issuerId = ('retire' + uniqueTag()).slice(0, 31);
                 const issuer = `https://${uniqueTag()}.example.com/`;
                 const audience = `aud-${uniqueTag()}`;
-                await client.auth.registerIssuer({
-                    issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                    audience, contextId: throwawayCtxId,
-                });
+                const jwksUri = 'https://www.googleapis.com/oauth2/v3/certs';
+                await client.auth.registerIssuer({ issuerId, issuer, jwksUri, audience, contextId: throwawayCtxId });
 
                 const invite = await client.auth.createInvite({
                     email: `smoke-retire-bound-${uniqueTag()}@example.com`,
@@ -741,18 +880,19 @@ describe('issuers + token exchange', () => {
                 await client.auth.createAppContext({
                     body: { contextId: replacementCtxId, name: 'issuer retirement spec replacement' },
                 });
+                let reRegistered = false;
                 try {
+                    // The same issuer, audience and subClaim with another key location: refused once converged.
+                    const otherKeys = 'https://www.example.com/.well-known/jwks.json';
                     const rejection = await pollUntil(
-                        'issuerId permanently retired after its bound context is torn down',
+                        'issuerId retired after its bound context is torn down',
                         async () => {
                             try {
                                 await client.auth.registerIssuer({
-                                    issuerId, issuer, jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
-                                    audience, contextId: replacementCtxId,
+                                    issuerId, issuer, jwksUri: otherKeys, audience, contextId: replacementCtxId,
                                 });
-                                // A 200/201 here means the drain hasn't deleted+retired the old row
-                                // yet (root still gets the tenant-wide idempotent echo of the OLD
-                                // throwawayCtxId row) — not yet converged, keep polling.
+                                // A 200 here means the drain hasn't deleted+retired the old row yet (root still gets
+                                // the tenant-wide idempotent echo of the OLD throwawayCtxId row) — keep polling.
                                 return undefined;
                             } catch (e) {
                                 const err = e as { statusCode?: number; body?: unknown };
@@ -762,9 +902,26 @@ describe('issuers + token exchange', () => {
                         },
                         240_000, 5_000,
                     );
-                    expect(JSON.stringify(rejection.body)).toMatch(/permanently retired/i);
+                    const body = rejection.body as { errorCode?: string; message?: string };
+                    expect(body.errorCode).toBe('ISSUER_ID_RETIRED');
+                    // The refusal names nothing of the retired registration.
+                    expect(JSON.stringify(body)).not.toContain(issuer);
+                    expect(JSON.stringify(body)).not.toContain(audience);
+                    expect(JSON.stringify(body)).not.toContain(jwksUri);
+
+                    // The same provider registers again under the same issuerId, in the new context.
+                    const again = await client.auth.registerIssuer({
+                        issuerId, issuer, jwksUri, audience, contextId: replacementCtxId,
+                    });
+                    reRegistered = true;
+                    expect(again.created).toBe(true);
+                    expect(again.contextId).toBe(replacementCtxId);
+                    // Domain-less, so it still has to prove control of the issuer before it routes any token.
+                    expect(again.status).toBe('pending_verification');
                 } finally {
+                    // The bound user first: while it exists the re-registered issuer is bound and refuses deletion.
                     await tryCleanup('bound user', () => client.identity.deleteUser({ id: userId }));
+                    if (reRegistered) await tryCleanup('issuer', () => client.auth.deleteIssuer({ issuerId }));
                     await tryCleanup('replacement context', () =>
                         client.auth.deleteAppContext({ contextId: replacementCtxId, confirm: replacementCtxId }));
                 }

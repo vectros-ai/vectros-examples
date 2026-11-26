@@ -146,6 +146,34 @@ describe('scripts: synchronous execution', () => {
         expect(await folderNamed('never-' + tag)).toBe(false);
     });
 
+    test('a version that declares an inputSchema has it enforced on execute: a bad input is a 400 naming the problem, a good one runs', async () => {
+        const name = 'smoke-schema-' + uniqueTag();
+        const pushed = await rawJson('POST', '/v1/scripts', {
+            name,
+            source: "({ echoed: input.params.word });",
+            inputSchema: {
+                type: 'object',
+                properties: { word: { type: 'string', description: 'The word to echo back.' } },
+                required: ['word'],
+            },
+        });
+        expect(pushed.status).toBe(201);
+        scriptIds.push(pushed.json.id as string);
+
+        const missing = await executeScript({ scriptRef: { name, version: 'latest' }, input: {} });
+        expect(missing.status).toBe(400);
+        expect(JSON.stringify(missing.json)).toContain('word');
+
+        const wrongType = await executeScript({ scriptRef: { name, version: 'latest' }, input: { word: 42 } });
+        expect(wrongType.status).toBe(400);
+        expect(JSON.stringify(wrongType.json)).toContain('word');
+
+        // the refusals are not the script failing: a valid input to the same version runs and returns its result
+        const ok = await executeScript({ scriptRef: { name, version: 'latest' }, input: { word: 'hello' } });
+        expect(ok.status).toBe(200);
+        expect(ok.json.result).toEqual({ echoed: 'hello' });
+    });
+
     test('execute needs the scripts:x permission; a data-only token is refused', async () => {
         const minted = (await client.auth.mintToken({
             scope: { allowedActions: ['folders:cr', 'documents:cr'] },

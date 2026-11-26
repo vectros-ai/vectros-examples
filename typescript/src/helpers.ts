@@ -501,11 +501,10 @@ export function presignedUploadHeaders(response: unknown): Record<string, string
 
 /**
  * The upload-init request with `size`, the exact byte length of the
- * body the spec will PUT. Typed as the request it extends, so a spec compiles
- * against an SDK that predates the field (such an SDK may not send it: the
- * upload is then unbound, as before; a public-media type needs the raw API).
+ * body the spec will PUT (required on every upload). Typed as the request plus
+ * a required `size`, so it satisfies the SDK's upload request type.
  */
-export function withSize<T extends object>(request: T, body: Uint8Array | string): T {
+export function withSize<T extends object>(request: T, body: Uint8Array | string): T & { size: number } {
     const size = typeof body === 'string' ? Buffer.byteLength(body) : body.byteLength;
-    return { ...request, size } as T;
+    return { ...request, size } as T & { size: number };
 }

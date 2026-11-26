@@ -83,6 +83,7 @@ describe('documents: externalId without a schemaId', () => {
         try {
             leaked = (await client.documents.uploadDocument({
                 fileName: 'untyped-probe.txt', fileType: 'text/plain',
+                size: 1,   // sent so the refusal under test is the missing confirmUntyped, not a missing size
                 externalId: `untyped-upload-${uniqueTag()}`,
             })).id;
         } catch (err) {

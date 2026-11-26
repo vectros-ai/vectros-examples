@@ -12,15 +12,14 @@
  *   3. a listed geo field with no precision is refused with `PUBLIC_VIEW_GEO_PRECISION_REQUIRED`, and a value outside the
  *      domain with `PUBLIC_VIEW_GEO_PRECISION_INVALID`.
  *
- * OPT-IN (GEO_SEARCH_CHECK=1), like the other geo checks: geo fields are available per account, so the default suite leaves this
- * spec out. When it is opted in, BOTH preconditions must hold on the SAME account the API key belongs to: public access is turned
- * on (the account owner's own setting), and geo fields are available for that account, which is arranged with support and has no
- * self-service setting. Without either, the schema write is refused and this spec FAILS naming the one that is missing, rather
+ * OPT-IN (GEO_SEARCH_CHECK=1), like the other geo checks: geo fields are turned on per tenant, so the default suite leaves this
+ * spec out. The key is `VECTROS_RUN_SMOKE_API_KEY` when set (the account whose owner turned public access on), otherwise `VECTROS_API_KEY`. When it is opted in, BOTH preconditions must hold on the SAME account that key belongs to: public access is turned
+ * on (the account owner's own setting), and geo fields are on for that key's tenant, which an owner of the account turns on by
+ * signing the Geocoding waiver in the developer portal. Without either, the schema write is refused and this spec FAILS naming the one that is missing, rather
  * than skipping: a skipped opted-in run is not evidence.
  *
  * The routes are called over HTTP directly, so the spec does not depend on an SDK release that has the new key.
  */
-import { client } from '../src/client';
 import { rateLimitAwareFetch } from '../src/rateLimitFetch';
 import { uniqueTag, tryCleanup } from '../src/helpers';
 
@@ -33,9 +32,15 @@ function baseUrl(): string {
     return u.replace(/\/+$/, '');
 }
 
+/** The key of the account that has public access on: `VECTROS_RUN_SMOKE_API_KEY` when set, otherwise `VECTROS_API_KEY`. */
+function apiKey(): string {
+    const key = process.env.VECTROS_RUN_SMOKE_API_KEY || process.env.VECTROS_API_KEY;
+    if (!key) throw new Error('VECTROS_API_KEY (or VECTROS_RUN_SMOKE_API_KEY) required');
+    return key;
+}
+
 async function call(method: string, path: string, body?: Json): Promise<Reply> {
-    const key = process.env.VECTROS_API_KEY;
-    if (!key) throw new Error('VECTROS_API_KEY required');
+    const key = apiKey();
     const resp = await rateLimitAwareFetch(`${baseUrl()}${path}`, {
         method,
         headers: { Authorization: `Bearer ${key}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -82,8 +87,8 @@ function assertPreconditions(r: Reply): void {
     if (r.status === 409 && r.body.errorCode === 'PUBLIC_ACCESS_NOT_ENABLED') {
         throw new Error('PRECONDITION: public access is not turned on for this account; the account owner must enable it before this spec can run.');
     }
-    if (r.status === 400 && /not enabled for this account/.test(JSON.stringify(r.body))) {
-        throw new Error('PRECONDITION: geo fields are not available for this account; they are arranged with support (there is no self-service setting) before this spec can run.');
+    if (r.status === 400 && /is off for this tenant/.test(JSON.stringify(r.body))) {
+        throw new Error('PRECONDITION: geo fields are off for this tenant; an owner of the account must sign the Geocoding waiver for it in the developer portal before this spec can run.');
     }
 }
 
@@ -100,12 +105,18 @@ const geoOptIn = process.env.GEO_SEARCH_CHECK === '1';
 
 (geoOptIn ? describe : describe.skip)('public views: a geo field at its declared precision', () => {
     const schemasToRemove: string[] = [];
+    const orgsToRemove: string[] = [];
     afterAll(async () => {
         for (const id of schemasToRemove) await tryCleanup('schema', () => call('DELETE', `/v1/schemas/${id}`));
+        for (const id of orgsToRemove) await tryCleanup('org', () => call('DELETE', `/v1/entities/org/${id}`));
     });
 
     async function publish(precision: string | number): Promise<{ id: string; view: Json }> {
-        const org = await client.identity.createEntity({ namespace: 'org', body: { externalId: 'pvgeo-org-' + uniqueTag(), name: 'Geo Precision Org' } });
+        // created with the SAME key as the type and the record: an entity of another account cannot own the record's scope
+        const orgReply = await call('POST', '/v1/entities/org', { externalId: 'pvgeo-org-' + uniqueTag(), name: 'Geo Precision Org' });
+        expectStatus(orgReply, 201);
+        const org = { id: orgReply.body.id as string };
+        orgsToRemove.push(org.id);
         const { typeName, schemaId } = await createType(precision);
         schemasToRemove.push(schemaId);
         const created = await call('POST', '/v1/records', {

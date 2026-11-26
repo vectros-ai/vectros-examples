@@ -5,6 +5,75 @@ adheres to [Semantic Versioning](https://semver.org). The version below is the
 release version of this examples collection; each language example pins a
 published Vectros SDK independently.
 
+## 0.21.0 — 2026-11-25
+
+### Added
+
+- **`array-item-limits`:** `validation.maxItems` on an `array` field: the spec asserts a write over the limit is a `400` naming the
+  field and the limit, a write at the limit succeeds, and a record stored over the limit is still updated on another field.
+- **`public-list-by-lookup`:** an anonymous list of a `projection` type by a lookup field it publishes (`GET /v1/public/records/{type}?<field>=<value>`):
+  exactly the published records of that value, every page before the last full, never a private field or a record id, and a record leaves
+  the list when it is unpublished; a private field is the same `404` as a type with no public records.
+- **`public-search`:** range filters, `filter.<field>.from` and `filter.<field>.to` (inclusive, either alone) on a public `number`
+  and a public `date` field: the spec asserts a hit inside the range and at each bound, no hit outside it, and `400 PUBLIC_SEARCH_FILTER_NOT_ALLOWED` for a
+  bound that is not a plain decimal; and a set filter, `filter.seats.in`, that matches a value in the set and not otherwise.
+- **`lookup-addition`:** adding a lookup to a type that already has a record: the spec asserts the earlier record is not found by
+  the new lookup, a record written after it is, and the earlier record is found once it is updated.
+- **`public-filter-only-search`:** a public search with a filter and no `q` lists the published records that match: the spec
+  asserts it returns exactly the open records of one city (never a draft, never another city), the same records in the same order
+  when paged one at a time, an `array` element match, and a `400` with no `q`, no `near.*` and no filter, or with `mode=hybrid`.
+- **`public-instant-filters` and `public-search-sort`:** an anonymous search that filters an `instant` field by an exact moment, by a range (a day runs from its first millisecond to its last) and by a set, and that puts results in the order of a `number`, `date` or `instant` field, soonest first or last, records without a value last.
+- **`public-media`:** an image document carries its public `url` from the upload, and where public images are not enabled an image
+  upload is refused `503 PUBLIC_ACCESS_UNAVAILABLE`, which the image specs now assert.
+- **`models`:** `cachePricing` on `GET /v1/models`: the read, five-minute-write and one-hour-write rates per 1K tokens in both regions,
+  following the region premium.
+- **`runs`:** a run of an older agent version whose budget is above the agent's period cap is refused `400 BUDGET_EXCEEDS_PERIOD_CAP`,
+  naming the period, before anything is reserved or charged.
+- **`scripts-execute`:** a script version that declares an `inputSchema` has it enforced on execute: an input that misses a required
+  field or has the wrong type is a `400` naming the field.
+- **`search-one-row-per-record`:** a record created and then written again at once (eight concurrent `PATCH`es; a `best_effort`
+  upsert batch that creates it and updates it seven times) is one search result row: the spec counts rows with
+  `uniqueDocuments: false` at 30 s and 120 s after the writes.
+- **`capabilities`:** the `public-publish` and `script-egress-declare` names are accepted in `granted_capabilities` and read back.
+- **`issuers-token-exchange`:** `acceptedIdTokenClientIds` on an issuer registration (stored and read back; more than ten entries, a
+  blank entry and a duplicate are refused), and `additional_role_ids` on a self-signup entry (stored in order; too many, a repeat of
+  `role_id` and an elevated role are refused).
+- **`issuers-token-exchange`:** asking an operator to approve a pending issuer registration
+  (`POST /v1/auth/issuers/{issuerId}/request-approval`): the request is recorded, a repeat keeps its request time, and a
+  request without a note is refused.
+- **`capabilities`:** the `public-keys` verbs (issue, list, revoke) in their own app context.
+- **`public-search`:** an anonymous public search with a publishable key: a `projection` type offering `text` search (with
+  `cacheSeconds: 0`) finds a published record by a word in a public field, the hit holds only the public fields, and a forged key is
+  refused `403 PUBLIC_KEY_INVALID`. Needs public access on, a public budget, and public text search allowed by the account owner.
+- **`search-field-order`:** ordering search results by a field: `sortBy` with a `number` or `date` field id and `order` (`asc` or
+  `desc`). With no query, the type's records come in the field's order and an item without a value comes last in both directions;
+  a `TEXT` query is ordered by a number field; paging follows the order; and a field order is refused `400` with a `HYBRID` query, a
+  bad `order`, no `typeName`, `distance` with `desc`, and (for a key limited to one app context) a field that is not a sortable
+  `number` or `date` field of the type.
+- **`records`:** a search filter naming one value of an `array` field matches a record when any of its `string`, `number` or
+  `boolean` elements equals it.
+- **`instant-field`:** the `instant` field type: a value in any offset is stored and returned in UTC with milliseconds, an
+  offset-less value is refused `400`, an equality lookup matches the same moment in any spelling, a range lookup orders by time,
+  and a search range filter in ISO form compares `instant` and `date` fields by time. An `array` field with `itemType: instant`
+  stores each element in UTC and a search filter matches a record when any element matches.
+
+### Changed
+
+- **The examples target SDK 0.51.0** (`^0.51.0`, `vectros>=0.51.0,<0.52.0`, Java `0.51.0`). The new and changed checks need API 0.51.0.
+- **`public-media-asset`:** an `asset` field is accepted on any base schema (a private draft type, and a projection
+  view that does not list it), and a sensitive one is still refused; an image still being processed has no download (`409
+  NO_DOWNLOAD_FOR_MEDIA`); and, where images are processed, a private draft's image is downloaded from its private copy and the
+  approval's listing write moves it to the published listing.
+- **`public-view-geo-precision`:** the geo precondition now names the per-tenant setting: an owner of the account turns geo
+  fields on by signing the Geocoding waiver in the developer portal.
+- **`public-view-geo-precision`:** reads `VECTROS_RUN_SMOKE_API_KEY` first, like the other public-view specs, and creates its org with
+  that same key.
+- **`documents-upload`, `documents-reupload`, `documents-untyped-externalid`, `public-media-profile`:** every upload request sends
+  `size`, except the checks of an upload without it.
+- **`public-media-profile`, `documents-upload`:** an ordinary or untyped upload without `size` is refused `400 SIZE_REQUIRED`, and
+  nothing is created.
+- **`issuers-token-exchange`:** after an app context is deleted, the spec asserts that registering its issuerId with another key location is refused with `400 ISSUER_ID_RETIRED`, and that the refusal names none of the old values. It also asserts that the same provider can register the issuerId again.
+
 ## 0.20.0 — 2026-11-14
 
 ### Added

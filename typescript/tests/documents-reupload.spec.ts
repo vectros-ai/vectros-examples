@@ -28,6 +28,10 @@ import {
 
 interface MintedToken { token: string; expiresAt: number; }
 
+// The upload init needs `size` (the exact byte length of the PUT body). These
+// inits test the init itself and never PUT, so any positive length will do.
+const INIT_ONLY_SIZE = 1;
+
 describe('documents (re-upload inherits indexMode)', () => {
     let testStartedAt: string;
     const docIds: string[] = [];
@@ -117,6 +121,7 @@ describe('documents (re-upload inherits indexMode)', () => {
         const first = await client.documents.uploadDocument({
             fileName: 'reupload-upsert-smoke.txt',
             fileType: 'text/plain',
+            size: INIT_ONLY_SIZE,
             indexMode: 'HYBRID',
             externalId: upsertExternalId,
             confirmUntyped: true,
@@ -127,6 +132,7 @@ describe('documents (re-upload inherits indexMode)', () => {
         const second = await client.documents.uploadDocument({
             fileName: 'reupload-upsert-smoke.txt',
             fileType: 'text/plain',
+            size: INIT_ONLY_SIZE,
             externalId: upsertExternalId,
             confirmUntyped: true,
             upsert: true,
@@ -159,6 +165,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             const first = await client.documents.uploadDocument({
                 fileName: 'reupload-typed-smoke.txt',
                 fileType: 'text/plain',
+                size: INIT_ONLY_SIZE,
                 indexMode: 'HYBRID',
                 schemaId: schema.id!,
                 externalId: typedExternalId,
@@ -170,6 +177,7 @@ describe('documents (re-upload inherits indexMode)', () => {
             const second = await client.documents.uploadDocument({
                 fileName: 'reupload-typed-smoke.txt',
                 fileType: 'text/plain',
+                size: INIT_ONLY_SIZE,
                 schemaId: schema.id!,
                 externalId: typedExternalId,
             });
@@ -237,6 +245,7 @@ describe('documents (re-upload always requires documents:u)', () => {
         const first = await client.documents.uploadDocument({
             fileName: 'reupload-scope-smoke.txt',
             fileType: 'text/plain',
+            size: INIT_ONLY_SIZE,
             indexMode: 'HYBRID',
             userId: ownerUserId,
             externalId,
@@ -255,6 +264,7 @@ describe('documents (re-upload always requires documents:u)', () => {
         await expectReject(createOnlyClient.documents.uploadDocument({
             fileName: 'reupload-scope-smoke.txt',
             fileType: 'text/plain',
+            size: INIT_ONLY_SIZE,
             externalId,
             confirmUntyped: true,
         }), 403);
@@ -267,6 +277,7 @@ describe('documents (re-upload always requires documents:u)', () => {
         const second = await createAndUpdateClient.documents.uploadDocument({
             fileName: 'reupload-scope-smoke.txt',
             fileType: 'text/plain',
+            size: INIT_ONLY_SIZE,
             externalId,
             confirmUntyped: true,
         });
